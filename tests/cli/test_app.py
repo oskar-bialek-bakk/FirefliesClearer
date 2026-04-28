@@ -19,3 +19,10 @@ def test_version_flag_prints_version() -> None:
 def test_help_runs() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
+
+
+def test_help_lists_all_commands() -> None:
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    for cmd in ["init", "scan", "archive", "purge", "run", "status", "history"]:
+        assert cmd in result.stdout
