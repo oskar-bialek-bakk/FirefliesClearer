@@ -154,8 +154,8 @@ async def test_list_meetings_applies_older_than_filter(
     async for _ in client.list_meetings(MeetingFilter(older_than=cutoff)):
         pass
     body = respx.calls.last.request.content.decode()
-    # Variable name varies by deployment; accept any of these substrings.
-    assert any(s in body for s in ("to_date", "fromDate", "older"))
+    # Fireflies uses camelCase for query arguments (`toDate`).
+    assert "toDate" in body
 
 
 @respx.mock
