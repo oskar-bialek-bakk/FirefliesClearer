@@ -6,7 +6,7 @@ import asyncio
 import logging
 import random
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -17,15 +17,14 @@ from firefliesclearer.ports.meeting_repository import MeetingFilter
 logger = logging.getLogger(__name__)
 
 LIST_QUERY = """
-query Transcripts($limit: Int, $skip: Int, $to_date: DateTime) {
-  transcripts(limit: $limit, skip: $skip, to_date: $to_date) {
+query Transcripts($limit: Int, $skip: Int, $toDate: DateTime) {
+  transcripts(limit: $limit, skip: $skip, toDate: $toDate) {
     id
     title
     date
     duration
     host_email
     participants
-    tags
     transcript_url
     summary { overview action_items keywords }
     audio_url
@@ -48,7 +47,6 @@ query TranscriptDetail($id: String!) {
     duration
     host_email
     participants
-    tags
     transcript_url
     audio_url
     summary { overview action_items keywords }
@@ -88,7 +86,7 @@ class FirefliesClient:
                 variables: dict[str, Any] = {
                     "limit": self._page_size,
                     "skip": skip,
-                    "to_date": filter.older_than.isoformat() if filter.older_than else None,
+                    "toDate": filter.older_than.isoformat() if filter.older_than else None,
                 }
                 payload = await self._request(client, LIST_QUERY, variables, op="list_meetings")
                 items = payload.get("data", {}).get("transcripts", []) or []
@@ -117,7 +115,7 @@ class FirefliesClient:
             return ArtifactBundle(
                 audio_bytes=audio_bytes,
                 transcript_markdown=_render_transcript_md(t),
-                summary_payload=t.get("summary") or {},
+                summary_payload=_normalize_summary(t.get("summary") or {}),
                 metadata={
                     "source_url": f"https://app.fireflies.ai/view/{meeting_id}",
                     "audio_url": audio_url,
@@ -209,16 +207,42 @@ class FirefliesClient:
             return b"".join(chunks)
 
 
+def _normalize_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    """Fireflies' `Summary.action_items` is a String (often newline-separated
+    or markdown bullets). The renderer expects a list. Split if needed; leave
+    other fields untouched."""
+    out = dict(summary)
+    raw = summary.get("action_items")
+    if isinstance(raw, str):
+        items = [line.lstrip("-* ").strip() for line in raw.splitlines()]
+        out["action_items"] = [i for i in items if i]
+    elif raw is None:
+        out["action_items"] = []
+    return out
+
+
+def _parse_date(raw_date: Any) -> datetime:
+    """Fireflies returns `date` as a Float (Unix epoch ms). Be permissive
+    in case a deployment ever returns an ISO string."""
+    if isinstance(raw_date, (int, float)):
+        # Heuristic: epoch ms if value is large, otherwise epoch seconds.
+        seconds = raw_date / 1000.0 if raw_date > 1e12 else float(raw_date)
+        return datetime.fromtimestamp(seconds, tz=UTC)
+    if isinstance(raw_date, str):
+        return datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+    raise FirefliesError(f"unexpected date type: {type(raw_date).__name__}")
+
+
 def _meeting_from_raw(raw: dict[str, Any]) -> Meeting:
     participants = raw.get("participants") or []
     return Meeting(
         meeting_id=raw["id"],
         title=raw.get("title") or "(untitled)",
-        meeting_date=datetime.fromisoformat(raw["date"].replace("Z", "+00:00")),
+        meeting_date=_parse_date(raw["date"]),
         duration_minutes=float(raw.get("duration") or 0.0),
         host_email=raw.get("host_email") or "",
         participant_count=len(participants),
-        tags=tuple(raw.get("tags") or ()),
+        tags=(),  # Fireflies' Transcript type does not expose tags as of 2026-04
         has_transcript=bool(raw.get("transcript_url")),
     )
 
