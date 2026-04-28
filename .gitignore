@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.cache
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Linters
+.ruff_cache/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / config
+.env
+.env.local
+*.local.toml
+firefliesclearer.local.toml
+
+# Local archive output (in case anyone points archive_root inside the repo)
+/archive/
+/archive-test/
+manifest.db
+manifest.db-journal
+manifest.db-wal
+manifest.db-shm
+
+# Logs
+logs/
+*.log
+
+# Build artifacts
+*.pdf
+!docs/**/*.pdf
+!templates/**/*.pdf
