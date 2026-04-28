@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime
 
 import httpx
@@ -221,3 +222,22 @@ async def test_delete_meeting_idempotent_on_404(
         return_value=httpx.Response(404, json={"errors": ["not_found"]})
     )
     await client.delete_meeting("missing")
+
+
+@pytest.mark.contract
+@pytest.mark.skipif(
+    not os.environ.get("FIREFLIES_TEST_API_KEY"),
+    reason="FIREFLIES_TEST_API_KEY not set",
+)
+async def test_contract_list_one_real_meeting() -> None:
+    """Hit live API and confirm schema fields parse into a Meeting."""
+    real_client = FirefliesClient(
+        api_key=os.environ["FIREFLIES_TEST_API_KEY"], page_size=1
+    )
+    count = 0
+    async for m in real_client.list_meetings(MeetingFilter(limit=1)):
+        assert m.meeting_id
+        assert m.title
+        count += 1
+        break
+    assert count <= 1
