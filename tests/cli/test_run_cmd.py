@@ -47,12 +47,8 @@ def patched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     repo = InMemoryMeetingRepository(
         meetings=[old, no_t, fresh],
         artifacts={
-            "old": ArtifactBundle(
-                audio_bytes=b"A", transcript_markdown="# T", summary_payload={}
-            ),
-            "nt": ArtifactBundle(
-                audio_bytes=b"A", transcript_markdown="# T", summary_payload={}
-            ),
+            "old": ArtifactBundle(audio_bytes=b"A", transcript_markdown="# T", summary_payload={}),
+            "nt": ArtifactBundle(audio_bytes=b"A", transcript_markdown="# T", summary_payload={}),
             "fresh": ArtifactBundle(),
         },
     )

@@ -86,9 +86,7 @@ def patched_deps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_scan_with_older_than_writes_selection_file(patched_deps) -> None:
     _, archive_root = patched_deps
-    result = runner.invoke(
-        app, ["scan", "--older-than-days", "180"]
-    )
+    result = runner.invoke(app, ["scan", "--older-than-days", "180"])
     assert result.exit_code == 0, result.stdout
     selections = list((archive_root / "selections").glob("scan_*.json"))
     assert len(selections) == 1

@@ -23,9 +23,7 @@ LEGAL_TRANSITIONS: Mapping[MeetingState | None, frozenset[MeetingState]] = {
             MeetingState.FAILED_VERIFY,
         }
     ),
-    MeetingState.ARCHIVED: frozenset(
-        {MeetingState.DELETED, MeetingState.DELETED_FAILED}
-    ),
+    MeetingState.ARCHIVED: frozenset({MeetingState.DELETED, MeetingState.DELETED_FAILED}),
     MeetingState.DELETED_FAILED: frozenset({MeetingState.DELETED}),
     MeetingState.FAILED_FETCH: frozenset({MeetingState.PENDING}),
     MeetingState.FAILED_DOWNLOAD: frozenset({MeetingState.PENDING}),
@@ -120,8 +118,7 @@ class Manifest:
         if self.get(meeting.meeting_id) is not None:
             return
         self._conn.execute(
-            "INSERT INTO meetings (meeting_id, title, meeting_date, state) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO meetings (meeting_id, title, meeting_date, state) VALUES (?, ?, ?, ?)",
             (
                 meeting.meeting_id,
                 meeting.title,
@@ -173,9 +170,7 @@ class Manifest:
         rec = self.get(meeting_id)
         from_state = rec.state if rec else None
         if to not in LEGAL_TRANSITIONS.get(from_state, frozenset()):
-            raise IllegalStateTransition(
-                f"{meeting_id}: cannot transition {from_state} -> {to}"
-            )
+            raise IllegalStateTransition(f"{meeting_id}: cannot transition {from_state} -> {to}")
         sets: list[str] = ["state = ?"]
         vals: list[Any] = [to.value]
         if archive_path is not None:
@@ -199,9 +194,7 @@ class Manifest:
             sets.append("last_error = ?")
             vals.append(last_error)
         vals.append(meeting_id)
-        self._conn.execute(
-            f"UPDATE meetings SET {', '.join(sets)} WHERE meeting_id = ?", vals
-        )
+        self._conn.execute(f"UPDATE meetings SET {', '.join(sets)} WHERE meeting_id = ?", vals)
         self._log(meeting_id, from_state, to, at, details)
 
     def state_log(self, meeting_id: str) -> list[StateLogEntry]:
@@ -224,8 +217,7 @@ class Manifest:
     def history(self, *, year: int, month: int) -> list[MeetingRecord]:
         prefix = f"{year:04d}-{month:02d}"
         rows = self._conn.execute(
-            "SELECT meeting_id FROM meetings "
-            "WHERE state = 'deleted' AND deleted_at LIKE ?",
+            "SELECT meeting_id FROM meetings WHERE state = 'deleted' AND deleted_at LIKE ?",
             (f"{prefix}%",),
         ).fetchall()
         result: list[MeetingRecord] = []
@@ -236,9 +228,7 @@ class Manifest:
         return result
 
     def counts_by_state(self) -> dict[MeetingState, int]:
-        rows = self._conn.execute(
-            "SELECT state, COUNT(*) FROM meetings GROUP BY state"
-        ).fetchall()
+        rows = self._conn.execute("SELECT state, COUNT(*) FROM meetings GROUP BY state").fetchall()
         return {MeetingState(s): c for s, c in rows}
 
     def _log(

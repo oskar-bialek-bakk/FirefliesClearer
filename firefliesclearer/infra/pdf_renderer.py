@@ -94,9 +94,7 @@ def _styles() -> dict[str, ParagraphStyle]:
 class ReportlabSummaryRenderer:
     """Renders summary payloads to PDF via reportlab."""
 
-    def render(
-        self, summary_payload: dict[str, Any], *, meeting_title: str
-    ) -> bytes:
+    def render(self, summary_payload: dict[str, Any], *, meeting_title: str) -> bytes:
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
             buf,
@@ -114,9 +112,7 @@ class ReportlabSummaryRenderer:
 
         story.append(Paragraph("Overview", styles["h2"]))
         overview = summary_payload.get("overview")
-        story.append(
-            Paragraph(_escape(overview) if overview else "(no overview)", styles["body"])
-        )
+        story.append(Paragraph(_escape(overview) if overview else "(no overview)", styles["body"]))
 
         action_items = summary_payload.get("action_items") or []
         if action_items:
@@ -124,10 +120,7 @@ class ReportlabSummaryRenderer:
             story.append(Paragraph("Action items", styles["h2"]))
             story.append(
                 ListFlowable(
-                    [
-                        ListItem(Paragraph(_escape(item), styles["body"]))
-                        for item in action_items
-                    ],
+                    [ListItem(Paragraph(_escape(item), styles["body"])) for item in action_items],
                     bulletType="bullet",
                     leftIndent=14,
                 )
@@ -137,9 +130,7 @@ class ReportlabSummaryRenderer:
         if keywords:
             story.append(Spacer(1, 6))
             story.append(Paragraph("Keywords", styles["h2"]))
-            story.append(
-                Paragraph(_escape(", ".join(keywords)), styles["italic"])
-            )
+            story.append(Paragraph(_escape(", ".join(keywords)), styles["italic"]))
 
         doc.build(story)
         return buf.getvalue()
@@ -147,8 +138,4 @@ class ReportlabSummaryRenderer:
 
 def _escape(text: str) -> str:
     """Escape XML special chars used by reportlab Paragraph markup."""
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

@@ -55,12 +55,8 @@ class Archiver:
         )
         if target.exists():
             if allow_known and self.verify(target):
-                return ArchiveResult(
-                    archive_dir=target, sha256s={}, skipped=True
-                )
-            raise ArchiveDriftError(
-                f"Canonical dir already exists: {target}"
-            )
+                return ArchiveResult(archive_dir=target, sha256s={}, skipped=True)
+            raise ArchiveDriftError(f"Canonical dir already exists: {target}")
 
         target.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
@@ -81,9 +77,7 @@ class Archiver:
 
     def verify(self, archive_dir: Path) -> bool:
         if not archive_dir.exists():
-            raise ArchiveVerificationError(
-                f"Archive dir missing: {archive_dir}"
-            )
+            raise ArchiveVerificationError(f"Archive dir missing: {archive_dir}")
         for name in REQUIRED_FILES:
             f = archive_dir / name
             if not f.exists() or f.stat().st_size == 0:
@@ -103,13 +97,9 @@ class Archiver:
     def _write_transcript(self, tmp: Path, bundle: ArtifactBundle) -> None:
         if bundle.transcript_markdown is None:
             raise ValueError("transcript_markdown required")
-        (tmp / "transcript.md").write_text(
-            bundle.transcript_markdown, encoding="utf-8"
-        )
+        (tmp / "transcript.md").write_text(bundle.transcript_markdown, encoding="utf-8")
 
-    def _write_metadata(
-        self, tmp: Path, meeting: Meeting, bundle: ArtifactBundle
-    ) -> None:
+    def _write_metadata(self, tmp: Path, meeting: Meeting, bundle: ArtifactBundle) -> None:
         meta = {
             "meeting_id": meeting.meeting_id,
             "title": meeting.title,

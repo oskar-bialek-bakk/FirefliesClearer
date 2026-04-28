@@ -52,9 +52,7 @@ def test_missing_api_key_raises_actionable_error(tmp_path: Path) -> None:
     assert "firefliesclearer init" in str(exc.value)
 
 
-def test_env_var_overrides_user_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_env_var_overrides_user_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     user = _write_user(
         tmp_path,
         """
@@ -94,9 +92,7 @@ def test_project_config_overrides_user_config(tmp_path: Path) -> None:
     assert cfg.fireflies.api_key == "from_user"
 
 
-def test_cli_override_beats_everything(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cli_override_beats_everything(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     user = _write_user(
         tmp_path,
         """

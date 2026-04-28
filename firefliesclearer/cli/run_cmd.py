@@ -20,12 +20,8 @@ from firefliesclearer.ports.meeting_repository import MeetingFilter
 
 @app.command()
 def run(
-    apply: bool = typer.Option(
-        False, "--apply", help="Actually mutate (default: dry-run)."
-    ),
-    yes: bool = typer.Option(
-        False, "--yes", help="Skip confirmation prompt above threshold."
-    ),
+    apply: bool = typer.Option(False, "--apply", help="Actually mutate (default: dry-run)."),
+    yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt above threshold."),
     config: Path = typer.Option(None, "--config"),  # noqa: B008
 ) -> None:
     """Apply hard rules from config (age + no-transcript)."""
@@ -39,10 +35,7 @@ def run(
         no_transcript = NoTranscript()
         async for m in deps.client.list_meetings(MeetingFilter()):
             age_match = engine.evaluate(m, now=now).matched
-            no_t_match = (
-                auto.delete_failed_transcripts
-                and no_transcript.matches(m, now=now)
-            )
+            no_t_match = auto.delete_failed_transcripts and no_transcript.matches(m, now=now)
             if age_match or no_t_match:
                 matched.append(m)
 
@@ -52,27 +45,19 @@ def run(
         _common.console.print("[green]Nothing matched.[/green]")
         return
 
-    _common.console.print(
-        f"[bold]{len(matched)}[/bold] meetings match auto rules."
-    )
+    _common.console.print(f"[bold]{len(matched)}[/bold] meetings match auto rules.")
     if not apply:
-        _common.console.print(
-            "[yellow]Dry-run; pass --apply to mutate.[/yellow]"
-        )
+        _common.console.print("[yellow]Dry-run; pass --apply to mutate.[/yellow]")
         return
 
     threshold = deps.config.run.delete_confirmation_threshold
     if (
         len(matched) > threshold
         and not yes
-        and not typer.confirm(
-            f"About to archive+delete {len(matched)} meetings. Continue?"
-        )
+        and not typer.confirm(f"About to archive+delete {len(matched)} meetings. Continue?")
     ):
         _common.console.print("[yellow]Aborted.[/yellow]")
         raise typer.Exit(code=1)
 
-    report = asyncio.run(
-        deps.pipeline.run(matched, mode=PipelineMode.APPLY)
-    )
+    report = asyncio.run(deps.pipeline.run(matched, mode=PipelineMode.APPLY))
     _print_report(report)

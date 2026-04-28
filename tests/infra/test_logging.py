@@ -25,9 +25,7 @@ def test_json_lines_emitted_to_file(tmp_path: Path) -> None:
 def test_authorization_header_redacted(tmp_path: Path) -> None:
     log_dir = tmp_path / "logs"
     setup_logging(log_dir=log_dir, level="INFO")
-    logging.getLogger("test").info(
-        "request: Authorization: Bearer ff_super_secret"
-    )
+    logging.getLogger("test").info("request: Authorization: Bearer ff_super_secret")
     line = next(iter(log_dir.glob("*.log"))).read_text(encoding="utf-8")
     assert "ff_super_secret" not in line
     assert "[REDACTED]" in line

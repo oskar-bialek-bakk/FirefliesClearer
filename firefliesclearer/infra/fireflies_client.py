@@ -80,9 +80,7 @@ class FirefliesClient:
         self._page_size = page_size
         self._timeout = timeout_seconds
 
-    async def list_meetings(
-        self, filter: MeetingFilter
-    ) -> AsyncIterator[Meeting]:
+    async def list_meetings(self, filter: MeetingFilter) -> AsyncIterator[Meeting]:
         skip = 0
         emitted = 0
         async with self._http() as client:
@@ -90,13 +88,9 @@ class FirefliesClient:
                 variables: dict[str, Any] = {
                     "limit": self._page_size,
                     "skip": skip,
-                    "to_date": filter.older_than.isoformat()
-                    if filter.older_than
-                    else None,
+                    "to_date": filter.older_than.isoformat() if filter.older_than else None,
                 }
-                payload = await self._request(
-                    client, LIST_QUERY, variables, op="list_meetings"
-                )
+                payload = await self._request(client, LIST_QUERY, variables, op="list_meetings")
                 items = payload.get("data", {}).get("transcripts", []) or []
                 if not items:
                     return
@@ -119,11 +113,7 @@ class FirefliesClient:
             if t is None:
                 raise FirefliesError(f"transcript not found: {meeting_id}")
             audio_url = t.get("audio_url")
-            audio_bytes = (
-                await self._download_audio(client, audio_url)
-                if audio_url
-                else None
-            )
+            audio_bytes = await self._download_audio(client, audio_url) if audio_url else None
             return ArtifactBundle(
                 audio_bytes=audio_bytes,
                 transcript_markdown=_render_transcript_md(t),
@@ -210,9 +200,7 @@ class FirefliesClient:
         await asyncio.sleep(max(0.0, delay))
 
     @staticmethod
-    async def _download_audio(
-        client: httpx.AsyncClient, url: str
-    ) -> bytes:
+    async def _download_audio(client: httpx.AsyncClient, url: str) -> bytes:
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
             chunks: list[bytes] = []
@@ -226,9 +214,7 @@ def _meeting_from_raw(raw: dict[str, Any]) -> Meeting:
     return Meeting(
         meeting_id=raw["id"],
         title=raw.get("title") or "(untitled)",
-        meeting_date=datetime.fromisoformat(
-            raw["date"].replace("Z", "+00:00")
-        ),
+        meeting_date=datetime.fromisoformat(raw["date"].replace("Z", "+00:00")),
         duration_minutes=float(raw.get("duration") or 0.0),
         host_email=raw.get("host_email") or "",
         participant_count=len(participants),

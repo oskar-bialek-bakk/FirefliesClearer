@@ -92,9 +92,7 @@ async def test_dry_run_makes_no_mutations(tmp_path: Path) -> None:
 async def test_fetch_failure_records_state_no_delete(tmp_path: Path) -> None:
     """Fetch failure -> FAILED_FETCH; no delete attempted."""
     m = _meeting()
-    pipeline, repo, manifest, _, _ = _build(
-        tmp_path, [m], fail_fetch_for=[m.meeting_id]
-    )
+    pipeline, repo, manifest, _, _ = _build(tmp_path, [m], fail_fetch_for=[m.meeting_id])
     report = await pipeline.run([m], mode=PipelineMode.APPLY)
     assert report.failed == 1
     rec = manifest.get(m.meeting_id)
@@ -106,9 +104,7 @@ async def test_fetch_failure_records_state_no_delete(tmp_path: Path) -> None:
 async def test_delete_failure_keeps_archive(tmp_path: Path) -> None:
     """Delete failure after successful archive -> DELETED_FAILED, archive intact."""
     m = _meeting()
-    pipeline, _repo, manifest, _, _ = _build(
-        tmp_path, [m], fail_delete_for=[m.meeting_id]
-    )
+    pipeline, _repo, manifest, _, _ = _build(tmp_path, [m], fail_delete_for=[m.meeting_id])
     report = await pipeline.run([m], mode=PipelineMode.APPLY)
     assert report.deleted == 0
     rec = manifest.get(m.meeting_id)
@@ -133,9 +129,7 @@ async def test_idempotent_second_run_skips_already_deleted(tmp_path: Path) -> No
 async def test_one_failure_does_not_abort_run(tmp_path: Path) -> None:
     """A single meeting failure does not stop processing of others."""
     m1, m2, m3 = _meeting("a"), _meeting("b"), _meeting("c")
-    pipeline, _, manifest, _, _ = _build(
-        tmp_path, [m1, m2, m3], fail_fetch_for=["b"]
-    )
+    pipeline, _, manifest, _, _ = _build(tmp_path, [m1, m2, m3], fail_fetch_for=["b"])
     report = await pipeline.run([m1, m2, m3], mode=PipelineMode.APPLY)
     assert report.archived == 2
     assert report.deleted == 2
@@ -191,9 +185,7 @@ async def test_failed_fetch_then_retry_succeeds(tmp_path: Path) -> None:
     Covers ``existing.state.value.startswith("failed_")`` branch.
     """
     m = _meeting()
-    pipeline, repo, manifest, _, _ = _build(
-        tmp_path, [m], fail_fetch_for=[m.meeting_id]
-    )
+    pipeline, repo, manifest, _, _ = _build(tmp_path, [m], fail_fetch_for=[m.meeting_id])
     report1 = await pipeline.run([m], mode=PipelineMode.APPLY)
     assert report1.failed == 1
     rec1 = manifest.get(m.meeting_id)
@@ -297,9 +289,7 @@ async def test_failed_then_retry_fails_again_short_circuits(tmp_path: Path) -> N
     Covers the ``if not ok: return`` after the failed_* requeue branch.
     """
     m = _meeting()
-    pipeline, repo, manifest, _, _ = _build(
-        tmp_path, [m], fail_fetch_for=[m.meeting_id]
-    )
+    pipeline, repo, manifest, _, _ = _build(tmp_path, [m], fail_fetch_for=[m.meeting_id])
     # First run: fails fetch.
     await pipeline.run([m], mode=PipelineMode.APPLY)
     rec1 = manifest.get(m.meeting_id)

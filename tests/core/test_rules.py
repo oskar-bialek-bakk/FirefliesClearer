@@ -73,9 +73,7 @@ def test_duration_below(duration: float, threshold: float, expect: bool) -> None
         ("", ["test"], False),
     ],
 )
-def test_title_contains_case_insensitive(
-    title: str, patterns: list[str], expect: bool
-) -> None:
+def test_title_contains_case_insensitive(title: str, patterns: list[str], expect: bool) -> None:
     rule = TitleContains(patterns)
     m = _meeting(title=title)
     assert rule.matches(m, now=NOW) is expect

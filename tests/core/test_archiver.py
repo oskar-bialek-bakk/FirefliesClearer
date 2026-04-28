@@ -43,9 +43,7 @@ def _bundle() -> ArtifactBundle:
 def test_archive_writes_all_artifacts(tmp_path: Path) -> None:
     archiver = Archiver(archive_root=tmp_path)
     pdf_bytes = b"%PDF-FAKE"
-    result = archiver.archive(
-        meeting=_meeting(), bundle=_bundle(), summary_pdf=pdf_bytes
-    )
+    result = archiver.archive(meeting=_meeting(), bundle=_bundle(), summary_pdf=pdf_bytes)
     d = result.archive_dir
     assert (d / "audio.mp3").read_bytes() == b"AUDIO"
     assert (d / "summary.pdf").read_bytes() == pdf_bytes
@@ -57,20 +55,14 @@ def test_archive_writes_all_artifacts(tmp_path: Path) -> None:
 
 def test_archive_returns_canonical_path(tmp_path: Path) -> None:
     archiver = Archiver(archive_root=tmp_path)
-    result = archiver.archive(
-        meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X"
-    )
-    expected = tmp_path / "archive" / "2026" / "04" / (
-        "2026-04-12_kickoff-marketing-q2_01HW"
-    )
+    result = archiver.archive(meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X")
+    expected = tmp_path / "archive" / "2026" / "04" / ("2026-04-12_kickoff-marketing-q2_01HW")
     assert result.archive_dir == expected
 
 
 def test_archive_returns_sha256s(tmp_path: Path) -> None:
     archiver = Archiver(archive_root=tmp_path)
-    result = archiver.archive(
-        meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X"
-    )
+    result = archiver.archive(meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X")
     assert set(result.sha256s.keys()) == {"audio", "summary", "transcript"}
     assert all(len(v) == 64 for v in result.sha256s.values())
 
@@ -85,44 +77,34 @@ def test_archive_is_atomic_no_partial_dir_on_failure(
 
     monkeypatch.setattr(archiver, "_write_metadata", boom)
     with pytest.raises(RuntimeError):
-        archiver.archive(
-            meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X"
-        )
+        archiver.archive(meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X")
     canonical = tmp_path / "archive" / "2026" / "04"
     assert not canonical.exists() or list(canonical.iterdir()) == []
 
 
 def test_verify_returns_true_for_complete_archive(tmp_path: Path) -> None:
     archiver = Archiver(archive_root=tmp_path)
-    result = archiver.archive(
-        meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X"
-    )
+    result = archiver.archive(meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X")
     assert archiver.verify(result.archive_dir) is True
 
 
 def test_verify_returns_false_when_file_missing(tmp_path: Path) -> None:
     archiver = Archiver(archive_root=tmp_path)
-    result = archiver.archive(
-        meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X"
-    )
+    result = archiver.archive(meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X")
     (result.archive_dir / "audio.mp3").unlink()
     assert archiver.verify(result.archive_dir) is False
 
 
 def test_verify_returns_false_when_file_zero_bytes(tmp_path: Path) -> None:
     archiver = Archiver(archive_root=tmp_path)
-    result = archiver.archive(
-        meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X"
-    )
+    result = archiver.archive(meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X")
     (result.archive_dir / "audio.mp3").write_bytes(b"")
     assert archiver.verify(result.archive_dir) is False
 
 
 def test_archive_skips_when_dir_exists_and_known(tmp_path: Path) -> None:
     archiver = Archiver(archive_root=tmp_path)
-    archiver.archive(
-        meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X"
-    )
+    archiver.archive(meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X")
     result2 = archiver.archive(
         meeting=_meeting(),
         bundle=_bundle(),
@@ -134,15 +116,11 @@ def test_archive_skips_when_dir_exists_and_known(tmp_path: Path) -> None:
 
 def test_archive_drift_raises_on_unknown_existing_dir(tmp_path: Path) -> None:
     archiver = Archiver(archive_root=tmp_path)
-    target = (
-        tmp_path / "archive" / "2026" / "04" / "2026-04-12_kickoff-marketing-q2_01HW"
-    )
+    target = tmp_path / "archive" / "2026" / "04" / "2026-04-12_kickoff-marketing-q2_01HW"
     target.mkdir(parents=True)
     (target / "stranger.txt").write_text("hello", encoding="utf-8")
     with pytest.raises(ArchiveDriftError):
-        archiver.archive(
-            meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X"
-        )
+        archiver.archive(meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X")
 
 
 def test_verify_raises_for_missing_dir(tmp_path: Path) -> None:

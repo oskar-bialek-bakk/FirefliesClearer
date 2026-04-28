@@ -20,20 +20,14 @@ def init(
     config: Path = typer.Option(  # noqa: B008
         None, "--config", help="Override config file path."
     ),
-    no_ping: bool = typer.Option(
-        False, "--no-ping", help="Skip API connectivity check."
-    ),
+    no_ping: bool = typer.Option(False, "--no-ping", help="Skip API connectivity check."),
 ) -> None:
     """Set up FirefliesClearer for the first time."""
     target = config or user_config_path()
     api_key = typer.prompt("Fireflies API key", hide_input=True)
     default_root = str(Path.home() / "Documents" / "firefliesclearer-archive")
-    root_str = typer.prompt(
-        "Archive root directory", default=default_root
-    )
-    older_than = typer.prompt(
-        "Auto-path: delete meetings older than N days", default=180, type=int
-    )
+    root_str = typer.prompt("Archive root directory", default=default_root)
+    older_than = typer.prompt("Auto-path: delete meetings older than N days", default=180, type=int)
     delete_failed = typer.confirm(
         "Auto-path: delete meetings with failed transcripts?", default=True
     )

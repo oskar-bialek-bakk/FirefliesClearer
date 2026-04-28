@@ -19,18 +19,14 @@ def purge(
         ..., "--selection", exists=True, help="Path to selection JSON."
     ),
     dry_run: bool = typer.Option(False, "--dry-run"),
-    yes: bool = typer.Option(
-        False, "--yes", help="Skip confirmation prompt."
-    ),
+    yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt."),
     config: Path = typer.Option(None, "--config"),  # noqa: B008
 ) -> None:
     """Delete every `selected:true` meeting in the selection (verifies archive first)."""
     deps = _common.build_deps(config_override=config)
     meetings = _load_selected(selection)
     if not meetings:
-        _common.console.print(
-            "[yellow]No selected meetings; nothing to do.[/yellow]"
-        )
+        _common.console.print("[yellow]No selected meetings; nothing to do.[/yellow]")
         return
     threshold = deps.config.run.delete_confirmation_threshold
     if not dry_run and len(meetings) > threshold and not yes:

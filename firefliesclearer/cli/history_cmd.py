@@ -13,9 +13,7 @@ from firefliesclearer.cli.app import app
 
 @app.command()
 def history(
-    month: str = typer.Option(
-        ..., "--month", help="Year-Month, e.g. 2026-04."
-    ),
+    month: str = typer.Option(..., "--month", help="Year-Month, e.g. 2026-04."),
     config: Path = typer.Option(None, "--config"),  # noqa: B008
 ) -> None:
     """List meetings deleted in the given month (audit)."""
@@ -24,9 +22,7 @@ def history(
         year_str, month_str = month.split("-")
         year, mnum = int(year_str), int(month_str)
     except ValueError as e:
-        raise typer.BadParameter(
-            f"Invalid --month '{month}'. Use YYYY-MM."
-        ) from e
+        raise typer.BadParameter(f"Invalid --month '{month}'. Use YYYY-MM.") from e
 
     records = deps.manifest.history(year=year, month=mnum)
     table = Table(title=f"Deleted in {year:04d}-{mnum:02d}")

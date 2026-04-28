@@ -52,9 +52,7 @@ def _selection(meetings: list[Meeting], path: Path) -> Path:
             for m in meetings
         ],
     }
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
 
 
@@ -113,9 +111,7 @@ def test_archive_then_purge_full_flow(patched, tmp_path: Path) -> None:
     assert manifest.get("01HW").state is MeetingState.ARCHIVED
     assert repo.deleted == []
 
-    result = runner.invoke(
-        app, ["purge", "--selection", str(selection), "--yes"]
-    )
+    result = runner.invoke(app, ["purge", "--selection", str(selection), "--yes"])
     assert result.exit_code == 0, result.stdout
     assert manifest.get("01HW").state is MeetingState.DELETED
     assert repo.deleted == ["01HW"]
@@ -124,9 +120,7 @@ def test_archive_then_purge_full_flow(patched, tmp_path: Path) -> None:
 def test_archive_dry_run_makes_no_changes(patched, tmp_path: Path) -> None:
     _, repo, manifest = patched
     selection = _selection([_meeting()], tmp_path / "sel.json")
-    result = runner.invoke(
-        app, ["archive", "--selection", str(selection), "--dry-run"]
-    )
+    result = runner.invoke(app, ["archive", "--selection", str(selection), "--dry-run"])
     assert result.exit_code == 0
     assert manifest.get("01HW") is None
     assert repo.deleted == []
@@ -137,12 +131,8 @@ def test_purge_skips_unselected(patched, tmp_path: Path) -> None:
     sel_path = _selection([_meeting()], tmp_path / "sel.json")
     payload = json.loads(sel_path.read_text(encoding="utf-8"))
     payload["meetings"][0]["selected"] = False
-    sel_path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    sel_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     runner.invoke(app, ["archive", "--selection", str(sel_path)])
-    result = runner.invoke(
-        app, ["purge", "--selection", str(sel_path), "--yes"]
-    )
+    result = runner.invoke(app, ["purge", "--selection", str(sel_path), "--yes"])
     assert result.exit_code == 0
     assert repo.deleted == []

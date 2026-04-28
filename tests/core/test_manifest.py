@@ -92,9 +92,7 @@ def test_illegal_transition_after_deleted_raises(manifest):
 
 def test_failed_states_can_return_to_pending(manifest):
     manifest.register(_meeting(), at=NOW)
-    manifest.transition(
-        "01HW", to=MeetingState.FAILED_DOWNLOAD, at=NOW, last_error="boom"
-    )
+    manifest.transition("01HW", to=MeetingState.FAILED_DOWNLOAD, at=NOW, last_error="boom")
     manifest.transition("01HW", to=MeetingState.PENDING, at=NOW)
     assert manifest.get("01HW").state is MeetingState.PENDING
 
@@ -114,18 +112,10 @@ def test_state_log_records_every_transition(manifest):
 def test_history_filters_by_month(manifest):
     manifest.register(_meeting("a"), at=datetime(2026, 3, 5, tzinfo=UTC))
     manifest.register(_meeting("b"), at=datetime(2026, 4, 5, tzinfo=UTC))
-    manifest.transition(
-        "a", to=MeetingState.ARCHIVED, at=datetime(2026, 3, 6, tzinfo=UTC)
-    )
-    manifest.transition(
-        "a", to=MeetingState.DELETED, at=datetime(2026, 3, 7, tzinfo=UTC)
-    )
-    manifest.transition(
-        "b", to=MeetingState.ARCHIVED, at=datetime(2026, 4, 6, tzinfo=UTC)
-    )
-    manifest.transition(
-        "b", to=MeetingState.DELETED, at=datetime(2026, 4, 7, tzinfo=UTC)
-    )
+    manifest.transition("a", to=MeetingState.ARCHIVED, at=datetime(2026, 3, 6, tzinfo=UTC))
+    manifest.transition("a", to=MeetingState.DELETED, at=datetime(2026, 3, 7, tzinfo=UTC))
+    manifest.transition("b", to=MeetingState.ARCHIVED, at=datetime(2026, 4, 6, tzinfo=UTC))
+    manifest.transition("b", to=MeetingState.DELETED, at=datetime(2026, 4, 7, tzinfo=UTC))
     march = manifest.history(year=2026, month=3)
     april = manifest.history(year=2026, month=4)
     assert {h.meeting_id for h in march} == {"a"}

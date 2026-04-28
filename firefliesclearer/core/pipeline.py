@@ -46,9 +46,7 @@ class Pipeline:
         self._renderer = renderer
         self._clock = clock
 
-    async def run(
-        self, meetings: Sequence[Meeting], *, mode: PipelineMode
-    ) -> RunReport:
+    async def run(self, meetings: Sequence[Meeting], *, mode: PipelineMode) -> RunReport:
         report = RunReport()
         for m in meetings:
             await self._process_one(m, mode=mode, report=report)

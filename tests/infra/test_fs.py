@@ -43,9 +43,7 @@ def test_canonical_meeting_dir_layout(tmp_path: Path) -> None:
         title="Kickoff Marketing Q2",
         meeting_date=date,
     )
-    assert path == tmp_path / "archive" / "2026" / "04" / (
-        "2026-04-12_kickoff-marketing-q2_01HW"
-    )
+    assert path == tmp_path / "archive" / "2026" / "04" / ("2026-04-12_kickoff-marketing-q2_01HW")
 
 
 def test_atomic_write_bytes_writes_file(tmp_path: Path) -> None:
@@ -71,6 +69,4 @@ def test_atomic_write_bytes_does_not_leave_tmp_on_success(tmp_path: Path) -> Non
 def test_sha256_file(tmp_path: Path) -> None:
     f = tmp_path / "x.bin"
     f.write_bytes(b"hello")
-    assert sha256_file(f) == (
-        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-    )
+    assert sha256_file(f) == ("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")

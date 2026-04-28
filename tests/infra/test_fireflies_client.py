@@ -32,9 +32,7 @@ def client():
 @respx.mock
 async def test_request_sends_bearer_auth(client: FirefliesClient) -> None:
     route = respx.post(API_URL).mock(
-        return_value=httpx.Response(
-            200, json={"data": {"transcripts": []}}
-        )
+        return_value=httpx.Response(200, json={"data": {"transcripts": []}})
     )
     async for _ in client.list_meetings(MeetingFilter()):
         pass
@@ -46,11 +44,7 @@ async def test_request_sends_bearer_auth(client: FirefliesClient) -> None:
 async def test_api_key_is_redacted_in_logs(
     client: FirefliesClient, caplog: pytest.LogCaptureFixture
 ) -> None:
-    respx.post(API_URL).mock(
-        return_value=httpx.Response(
-            200, json={"data": {"transcripts": []}}
-        )
-    )
+    respx.post(API_URL).mock(return_value=httpx.Response(200, json={"data": {"transcripts": []}}))
     caplog.set_level(logging.INFO, logger="firefliesclearer.infra.fireflies_client")
     async for _ in client.list_meetings(MeetingFilter()):
         pass
@@ -155,11 +149,7 @@ async def test_list_meetings_paginates(client: FirefliesClient) -> None:
 async def test_list_meetings_applies_older_than_filter(
     client: FirefliesClient,
 ) -> None:
-    respx.post(API_URL).mock(
-        return_value=httpx.Response(
-            200, json={"data": {"transcripts": []}}
-        )
-    )
+    respx.post(API_URL).mock(return_value=httpx.Response(200, json={"data": {"transcripts": []}}))
     cutoff = datetime(2026, 1, 1, tzinfo=UTC)
     async for _ in client.list_meetings(MeetingFilter(older_than=cutoff)):
         pass
@@ -203,24 +193,20 @@ async def test_delete_meeting_calls_mutation(
     client: FirefliesClient,
 ) -> None:
     route = respx.post(API_URL).mock(
-        return_value=httpx.Response(
-            200, json={"data": {"deleteTranscript": {"id": "x"}}}
-        )
+        return_value=httpx.Response(200, json={"data": {"deleteTranscript": {"id": "x"}}})
     )
     await client.delete_meeting("x")
     assert route.call_count == 1
     body = route.calls.last.request.content.decode()
     assert "deleteTranscript" in body
-    assert "\"x\"" in body
+    assert '"x"' in body
 
 
 @respx.mock
 async def test_delete_meeting_idempotent_on_404(
     client: FirefliesClient,
 ) -> None:
-    respx.post(API_URL).mock(
-        return_value=httpx.Response(404, json={"errors": ["not_found"]})
-    )
+    respx.post(API_URL).mock(return_value=httpx.Response(404, json={"errors": ["not_found"]}))
     await client.delete_meeting("missing")
 
 
@@ -231,9 +217,7 @@ async def test_delete_meeting_idempotent_on_404(
 )
 async def test_contract_list_one_real_meeting() -> None:
     """Hit live API and confirm schema fields parse into a Meeting."""
-    real_client = FirefliesClient(
-        api_key=os.environ["FIREFLIES_TEST_API_KEY"], page_size=1
-    )
+    real_client = FirefliesClient(api_key=os.environ["FIREFLIES_TEST_API_KEY"], page_size=1)
     count = 0
     async for m in real_client.list_meetings(MeetingFilter(limit=1)):
         assert m.meeting_id

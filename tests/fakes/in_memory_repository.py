@@ -14,9 +14,7 @@ class InMemoryMeetingRepository:
         meetings: list[Meeting] | None = None,
         artifacts: dict[str, ArtifactBundle] | None = None,
     ) -> None:
-        self._meetings: dict[str, Meeting] = {
-            m.meeting_id: m for m in (meetings or [])
-        }
+        self._meetings: dict[str, Meeting] = {m.meeting_id: m for m in (meetings or [])}
         self._artifacts: dict[str, ArtifactBundle] = artifacts or {}
         self.deleted: list[str] = []
         self.fail_fetch_for: set[str] = set()

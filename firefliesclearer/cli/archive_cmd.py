@@ -27,9 +27,7 @@ def archive(
     deps = _common.build_deps(config_override=config)
     meetings = _load_selected(selection)
     if not meetings:
-        _common.console.print(
-            "[yellow]No selected meetings; nothing to do.[/yellow]"
-        )
+        _common.console.print("[yellow]No selected meetings; nothing to do.[/yellow]")
         return
     mode = PipelineMode.DRY_RUN if dry_run else PipelineMode.ARCHIVE_ONLY
     report = asyncio.run(deps.pipeline.run(meetings, mode=mode))
