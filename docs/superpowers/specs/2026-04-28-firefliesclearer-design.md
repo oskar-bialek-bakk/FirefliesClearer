@@ -446,7 +446,7 @@ Per the user's global workflow rules: failing test first → minimal implementat
 
 ## 12. Open items / deferred to implementation
 
-- **PDF library final choice.** WeasyPrint vs. reportlab decided by an install test on a clean Windows machine during early implementation. The renderer port hides the choice from the rest of the system.
+- **PDF library final choice — RESOLVED.** reportlab was chosen (commit history reflects switch from WeasyPrint after install test failed on Windows due to missing GTK runtime). The renderer port (`SummaryRenderer`) hides the choice from the rest of the system; switching back is a one-file change.
 - **Exact Fireflies GraphQL field names.** The spec assumes the documented shape (meetings list with metadata; `summary` object with overview/action_items/keywords; audio URL; delete mutation). The contract test will catch any drift from current API.
 - **OR-of-AND rule composition.** Out of v1; revisit if user stories demand it.
 - **Web UI.** Out of v1 by design. The application/domain layers are built so the UI is a second adapter, not a rewrite.
