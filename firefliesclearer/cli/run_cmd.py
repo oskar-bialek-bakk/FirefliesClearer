@@ -22,7 +22,7 @@ from firefliesclearer.ports.meeting_repository import MeetingFilter
 def run(
     apply: bool = typer.Option(False, "--apply", help="Actually mutate (default: dry-run)."),
     yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt above threshold."),
-    config: Path = typer.Option(None, "--config"),  # noqa: B008
+    config: Path | None = typer.Option(None, "--config"),  # noqa: B008
 ) -> None:
     """Apply hard rules from config (age + no-transcript)."""
     deps = _common.build_deps(config_override=config)

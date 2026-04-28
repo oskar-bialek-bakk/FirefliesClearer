@@ -31,26 +31,26 @@ from firefliesclearer.ports.meeting_repository import MeetingFilter
 
 @app.command()
 def scan(
-    older_than_days: int = typer.Option(
+    older_than_days: int | None = typer.Option(
         None, "--older-than-days", help="Match meetings older than N days."
     ),
-    duration_below: float = typer.Option(
+    duration_below: float | None = typer.Option(
         None, "--duration-below", help="Match duration < N minutes."
     ),
-    title_contains: list[str] = typer.Option(  # noqa: B008
+    title_contains: list[str] | None = typer.Option(  # noqa: B008
         None, "--title-contains", help="Substring match on title."
     ),
-    title_regex: str = typer.Option(None, "--title-regex", help="Regex match on title."),
-    host_email: list[str] = typer.Option(  # noqa: B008
+    title_regex: str | None = typer.Option(None, "--title-regex", help="Regex match on title."),
+    host_email: list[str] | None = typer.Option(  # noqa: B008
         None, "--host-email", help="Match host email (repeatable)."
     ),
-    participants_below: int = typer.Option(
+    participants_below: int | None = typer.Option(
         None, "--participants-below", help="Match if participants < N."
     ),
-    has_tag: list[str] = typer.Option(  # noqa: B008
+    has_tag: list[str] | None = typer.Option(  # noqa: B008
         None, "--has-tag", help="Match if any of these tags present."
     ),
-    config: Path = typer.Option(None, "--config"),  # noqa: B008
+    config: Path | None = typer.Option(None, "--config"),  # noqa: B008
 ) -> None:
     """List meetings matching the given rules; writes a selection file."""
     deps = _common.build_deps(config_override=config)

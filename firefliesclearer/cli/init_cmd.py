@@ -17,7 +17,7 @@ from firefliesclearer.infra.config import (
 
 @app.command()
 def init(
-    config: Path = typer.Option(  # noqa: B008
+    config: Path | None = typer.Option(  # noqa: B008
         None, "--config", help="Override config file path."
     ),
     no_ping: bool = typer.Option(False, "--no-ping", help="Skip API connectivity check."),

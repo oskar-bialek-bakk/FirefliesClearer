@@ -55,7 +55,11 @@ class Archiver:
         )
         if target.exists():
             if allow_known and self.verify(target):
-                return ArchiveResult(archive_dir=target, sha256s={}, skipped=True)
+                return ArchiveResult(
+                    archive_dir=target,
+                    sha256s=self._hash_existing(target),
+                    skipped=True,
+                )
             raise ArchiveDriftError(f"Canonical dir already exists: {target}")
 
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -83,6 +87,15 @@ class Archiver:
             if not f.exists() or f.stat().st_size == 0:
                 return False
         return True
+
+    @staticmethod
+    def _hash_existing(archive_dir: Path) -> dict[str, str]:
+        """Compute sha256s for an already-on-disk archive (the resume path)."""
+        return {
+            "audio": sha256_file(archive_dir / "audio.mp3"),
+            "summary": sha256_file(archive_dir / "summary.pdf"),
+            "transcript": sha256_file(archive_dir / "transcript.md"),
+        }
 
     def _write_audio(self, tmp: Path, bundle: ArtifactBundle) -> None:
         if bundle.audio_bytes is None:

@@ -21,7 +21,7 @@ def archive(
         ..., "--selection", exists=True, help="Path to selection JSON."
     ),
     dry_run: bool = typer.Option(False, "--dry-run"),
-    config: Path = typer.Option(None, "--config"),  # noqa: B008
+    config: Path | None = typer.Option(None, "--config"),  # noqa: B008
 ) -> None:
     """Archive every `selected:true` meeting in the selection file."""
     deps = _common.build_deps(config_override=config)

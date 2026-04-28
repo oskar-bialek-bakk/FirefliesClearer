@@ -13,7 +13,7 @@ from firefliesclearer.cli.app import app
 
 @app.command()
 def status(
-    config: Path = typer.Option(None, "--config"),  # noqa: B008
+    config: Path | None = typer.Option(None, "--config"),  # noqa: B008
 ) -> None:
     """Show counts per state and recent failures."""
     deps = _common.build_deps(config_override=config)

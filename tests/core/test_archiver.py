@@ -104,7 +104,7 @@ def test_verify_returns_false_when_file_zero_bytes(tmp_path: Path) -> None:
 
 def test_archive_skips_when_dir_exists_and_known(tmp_path: Path) -> None:
     archiver = Archiver(archive_root=tmp_path)
-    archiver.archive(meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X")
+    first = archiver.archive(meeting=_meeting(), bundle=_bundle(), summary_pdf=b"%PDF-X")
     result2 = archiver.archive(
         meeting=_meeting(),
         bundle=_bundle(),
@@ -112,6 +112,10 @@ def test_archive_skips_when_dir_exists_and_known(tmp_path: Path) -> None:
         allow_known=True,
     )
     assert result2.skipped is True
+    # Skipped path must still surface checksums so the manifest gets a full audit
+    # trail when resuming after a crash.
+    assert set(result2.sha256s.keys()) == {"audio", "summary", "transcript"}
+    assert result2.sha256s == first.sha256s
 
 
 def test_archive_drift_raises_on_unknown_existing_dir(tmp_path: Path) -> None:

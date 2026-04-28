@@ -20,7 +20,7 @@ def purge(
     ),
     dry_run: bool = typer.Option(False, "--dry-run"),
     yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt."),
-    config: Path = typer.Option(None, "--config"),  # noqa: B008
+    config: Path | None = typer.Option(None, "--config"),  # noqa: B008
 ) -> None:
     """Delete every `selected:true` meeting in the selection (verifies archive first)."""
     deps = _common.build_deps(config_override=config)

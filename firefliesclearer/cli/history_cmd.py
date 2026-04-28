@@ -14,7 +14,7 @@ from firefliesclearer.cli.app import app
 @app.command()
 def history(
     month: str = typer.Option(..., "--month", help="Year-Month, e.g. 2026-04."),
-    config: Path = typer.Option(None, "--config"),  # noqa: B008
+    config: Path | None = typer.Option(None, "--config"),  # noqa: B008
 ) -> None:
     """List meetings deleted in the given month (audit)."""
     deps = _common.build_deps(config_override=config)

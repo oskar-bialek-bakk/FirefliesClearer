@@ -78,7 +78,7 @@ delete_confirmation_threshold = 10
 
 ## Safety guarantees
 
-- Never deletes a meeting unless its archive is verified on disk (existence + non-zero + checksums).
+- Never deletes a meeting unless its archive is verified on disk (existence + non-zero size for each expected file). The sha256 of every file is recorded in the manifest so the audit trail can detect tampering or drift after the fact.
 - Per-meeting transactions: one failure never aborts a run.
 - API key is redacted in all logs.
 - `run` defaults to dry-run; `--apply` required for any mutation.

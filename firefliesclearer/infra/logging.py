@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -42,11 +43,24 @@ _LOG_RECORD_FIELDS = frozenset(
 )
 
 
+def _redact(value: Any) -> Any:
+    """Recursively redact bearer tokens and ff_ API keys in any value."""
+    if isinstance(value, str):
+        v = _BEARER_PATTERN.sub("Bearer [REDACTED]", value)
+        v = _API_KEY_PATTERN.sub("[REDACTED]", v)
+        return v
+    if isinstance(value, dict):
+        return {k: _redact(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_redact(v) for v in value)
+    return value
+
+
 class JsonLineFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        msg = record.getMessage()
-        msg = _BEARER_PATTERN.sub("Bearer [REDACTED]", msg)
-        msg = _API_KEY_PATTERN.sub("[REDACTED]", msg)
+        msg = _redact(record.getMessage())
         out: dict[str, Any] = {
             "ts": datetime.now(tz=UTC).isoformat(),
             "level": record.levelname,
@@ -56,11 +70,12 @@ class JsonLineFormatter(logging.Formatter):
         for key, value in record.__dict__.items():
             if key in _LOG_RECORD_FIELDS:
                 continue
+            redacted = _redact(value)
             try:
-                json.dumps(value)
+                json.dumps(redacted)
             except (TypeError, ValueError):
-                value = str(value)
-            out[key] = value
+                redacted = str(redacted)
+            out[key] = redacted
         return json.dumps(out, ensure_ascii=False)
 
 
@@ -71,5 +86,11 @@ def setup_logging(*, log_dir: Path, level: str = "INFO") -> None:
     handler = TimedRotatingFileHandler(log_file, when="midnight", backupCount=30, encoding="utf-8")
     handler.setFormatter(JsonLineFormatter())
     root = logging.getLogger()
-    root.handlers = [handler]
+    # Close existing handlers so repeated setup_logging() calls (tests, REPLs,
+    # embedding) don't leak file descriptors or rotation threads.
+    for existing in list(root.handlers):
+        root.removeHandler(existing)
+        with contextlib.suppress(Exception):
+            existing.close()
+    root.addHandler(handler)
     root.setLevel(level)
