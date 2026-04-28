@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import UTC, datetime
@@ -153,9 +154,12 @@ async def test_list_meetings_applies_older_than_filter(
     cutoff = datetime(2026, 1, 1, tzinfo=UTC)
     async for _ in client.list_meetings(MeetingFilter(older_than=cutoff)):
         pass
-    body = respx.calls.last.request.content.decode()
-    # Fireflies uses camelCase for query arguments (`toDate`).
-    assert "toDate" in body
+    # Decode the JSON body and assert the variable was actually sent — checking
+    # raw substring would also match the `toDate` literal in the GraphQL query
+    # text, which is not a guarantee that the cutoff was bound.
+    body = json.loads(respx.calls.last.request.content)
+    assert "variables" in body
+    assert body["variables"].get("toDate") == cutoff.isoformat()
 
 
 @respx.mock
@@ -208,6 +212,79 @@ async def test_delete_meeting_idempotent_on_404(
 ) -> None:
     respx.post(API_URL).mock(return_value=httpx.Response(404, json={"errors": ["not_found"]}))
     await client.delete_meeting("missing")
+
+
+@respx.mock
+async def test_fetch_artifacts_normalizes_action_items_string(
+    client: FirefliesClient,
+) -> None:
+    """Fireflies returns Summary.action_items as a String (often newline-separated
+    or markdown bullets). The renderer expects a list, so the client must split."""
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "transcript": {
+                        "id": "x",
+                        "title": "Sync",
+                        "date": 1714300000000,
+                        "duration": 30.0,
+                        "host_email": "u@x.com",
+                        "participants": [],
+                        "transcript_url": None,
+                        "audio_url": None,
+                        "summary": {
+                            "overview": "Did things.",
+                            "action_items": "- Ship feature\n* Update docs\n  Send recap",
+                            "keywords": ["ship", "docs"],
+                        },
+                        "sentences": [],
+                    }
+                }
+            },
+        )
+    )
+    bundle = await client.fetch_artifacts("x")
+    assert bundle.summary_payload is not None
+    assert bundle.summary_payload["action_items"] == [
+        "Ship feature",
+        "Update docs",
+        "Send recap",
+    ]
+    assert bundle.summary_payload["overview"] == "Did things."
+    assert bundle.summary_payload["keywords"] == ["ship", "docs"]
+
+
+@respx.mock
+async def test_fetch_artifacts_handles_missing_action_items(
+    client: FirefliesClient,
+) -> None:
+    """When Fireflies omits action_items entirely, client emits an empty list."""
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "transcript": {
+                        "id": "x",
+                        "title": "Sync",
+                        "date": 1714300000000,
+                        "duration": 30.0,
+                        "host_email": "u@x.com",
+                        "participants": [],
+                        "transcript_url": None,
+                        "audio_url": None,
+                        "summary": {"overview": "ov"},
+                        "sentences": [],
+                    }
+                }
+            },
+        )
+    )
+    bundle = await client.fetch_artifacts("x")
+    assert bundle.summary_payload is not None
+    assert bundle.summary_payload["action_items"] == []
 
 
 @pytest.mark.contract

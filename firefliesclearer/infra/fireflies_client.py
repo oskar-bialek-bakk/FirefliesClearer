@@ -224,7 +224,7 @@ def _normalize_summary(summary: dict[str, Any]) -> dict[str, Any]:
 def _parse_date(raw_date: Any) -> datetime:
     """Fireflies returns `date` as a Float (Unix epoch ms). Be permissive
     in case a deployment ever returns an ISO string."""
-    if isinstance(raw_date, int | float):
+    if isinstance(raw_date, (int, float)):
         # Heuristic: epoch ms if value is large, otherwise epoch seconds.
         seconds = raw_date / 1000.0 if raw_date > 1e12 else float(raw_date)
         return datetime.fromtimestamp(seconds, tz=UTC)
