@@ -55,6 +55,14 @@ query TranscriptDetail($id: String!) {
 }
 """
 
+USER_QUERY = """
+query {
+  user {
+    email
+  }
+}
+"""
+
 
 class FirefliesError(Exception):
     pass
@@ -135,6 +143,27 @@ class FirefliesClient:
                 if "404" in str(e):
                     return  # idempotent
                 raise
+
+    async def ping_user(self) -> str:
+        """Return the email of the authenticated user.
+
+        Raises:
+            PermissionError: if the API returns 401 or 403.
+            FirefliesError: for other HTTP/GraphQL errors.
+        """
+        async with self._http() as client:
+            try:
+                payload = await self._request(client, USER_QUERY, {}, op="ping_user")
+            except FirefliesError as e:
+                msg = str(e)
+                if msg.startswith("401") or msg.startswith("403"):
+                    raise PermissionError(f"Invalid API key: {msg}") from e
+                raise
+            user = payload.get("data", {}).get("user") or {}
+            email: str = user.get("email") or ""
+            if not email:
+                raise FirefliesError("ping_user: no email in response")
+            return email
 
     def _http(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(

@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import typer
 
+from firefliesclearer.application.setup_service import InvalidApiKey, SetupService, SetupValues
 from firefliesclearer.cli._common import console
 from firefliesclearer.cli.app import app
-from firefliesclearer.infra.config import (
-    AppConfig,
-    user_config_path,
-    write_config,
-)
+from firefliesclearer.infra.config import user_config_path
+from firefliesclearer.infra.fireflies_client import FirefliesClient
+
+
+def _make_fireflies_factory(
+    endpoint: str = "https://api.fireflies.ai/graphql",
+) -> object:
+    """Return a repo_factory that constructs a real FirefliesClient per key."""
+
+    def factory(api_key: str) -> FirefliesClient:
+        return FirefliesClient(api_key=api_key, endpoint=endpoint)
+
+    return factory
 
 
 @app.command()
@@ -28,26 +38,29 @@ def init(
     default_root = str(Path.home() / "Documents" / "firefliesclearer-archive")
     root_str = typer.prompt("Archive root directory", default=default_root)
     older_than = typer.prompt("Auto-path: delete meetings older than N days", default=180, type=int)
-    delete_failed = typer.confirm(
+    # delete_failed_transcripts is currently always True; v1 prompt is vestigial — Phase 3 removes init entirely.
+    delete_failed = typer.confirm(  # noqa: F841
         "Auto-path: delete meetings with failed transcripts?", default=True
     )
-    cfg = AppConfig.model_validate(
-        {
-            "fireflies": {"api_key": api_key},
-            "archive": {
-                "root_dir": str(Path(root_str)),
-                "summary_format": "pdf",
-            },
-            "rules": {
-                "auto": {
-                    "older_than_days": older_than,
-                    "delete_failed_transcripts": delete_failed,
-                }
-            },
-        }
+
+    values = SetupValues(
+        api_key=api_key,
+        archive_root=Path(root_str),
+        default_age_days=older_than,  # v1's prompt becomes default_age_days
+        concurrency=3,  # v1 didn't ask; default
     )
-    write_config(cfg, target)
+
+    svc = SetupService(repo_factory=_make_fireflies_factory())  # type: ignore[arg-type]
+
+    if not no_ping:
+        try:
+            email = asyncio.run(svc.verify_api_key(api_key))
+            console.print(f"[green]API key verified:[/green] {email}")
+        except InvalidApiKey as exc:
+            console.print(f"[red]Invalid API key:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    else:
+        console.print("[dim]Skipping connectivity check (--no-ping).[/dim]")
+
+    svc.write_config(target, values)
     console.print(f"[green]Config written:[/green] {target}")
-    if no_ping:
-        return
-    console.print("[dim]Skipping connectivity check (--no-ping).[/dim]")
