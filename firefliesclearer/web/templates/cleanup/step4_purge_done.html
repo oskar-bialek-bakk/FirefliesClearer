@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Cleanup Step 4 — Done — FirefliesClearer{% endblock %}
+{% block page %}
+{% include "cleanup/_stepper.html" %}
+
+<section class="cleanup-step cleanup-step-purge cleanup-step-purge-done"
+         data-operation-id="{{ op_id }}">
+  <h1>Step 4 — Purge complete</h1>
+
+  <p class="purge-summary">
+    {% if failed_count == 0 %}
+      <strong>{{ deleted_count }} deleted from Fireflies.</strong>
+    {% else %}
+      <strong>{{ deleted_count }} deleted</strong>,
+      <strong>{{ failed_count }} failed</strong>.
+    {% endif %}
+  </p>
+
+  {% if meetings %}
+    <ul class="purge-meeting-list">
+      {% for meeting in meetings %}
+        {% include "cleanup/_purge_meeting_row.html" %}
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  <div class="form-actions purge-done-actions">
+    <form method="post" action="/cleanup/purge/finalize" class="purge-finalize-form"
+          style="display: inline;">
+      <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+      <button type="submit" class="purge-done-btn continue-btn">Done</button>
+    </form>
+    <form method="post" action="/cleanup/purge/restart" class="purge-restart-form"
+          style="display: inline;">
+      <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+      <button type="submit" class="purge-restart-btn">Cleanup another batch</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

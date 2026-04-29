@@ -873,7 +873,13 @@ async def cancel_operation(request: Request, op_id: str) -> Response:
 
 @router.post("/cleanup/archive/continue")
 async def step3_continue(request: Request) -> Response:
-    """Confirm transition to the Purge step. Requires a terminal op + ≥1 success."""
+    """Confirm transition to the Purge step. Requires a terminal op + ≥1 success.
+
+    Filters ``wizard.selected_ids`` down to only the meetings whose archive
+    succeeded (per spec § 5.3 "user can continue to Purge with just the
+    successes"). The archive op's replay buffer is the source of truth — any
+    id with a ``meeting_state`` event of ``sub_state="done"`` is a success.
+    """
     state = wizard_session.get_state(_store(request), _sid(request))
     op_id = state.get("operation_id")
     if not op_id:
@@ -884,11 +890,280 @@ async def step3_continue(request: Request) -> Response:
         return _redirect("/cleanup/archive")
     if op.state == "running":
         return _redirect("/cleanup/archive/in-progress")
-    _rows, archived, _failed = _replay_meeting_states(op)
+    rows, archived, _failed = _replay_meeting_states(op)
     if archived == 0:
         return _redirect("/cleanup/archive/done")
-    _set_wizard(request, step="purge", operation_id=None)
+    success_ids = [
+        str(row["id"]) for row in rows if row.get("sub_state") == "done" and row.get("id")
+    ]
+    if not success_ids:
+        return _redirect("/cleanup/archive/done")
+    _set_wizard(request, step="purge", selected_ids=success_ids, operation_id=None)
     return _redirect("/cleanup/purge")
+
+
+# ---------------------------------------------------------------------------
+# Step 4 — Purge (Task 5.5)
+# ---------------------------------------------------------------------------
+
+
+def _make_purge_runner(
+    *, deps: SimpleNamespace, meetings: list[Meeting]
+) -> Callable[[_RunnerContext], Awaitable[None]]:
+    """Build the runner closure handed to ``OperationRegistry.start`` for purge.
+
+    Pre-emits one ``meeting_state="verifying"`` event per meeting before the
+    iteration step, then emits one ``done`` / ``failed`` event per outcome
+    yielded by ``PurgeService.purge_meetings``. Cancellation is checked
+    between yields — the in-flight meeting is allowed to complete.
+    """
+    from firefliesclearer.application.purge_service import PurgeService
+
+    titles = {m.meeting_id: m.title for m in meetings}
+
+    async def purge_runner(ctx: _RunnerContext) -> None:
+        if not meetings:
+            return
+        svc = PurgeService(pipeline=deps.pipeline, manifest=deps.manifest)
+        for meeting in meetings:
+            if ctx.cancel_event.is_set():
+                break
+            ctx.emit(
+                Event(
+                    seq=ctx.next_seq(),
+                    kind="meeting_state",
+                    data={
+                        "id": meeting.meeting_id,
+                        "title": meeting.title,
+                        "sub_state": "verifying",
+                    },
+                )
+            )
+            async for outcome in svc.purge_meetings([meeting]):
+                sub_state = "done" if outcome.state.value == "deleted" else "failed"
+                ctx.emit(
+                    Event(
+                        seq=ctx.next_seq(),
+                        kind="meeting_state",
+                        data={
+                            "id": outcome.meeting_id,
+                            "title": outcome.title or titles.get(outcome.meeting_id, ""),
+                            "sub_state": sub_state,
+                            "error": outcome.error,
+                        },
+                    )
+                )
+
+    return purge_runner
+
+
+def _replay_purge_states(op: Operation) -> tuple[list[dict[str, object]], int, int]:
+    """Walk ``op.replay_buffer()`` and produce per-meeting purge state rows.
+
+    Returns ``(rows, deleted_count, failed_count)`` where ``rows`` preserves
+    the operation's slot ordering. Mirrors ``_replay_meeting_states`` but for
+    the purge sub-state vocabulary (``verifying / deleting / done / failed``).
+    """
+    state_by_id: dict[str, dict[str, object]] = {}
+    for slot in op.meetings:
+        state_by_id[slot.meeting_id] = {
+            "id": slot.meeting_id,
+            "title": slot.title,
+            "sub_state": slot.sub_state,
+            "error": slot.error,
+        }
+    for evt in op.replay_buffer():
+        if evt.kind != "meeting_state":
+            continue
+        mid = str(evt.data.get("id", ""))
+        if not mid:
+            continue
+        row = state_by_id.setdefault(
+            mid,
+            {"id": mid, "title": "", "sub_state": "queued", "error": None},
+        )
+        row["title"] = evt.data.get("title") or row.get("title") or ""
+        row["sub_state"] = evt.data.get("sub_state") or row.get("sub_state") or "queued"
+        if "error" in evt.data:
+            row["error"] = evt.data.get("error")
+    rows = list(state_by_id.values())
+    deleted = sum(1 for r in rows if r["sub_state"] == "done")
+    failed = sum(1 for r in rows if r["sub_state"] == "failed")
+    return rows, deleted, failed
+
+
+@router.get("/cleanup/purge")
+async def step4_preflight(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Render the purge preflight: count + numbered list + typed-count gate."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    selected_ids = list(state.get("selected_ids") or [])
+    if not selected_ids:
+        return _redirect("/cleanup/archive/done")
+
+    meetings = await _selected_meetings(deps, selected_ids)
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step4_purge_preflight.html",
+        {
+            "step": "purge",
+            "count": len(meetings),
+            "meetings": meetings,
+            "error": None,
+        },
+    )
+
+
+@router.post("/cleanup/purge/start")
+async def step4_start(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Kick off the purge operation; redirect to the in-progress view.
+
+    Server-side double-checks the typed-count confirmation: the form value
+    must equal the selection size as a string-int comparison. Mismatch or
+    absence re-renders the preflight with status 422 and a banner.
+    """
+    state = wizard_session.get_state(_store(request), _sid(request))
+    selected_ids = list(state.get("selected_ids") or [])
+    if not selected_ids:
+        return _redirect("/cleanup/archive/done")
+
+    meetings = await _selected_meetings(deps, selected_ids)
+    count = len(meetings)
+
+    form = await request.form()
+    confirmed_raw = form.get("confirmed_count")
+    confirmed = str(confirmed_raw).strip() if confirmed_raw is not None else ""
+    if confirmed != str(count):
+        return _templates(request).TemplateResponse(
+            request,
+            "cleanup/step4_purge_preflight.html",
+            {
+                "step": "purge",
+                "count": count,
+                "meetings": meetings,
+                "error": "Type the count to confirm.",
+            },
+            status_code=422,
+        )
+
+    runner = _make_purge_runner(deps=deps, meetings=meetings)
+    try:
+        op = await _registry(request).start(
+            kind=OperationKind.PURGE,
+            meeting_ids=[m.meeting_id for m in meetings],
+            runner=runner,
+        )
+    except SameKindAlreadyRunning:
+        return _templates(request).TemplateResponse(
+            request,
+            "cleanup/step4_purge_preflight.html",
+            {
+                "step": "purge",
+                "count": count,
+                "meetings": meetings,
+                "error": "Another purge operation is already running. Wait for it to complete.",
+            },
+            status_code=409,
+        )
+
+    _set_wizard(request, step="purge", operation_id=op.id)
+    return _redirect("/cleanup/purge/in-progress")
+
+
+@router.get("/cleanup/purge/in-progress")
+async def step4_in_progress(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Render the live purge progress view; redirect when missing/terminal."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    op_id = state.get("operation_id")
+    if not op_id:
+        return _redirect("/cleanup/purge")
+    try:
+        op = _registry(request).get(op_id)
+    except KeyError:
+        return _redirect("/cleanup/purge")
+    if op.state in {"succeeded", "failed", "cancelled"}:
+        return _redirect("/cleanup/purge/done")
+
+    rows, completed_done, completed_failed = _replay_purge_states(op)
+    completed = completed_done + completed_failed
+    total = max(op.total, len(rows))
+    progress_pct = round(100.0 * completed / total) if total else 0
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step4_purge_in_progress.html",
+        {
+            "step": "purge",
+            "op_id": op.id,
+            "meetings": rows,
+            "total": total,
+            "completed": completed,
+            "progress_pct": progress_pct,
+        },
+    )
+
+
+@router.get("/cleanup/purge/done")
+async def step4_done(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Render the post-purge summary; redirect when running or missing."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    op_id = state.get("operation_id")
+    if not op_id:
+        return _redirect("/cleanup/purge")
+    try:
+        op = _registry(request).get(op_id)
+    except KeyError:
+        return _redirect("/cleanup/purge")
+    if op.state == "running":
+        return _redirect("/cleanup/purge/in-progress")
+
+    rows, deleted, failed = _replay_purge_states(op)
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step4_purge_done.html",
+        {
+            "step": "purge",
+            "op_id": op.id,
+            "meetings": rows,
+            "deleted_count": deleted,
+            "failed_count": failed,
+        },
+    )
+
+
+@router.post("/cleanup/purge/finalize")
+async def step4_finalize(request: Request) -> Response:
+    """Clear the wizard slice and redirect to the dashboard."""
+    store = _store(request)
+    sid = _sid(request)
+    # Clear the wizard slice entirely. ``set_state`` shallow-merges, so we
+    # explicitly write an empty dict to drop the slice keys.
+    store.update(sid, {"wizard": {}})
+    return _redirect("/")
+
+
+@router.post("/cleanup/purge/restart")
+async def step4_restart(request: Request) -> Response:
+    """Reset the wizard back to Step 1, preserving filters as a starting point."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    new_state = wizard_session.WizardState(
+        step="filter",
+        filters=state.get("filters", {}),
+        selected_ids=[],
+        operation_id=None,
+    )
+    wizard_session.set_state(_store(request), _sid(request), new_state)
+    return _redirect("/cleanup")
 
 
 # Re-export ScanFilters so future wizard steps can import from one place.
