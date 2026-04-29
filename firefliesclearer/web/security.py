@@ -24,6 +24,7 @@ upgrade.
 from __future__ import annotations
 
 import secrets
+import urllib.parse
 from dataclasses import dataclass
 
 from fastapi import FastAPI, Request, Response
@@ -92,8 +93,16 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 self._serializer.loads(cookie)
             except BadData:
                 return Response(status_code=403, content="CSRF cookie invalid")
-            form = await request.form()
-            if form.get(CSRF_FIELD) != cookie:
+            # Use request.body() rather than request.form() so the body bytes
+            # are cached in request._body.  Downstream route handlers can then
+            # re-parse via request.form() or Form(...) parameters; calling
+            # request.form() here would consume the stream, leaving the body
+            # empty for any handler that also reads form fields.
+            body = await request.body()
+            parsed = urllib.parse.parse_qs(body.decode(errors="replace"), keep_blank_values=True)
+            csrf_values = parsed.get(CSRF_FIELD)
+            csrf_field_value: str | None = csrf_values[0] if csrf_values else None
+            if csrf_field_value != cookie:
                 return Response(status_code=403, content="CSRF mismatch")
 
         response = await call_next(request)

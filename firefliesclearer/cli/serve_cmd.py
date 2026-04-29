@@ -14,6 +14,8 @@ import uvicorn
 from firefliesclearer.cli import _common
 from firefliesclearer.cli._common import console
 from firefliesclearer.cli.app import app
+from firefliesclearer.infra.config import user_config_path
+from firefliesclearer.infra.fireflies_client import FirefliesClient
 from firefliesclearer.web.app import create_app
 from firefliesclearer.web.lockfile import AnotherInstanceRunningError, LockFile
 
@@ -35,8 +37,10 @@ def serve(
         )
         raise typer.Exit(code=2)
 
-    deps = _common.build_deps(config_override=config)
+    # Resolve config path (override or default platform-specific user_config_path).
+    config_path = config or user_config_path()
 
+    # Always pass config_path + repo_factory; deps are loaded only if config exists.
     chosen_port = port or _pick_free_port(host)
     session_token = secrets.token_urlsafe(24)
     url = f"http://{host}:{chosen_port}/?token={session_token}"
@@ -44,10 +48,22 @@ def serve(
     fastapi_app = create_app(
         session_token=session_token,
         csrf_secret=secrets.token_urlsafe(32),
+        config_path=config_path,
+        repo_factory=lambda key: FirefliesClient(api_key=key),
     )
-    fastapi_app.state.deps = deps  # for routes that need config/services
 
-    lockfile = LockFile(deps.config.archive.root_dir / ".serve.lock")
+    # If config exists, load deps now and attach. Otherwise the wizard runs and
+    # the user lands on / once config is written; deps will be needed by Phase 4+
+    # routes (not this task).
+    if config_path.exists():
+        deps = _common.build_deps(config_override=config_path)
+        fastapi_app.state.deps = deps
+    else:
+        fastapi_app.state.deps = None
+
+    # Lockfile lives next to the config — independent of whether deps loaded.
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    lockfile = LockFile(config_path.parent / ".serve.lock")
     try:
         with lockfile.acquire(url=url.split("?", 1)[0]):  # do not leak token to lockfile
             console.print(f"[green]→ FirefliesClearer running at[/green] {url}")
