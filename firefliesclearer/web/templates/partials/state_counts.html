@@ -1,13 +1,6 @@
 {# State count cards: Archived / Pending / Failed / Deleted. #}
 {% set archived_count = summary.counts_by_state.get(MeetingState.ARCHIVED, 0) %}
 {% set pending_count = summary.counts_by_state.get(MeetingState.PENDING, 0) %}
-{% set failed_count = (
-  summary.counts_by_state.get(MeetingState.FAILED_FETCH, 0)
-  + summary.counts_by_state.get(MeetingState.FAILED_DOWNLOAD, 0)
-  + summary.counts_by_state.get(MeetingState.FAILED_RENDER, 0)
-  + summary.counts_by_state.get(MeetingState.FAILED_VERIFY, 0)
-  + summary.counts_by_state.get(MeetingState.DELETED_FAILED, 0)
-) %}
 {% set deleted_count = summary.counts_by_state.get(MeetingState.DELETED, 0) %}
 <section class="state-counts">
   <div class="state-count-card" data-state="archived">
@@ -20,7 +13,7 @@
   </div>
   <div class="state-count-card" data-state="failed">
     <div class="state-count-card__label">Failed</div>
-    <div class="state-count-card__value">{{ failed_count }}</div>
+    <div class="state-count-card__value">{{ summary.failed_count }}</div>
   </div>
   <div class="state-count-card" data-state="deleted">
     <div class="state-count-card__label">Deleted</div>

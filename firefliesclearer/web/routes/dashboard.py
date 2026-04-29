@@ -66,5 +66,5 @@ async def sidebar_status(
     return _templates(request).TemplateResponse(
         request,
         "partials/sidebar_status.html",
-        {"summary": summary, "MeetingState": MeetingState},
+        {"summary": summary},
     )

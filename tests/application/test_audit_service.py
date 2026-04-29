@@ -134,6 +134,31 @@ def test_summary_collects_failed_ids_and_last_errors(tmp_path: Path) -> None:
     assert summary.last_errors["b"] == "download err"
 
 
+def test_summary_failed_count_sums_all_failed_states(tmp_path: Path) -> None:
+    svc, manifest = _build(tmp_path)
+    manifest.register(_meeting("a"), at=NOW)
+    manifest.register(_meeting("b"), at=NOW)
+    manifest.transition("a", to=MeetingState.FAILED_FETCH, at=NOW, last_error="x")
+    manifest.transition("b", to=MeetingState.FAILED_DOWNLOAD, at=NOW, last_error="y")
+
+    summary = svc.summary()
+    expected = (
+        summary.counts_by_state.get(MeetingState.FAILED_FETCH, 0)
+        + summary.counts_by_state.get(MeetingState.FAILED_DOWNLOAD, 0)
+        + summary.counts_by_state.get(MeetingState.FAILED_RENDER, 0)
+        + summary.counts_by_state.get(MeetingState.FAILED_VERIFY, 0)
+        + summary.counts_by_state.get(MeetingState.DELETED_FAILED, 0)
+    )
+    assert summary.failed_count == expected
+    assert summary.failed_count == 2
+
+
+def test_summary_failed_count_is_zero_for_empty_manifest(tmp_path: Path) -> None:
+    svc, _ = _build(tmp_path)
+    summary = svc.summary()
+    assert summary.failed_count == 0
+
+
 def test_summary_excludes_meetings_with_no_last_error_from_last_errors(tmp_path: Path) -> None:
     svc, manifest = _build(tmp_path)
     manifest.register(_meeting("a"), at=NOW)

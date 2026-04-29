@@ -30,6 +30,11 @@ class StateSummary:
     failed_meeting_ids: tuple[str, ...]
     last_errors: Mapping[str, str]
 
+    @property
+    def failed_count(self) -> int:
+        """Total count of meetings in any failed state (across _FAILED_STATES)."""
+        return sum(self.counts_by_state.get(s, 0) for s in _FAILED_STATES)
+
 
 @dataclass(frozen=True, slots=True)
 class HistoryEntry:
