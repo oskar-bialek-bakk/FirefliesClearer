@@ -912,7 +912,7 @@ def _make_purge_runner(
 ) -> Callable[[_RunnerContext], Awaitable[None]]:
     """Build the runner closure handed to ``OperationRegistry.start`` for purge.
 
-    Pre-emits one ``meeting_state="verifying"`` event per meeting before the
+    Pre-emits one ``meeting_state="deleting"`` event per meeting before the
     iteration step, then emits one ``done`` / ``failed`` event per outcome
     yielded by ``PurgeService.purge_meetings``. Cancellation is checked
     between yields — the in-flight meeting is allowed to complete.
@@ -928,6 +928,11 @@ def _make_purge_runner(
         for meeting in meetings:
             if ctx.cancel_event.is_set():
                 break
+            # TODO(phase-1): Pipeline.purge_one currently does not re-verify the
+            # archive before issuing the delete mutation (spec § 5.4 mandates
+            # verify-before-delete). When that lands, change this pre-emit
+            # sub_state to "verifying" and emit "deleting" between the verify
+            # pass and the delete call.
             ctx.emit(
                 Event(
                     seq=ctx.next_seq(),
@@ -935,7 +940,7 @@ def _make_purge_runner(
                     data={
                         "id": meeting.meeting_id,
                         "title": meeting.title,
-                        "sub_state": "verifying",
+                        "sub_state": "deleting",
                     },
                 )
             )

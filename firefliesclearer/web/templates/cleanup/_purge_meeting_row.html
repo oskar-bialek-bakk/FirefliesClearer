@@ -7,10 +7,11 @@
     data-sub-state="{{ meeting.sub_state }}">
   <span class="row-title">{{ meeting.title }}</span>
   <span class="row-sub-state">
-    {# Pipeline.purge_one currently flips manifest state directly without
-       emitting an intermediate "deleting" signal; the runner emits
-       "verifying" then "done"/"failed". The "deleting" branch is forward
-       compatibility for when Pipeline starts streaming sub-states. #}
+    {# Pipeline.purge_one does not re-verify the archive before deleting
+       (spec § 5.4 mandates verify-before-delete; tracked as phase-1 work),
+       so the runner emits "deleting" then "done"/"failed". The "verifying"
+       branch is forward compatibility for when Pipeline starts streaming
+       both sub-states. #}
     {% if meeting.sub_state == 'queued' %}queued
     {% elif meeting.sub_state == 'verifying' %}verifying
     {% elif meeting.sub_state == 'deleting' %}deleting
