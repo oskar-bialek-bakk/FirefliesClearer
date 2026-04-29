@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Cleanup Step 3 — Archiving — FirefliesClearer{% endblock %}
+{% block page %}
+{% include "cleanup/_stepper.html" %}
+
+<section class="cleanup-step cleanup-step-archive cleanup-step-archive-in-progress"
+         data-operation-id="{{ op_id }}">
+  <h1>Step 3 — Archiving</h1>
+
+  {# Progress bar: completed / total. SSE updates from Task 5.6 will swap
+     these counters in place via hx-swap-oob targets. #}
+  <div class="progress-bar" id="archive-progress-bar"
+       data-completed="{{ completed }}" data-total="{{ total }}">
+    <div class="progress-bar-fill" style="width: {{ progress_pct }}%"></div>
+    <p class="progress-label">
+      <strong>{{ completed }}</strong> of <strong>{{ total }}</strong> archived
+    </p>
+  </div>
+
+  <ul class="archive-meeting-list" id="archive-meeting-list">
+    {% for meeting in meetings %}
+      {% include "cleanup/_archive_meeting_row.html" %}
+    {% endfor %}
+  </ul>
+
+  {# Cancel button — POSTs to /cleanup/operations/{op_id}/cancel via HTMX.
+     A 204 response triggers a soft refresh on the next SSE terminal event. #}
+  <form method="post" action="/cleanup/operations/{{ op_id }}/cancel"
+        hx-post="/cleanup/operations/{{ op_id }}/cancel"
+        hx-swap="none"
+        class="cancel-archive-form">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+    <button type="submit" class="cancel-archive-btn">Cancel</button>
+    <small class="muted">Stops gracefully after the current meeting finishes.</small>
+  </form>
+
+  {# SSE wiring (Task 5.6 will land the endpoint). The script tag is left
+     in place so hooking up the EventSource is a one-line change later. #}
+  {# TODO(phase-5.6): wire EventSource("/api/operations/{{ op_id }}/events"). #}
+</section>
+{% endblock %}

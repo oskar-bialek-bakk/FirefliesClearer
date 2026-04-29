@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -38,15 +39,31 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
+from firefliesclearer.application.archive_service import ArchiveService
 from firefliesclearer.application.scan_service import (
     ScanFilters,
     ScanMatch,
     ScanResult,
     ScanService,
 )
+from firefliesclearer.core.models import Meeting
+from firefliesclearer.ports.meeting_repository import MeetingFilter
 from firefliesclearer.web import wizard_session
 from firefliesclearer.web.deps import get_deps
+from firefliesclearer.web.operations import (
+    Event,
+    Operation,
+    OperationKind,
+    OperationRegistry,
+    SameKindAlreadyRunning,
+    _RunnerContext,
+)
 from firefliesclearer.web.sessions import SessionStore
+
+# Estimated audio bitrate (kbps) for the preflight size estimate.
+# Fireflies' default download is low-bitrate mono audio; 64 kbps is the
+# advertised "voice" tier and gives a usable order-of-magnitude estimate.
+AUDIO_KBPS = 64
 
 PAGE_SIZE = 100
 
@@ -546,6 +563,313 @@ def _is_true(raw: object) -> bool:
     if raw is None:
         return False
     return str(raw).strip().lower() in {"true", "on", "1", "yes"}
+
+
+# ---------------------------------------------------------------------------
+# Step 3 — Archive (Task 5.4)
+# ---------------------------------------------------------------------------
+
+
+def _registry(request: Request) -> OperationRegistry:
+    reg: OperationRegistry = request.app.state.operation_registry
+    return reg
+
+
+def _estimate_size_mb(meetings: list[Meeting]) -> int:
+    """Return the rough total audio size in MB for *meetings*.
+
+    Estimate: ``sum(duration_minutes * 60 * AUDIO_KBPS / 8 / 1024 / 1024)``.
+    Rounds to the nearest MB; a zero-meeting input returns 0.
+    """
+    total_bytes = sum(m.duration_minutes * 60.0 * AUDIO_KBPS * 1000.0 / 8.0 for m in meetings)
+    total_mb = total_bytes / (1024.0 * 1024.0)
+    return round(total_mb)
+
+
+async def _selected_meetings(deps: SimpleNamespace, selected_ids: list[str]) -> list[Meeting]:
+    """Re-scan and filter to the meetings whose ids are in *selected_ids*.
+
+    Order is preserved from ``selected_ids`` so events stream in the order the
+    user expects to see them. Missing ids (e.g. meeting deleted in Fireflies
+    between Step 2 and Step 3) are silently dropped.
+    """
+    if not selected_ids:
+        return []
+    selected_set = set(selected_ids)
+    by_id: dict[str, Meeting] = {}
+    # We don't need rule-matching for this step — just walk every meeting.
+    async for meeting in deps.client.list_meetings(MeetingFilter(older_than=None)):
+        if meeting.meeting_id in selected_set:
+            by_id[meeting.meeting_id] = meeting
+    return [by_id[mid] for mid in selected_ids if mid in by_id]
+
+
+def _make_archive_runner(
+    *, deps: SimpleNamespace, meetings: list[Meeting]
+) -> Callable[[_RunnerContext], Awaitable[None]]:
+    """Build the runner closure handed to ``OperationRegistry.start``.
+
+    Pre-emits one ``meeting_state="fetching"`` event per meeting before the
+    iteration step, then emits one ``done`` / ``failed`` event per outcome
+    yielded by ``ArchiveService.archive_meetings``. Cancellation is checked
+    between yields — the in-flight meeting is allowed to complete (matches
+    the spec's "no half-done meetings" guarantee).
+    """
+    titles = {m.meeting_id: m.title for m in meetings}
+
+    async def archive_runner(ctx: _RunnerContext) -> None:
+        if not meetings:
+            return
+        svc = ArchiveService(pipeline=deps.pipeline, manifest=deps.manifest)
+        # Iterate one meeting at a time so cancellation can interrupt cleanly
+        # and so per-meeting events bracket each pipeline step.
+        for meeting in meetings:
+            if ctx.cancel_event.is_set():
+                break
+            ctx.emit(
+                Event(
+                    seq=ctx.next_seq(),
+                    kind="meeting_state",
+                    data={
+                        "id": meeting.meeting_id,
+                        "title": meeting.title,
+                        "sub_state": "fetching",
+                    },
+                )
+            )
+            async for outcome in svc.archive_meetings([meeting]):
+                sub_state = "failed" if outcome.state.value.startswith("failed_") else "done"
+                ctx.emit(
+                    Event(
+                        seq=ctx.next_seq(),
+                        kind="meeting_state",
+                        data={
+                            "id": outcome.meeting_id,
+                            "title": outcome.title or titles.get(outcome.meeting_id, ""),
+                            "sub_state": sub_state,
+                            "error": outcome.error,
+                        },
+                    )
+                )
+
+    return archive_runner
+
+
+def _replay_meeting_states(op: Operation) -> tuple[list[dict[str, object]], int, int]:
+    """Walk ``op.replay_buffer()`` and produce a per-meeting current-state list.
+
+    Returns ``(rows, archived_count, failed_count)`` where ``rows`` preserves
+    the order set by the operation's initial ``meetings`` slot list. Used by
+    the in-progress and done templates.
+    """
+    state_by_id: dict[str, dict[str, object]] = {}
+    for slot in op.meetings:
+        state_by_id[slot.meeting_id] = {
+            "id": slot.meeting_id,
+            "title": slot.title,
+            "sub_state": slot.sub_state,
+            "error": slot.error,
+        }
+    for evt in op.replay_buffer():
+        if evt.kind != "meeting_state":
+            continue
+        mid = str(evt.data.get("id", ""))
+        if not mid:
+            continue
+        row = state_by_id.setdefault(
+            mid,
+            {"id": mid, "title": "", "sub_state": "queued", "error": None},
+        )
+        row["title"] = evt.data.get("title") or row.get("title") or ""
+        row["sub_state"] = evt.data.get("sub_state") or row.get("sub_state") or "queued"
+        if "error" in evt.data:
+            row["error"] = evt.data.get("error")
+    rows = list(state_by_id.values())
+    archived = sum(1 for r in rows if r["sub_state"] == "done")
+    failed = sum(1 for r in rows if r["sub_state"] == "failed")
+    return rows, archived, failed
+
+
+def _set_wizard(
+    request: Request,
+    *,
+    step: str,
+    selected_ids: list[str] | None = None,
+    operation_id: str | None | object = ...,  # sentinel: leave unchanged
+) -> None:
+    """Update the wizard slice atomically while preserving the rest."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    new_op_id: str | None = (
+        state.get("operation_id") if operation_id is ... else operation_id  # type: ignore[assignment]
+    )
+    new_state = wizard_session.WizardState(
+        step=step,
+        filters=state.get("filters", {}),
+        selected_ids=(
+            list(selected_ids)
+            if selected_ids is not None
+            else list(state.get("selected_ids") or [])
+        ),
+        operation_id=new_op_id,
+    )
+    wizard_session.set_state(_store(request), _sid(request), new_state)
+
+
+@router.get("/cleanup/archive")
+async def step3_preflight(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Render the archive preflight: count + size estimate + Start button."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    selected_ids = list(state.get("selected_ids") or [])
+    if not selected_ids:
+        return _redirect("/cleanup/review")
+
+    meetings = await _selected_meetings(deps, selected_ids)
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step3_archive_preflight.html",
+        {
+            "step": "archive",
+            "count": len(meetings),
+            "size_mb": _estimate_size_mb(meetings),
+            "error": None,
+        },
+    )
+
+
+@router.post("/cleanup/archive/start")
+async def step3_start(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Kick off the archive operation; redirect to the in-progress view."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    selected_ids = list(state.get("selected_ids") or [])
+    if not selected_ids:
+        return _redirect("/cleanup/review")
+
+    meetings = await _selected_meetings(deps, selected_ids)
+    runner = _make_archive_runner(deps=deps, meetings=meetings)
+    try:
+        op = await _registry(request).start(
+            kind=OperationKind.ARCHIVE,
+            meeting_ids=[m.meeting_id for m in meetings],
+            runner=runner,
+        )
+    except SameKindAlreadyRunning:
+        size_mb = _estimate_size_mb(meetings)
+        return _templates(request).TemplateResponse(
+            request,
+            "cleanup/step3_archive_preflight.html",
+            {
+                "step": "archive",
+                "count": len(meetings),
+                "size_mb": size_mb,
+                "error": ("Another archive operation is already running. Wait for it to complete."),
+            },
+            status_code=409,
+        )
+
+    _set_wizard(request, step="archive", operation_id=op.id)
+    return _redirect("/cleanup/archive/in-progress")
+
+
+@router.get("/cleanup/archive/in-progress")
+async def step3_in_progress(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Render the live progress view; redirect when state is missing/terminal."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    op_id = state.get("operation_id")
+    if not op_id:
+        return _redirect("/cleanup/archive")
+    try:
+        op = _registry(request).get(op_id)
+    except KeyError:
+        return _redirect("/cleanup/archive")
+    if op.state in {"succeeded", "failed", "cancelled"}:
+        return _redirect("/cleanup/archive/done")
+
+    rows, completed, _failed = _replay_meeting_states(op)
+    total = max(op.total, len(rows))
+    progress_pct = round(100.0 * completed / total) if total else 0
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step3_archive_in_progress.html",
+        {
+            "step": "archive",
+            "op_id": op.id,
+            "meetings": rows,
+            "total": total,
+            "completed": completed,
+            "progress_pct": progress_pct,
+        },
+    )
+
+
+@router.get("/cleanup/archive/done")
+async def step3_done(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Render the post-archive summary; redirect when running or missing."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    op_id = state.get("operation_id")
+    if not op_id:
+        return _redirect("/cleanup/archive")
+    try:
+        op = _registry(request).get(op_id)
+    except KeyError:
+        return _redirect("/cleanup/archive")
+    if op.state == "running":
+        return _redirect("/cleanup/archive/in-progress")
+
+    rows, archived, failed = _replay_meeting_states(op)
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step3_archive_done.html",
+        {
+            "step": "archive",
+            "op_id": op.id,
+            "meetings": rows,
+            "archived_count": archived,
+            "failed_count": failed,
+        },
+    )
+
+
+@router.post("/cleanup/operations/{op_id}/cancel")
+async def cancel_operation(request: Request, op_id: str) -> Response:
+    """Set the cooperative cancel flag on the named operation."""
+    try:
+        _registry(request).get(op_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="operation not found") from exc
+    _registry(request).cancel(op_id)
+    return Response(status_code=204)
+
+
+@router.post("/cleanup/archive/continue")
+async def step3_continue(request: Request) -> Response:
+    """Confirm transition to the Purge step. Requires a terminal op + ≥1 success."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    op_id = state.get("operation_id")
+    if not op_id:
+        return _redirect("/cleanup/archive")
+    try:
+        op = _registry(request).get(op_id)
+    except KeyError:
+        return _redirect("/cleanup/archive")
+    if op.state == "running":
+        return _redirect("/cleanup/archive/in-progress")
+    _rows, archived, _failed = _replay_meeting_states(op)
+    if archived == 0:
+        return _redirect("/cleanup/archive/done")
+    _set_wizard(request, step="purge", operation_id=None)
+    return _redirect("/cleanup/purge")
 
 
 # Re-export ScanFilters so future wizard steps can import from one place.

@@ -6,8 +6,11 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException, Request
 
+from firefliesclearer.core.archiver import Archiver
 from firefliesclearer.core.manifest import Manifest
+from firefliesclearer.core.pipeline import Pipeline
 from firefliesclearer.infra.config import load_config
+from firefliesclearer.infra.pdf_renderer import ReportlabSummaryRenderer
 from firefliesclearer.infra.system_clock import SystemClock
 from firefliesclearer.web.lifecycle import HeartbeatTracker, ShutdownCoordinator
 
@@ -52,11 +55,22 @@ def get_deps(request: Request) -> SimpleNamespace:
     archive_root.mkdir(parents=True, exist_ok=True)
     manifest = Manifest.open(archive_root / "manifest.db")
     client = repo_factory(config.fireflies.api_key)
+    clock = SystemClock()
+    archiver = Archiver(archive_root=archive_root)
+    renderer = ReportlabSummaryRenderer()
+    pipeline = Pipeline(
+        repository=client,
+        manifest=manifest,
+        archiver=archiver,
+        renderer=renderer,
+        clock=clock,
+    )
     deps = SimpleNamespace(
         config=config,
         manifest=manifest,
         client=client,
-        clock=SystemClock(),
+        clock=clock,
+        pipeline=pipeline,
     )
     request.app.state.deps = deps
     return deps

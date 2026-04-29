@@ -11,6 +11,7 @@ from firefliesclearer.core.manifest import SCHEMA, Manifest
 from firefliesclearer.infra.config import load_config
 from firefliesclearer.infra.system_clock import SystemClock
 from firefliesclearer.web.app import create_app
+from tests.fakes.fake_pipeline import FakePipeline
 from tests.fakes.in_memory_repository import InMemoryMeetingRepository
 
 
@@ -77,6 +78,7 @@ delete_confirmation_threshold = 10
         manifest=manifest,
         client=repo,
         clock=SystemClock(),
+        pipeline=FakePipeline(),
     )
     app = create_app(
         session_token="T",

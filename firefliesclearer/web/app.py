@@ -17,6 +17,7 @@ from firefliesclearer.infra.system_clock import SystemClock
 from firefliesclearer.ports.clock import Clock
 from firefliesclearer.ports.meeting_repository import MeetingRepository
 from firefliesclearer.web.lifecycle import HeartbeatTracker, ShutdownCoordinator
+from firefliesclearer.web.operations import OperationRegistry
 from firefliesclearer.web.routes import _heartbeat, _quit, cleanup, dashboard, setup
 from firefliesclearer.web.security import SecurityConfig, install_security
 from firefliesclearer.web.sessions import SessionStore
@@ -58,6 +59,7 @@ def create_app(
     app.state.config_path = config_path
     app.state.repo_factory = repo_factory
     app.state.session_store = SessionStore()
+    app.state.operation_registry = OperationRegistry(clock=clock)
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.include_router(_heartbeat.router)

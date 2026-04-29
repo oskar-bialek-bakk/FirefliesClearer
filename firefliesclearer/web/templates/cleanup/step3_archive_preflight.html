@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Cleanup Step 3 — Archive — FirefliesClearer{% endblock %}
+{% block page %}
+{% include "cleanup/_stepper.html" %}
+
+<section class="cleanup-step cleanup-step-archive cleanup-step-archive-preflight">
+  <h1>Step 3 — Archive</h1>
+
+  {% if error %}
+    <p class="error-banner" role="alert" style="color: #b91c1c;">{{ error }}</p>
+  {% endif %}
+
+  <p class="archive-preflight-summary">
+    About to archive <strong>{{ count }} meetings</strong>
+    (~ <strong>{{ size_mb }} MB</strong> estimated).
+  </p>
+
+  <p class="muted">
+    Audio + transcript + summary PDF will be saved under your archive folder.
+    Nothing is deleted in Fireflies during this step — that happens on the next step.
+  </p>
+
+  <form method="post" action="/cleanup/archive/start" class="archive-start-form">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+    <div class="form-actions">
+      <a href="/cleanup/review" class="cancel-link">&larr; Back to Review</a>
+      <button type="submit" class="start-archive-btn continue-btn">Start archive</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,22 @@
+{# Per-meeting row partial — SSE swap target for in-progress + done views.
+   Required context: meeting (dict-like with id, title, sub_state, error?). #}
+<li class="archive-meeting-row{% if meeting.sub_state == 'failed' %} archive-failed-row{% endif %}"
+    id="archive-row-{{ meeting.id }}"
+    data-meeting-id="{{ meeting.id }}"
+    data-sub-state="{{ meeting.sub_state }}">
+  <span class="row-title">{{ meeting.title }}</span>
+  <span class="row-sub-state">
+    {% if meeting.sub_state == 'queued' %}queued
+    {% elif meeting.sub_state == 'fetching' %}fetching
+    {% elif meeting.sub_state == 'downloading' %}downloading audio
+    {% elif meeting.sub_state == 'rendering' %}rendering pdf
+    {% elif meeting.sub_state == 'verifying' %}verifying
+    {% elif meeting.sub_state == 'done' %}archived &#10003;
+    {% elif meeting.sub_state == 'failed' %}failed &#10007;
+    {% else %}{{ meeting.sub_state }}
+    {% endif %}
+  </span>
+  {% if meeting.sub_state == 'failed' and meeting.error %}
+    <span class="row-error">{{ meeting.error }}</span>
+  {% endif %}
+</li>
