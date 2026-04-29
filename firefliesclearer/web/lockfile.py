@@ -73,27 +73,20 @@ class LockFile:
     def _read_existing_url(self) -> str | None:
         """Best-effort URL of any prior holder for the error hint.
 
-        There is a small TOCTOU window between this read and lock acquisition;
-        if the holder exits in between, the hint may be stale. Acceptable for a
-        single-user local tool.
+        Reads from the ``.url`` sidecar file on both platforms — ``acquire``
+        writes the URL there regardless of OS (the lockfile itself stays empty
+        and is locked exclusively for fcntl/msvcrt). There is a small TOCTOU
+        window between this read and lock acquisition; if the holder exits in
+        between, the hint may be stale. Acceptable for a single-user local
+        tool.
         """
-        if sys.platform == "win32":
-            # The lockfile itself is unreadable while locked on Windows;
-            # read from the companion sidecar file instead.
-            url_file = self._url_path
-            if not url_file.exists():
-                return None
-            try:
-                return url_file.read_text(encoding="utf-8").strip() or None
-            except OSError:
-                return None
-        else:
-            if not self._path.exists():
-                return None
-            try:
-                return self._path.read_text(encoding="utf-8").strip() or None
-            except OSError:
-                return None
+        url_file = self._url_path
+        if not url_file.exists():
+            return None
+        try:
+            return url_file.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return None
 
     @staticmethod
     def _hint(url: str | None) -> str:
