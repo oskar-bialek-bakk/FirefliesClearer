@@ -592,6 +592,9 @@ def _estimate_size_mb(meetings: list[Meeting]) -> int:
     return round(total_mb)
 
 
+# TODO(perf): re-fetches the full Fireflies metadata listing on every archive
+# request. Acceptable for personal-scale use; worth caching once we've shipped
+# the 5-min metadata cache referenced in spec § 5.2.
 async def _selected_meetings(deps: SimpleNamespace, selected_ids: list[str]) -> list[Meeting]:
     """Re-scan and filter to the meetings whose ids are in *selected_ids*.
 
