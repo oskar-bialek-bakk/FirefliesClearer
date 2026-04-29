@@ -7,13 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from firefliesclearer.application.archive_service import ArchiveService
+from firefliesclearer.application.exceptions import SelectionMissing
 from firefliesclearer.core.manifest import Manifest
 from firefliesclearer.core.models import Meeting, MeetingState
 from firefliesclearer.core.pipeline import Pipeline
 
-
-class SelectionMissing(FileNotFoundError):  # noqa: N818
-    """Selection file does not exist."""
+__all__ = ["PurgeOutcome", "PurgeService", "SelectionMissing"]
 
 
 @dataclass(frozen=True, slots=True)

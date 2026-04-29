@@ -56,6 +56,7 @@ async def _build(
     meetings: list[Meeting],
     **kw: Any,
 ) -> tuple[PurgeService, Pipeline, InMemoryMeetingRepository, Manifest]:
+    """Async because purge requires meetings already in ARCHIVED state — pre-archives via pipeline.archive_one."""
     repo = InMemoryMeetingRepository(
         meetings=list(meetings),
         artifacts={m.meeting_id: _bundle() for m in meetings},

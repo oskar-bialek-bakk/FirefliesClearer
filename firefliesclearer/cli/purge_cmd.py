@@ -11,9 +11,8 @@ from firefliesclearer.application.archive_service import ArchiveService
 from firefliesclearer.application.purge_service import PurgeOutcome, PurgeService
 from firefliesclearer.cli import _common
 from firefliesclearer.cli.app import app
+from firefliesclearer.cli.archive_cmd import _print_report_summary
 from firefliesclearer.core.pipeline import PipelineMode
-
-from .archive_cmd import _print_report_summary
 
 
 @app.command()
@@ -49,9 +48,6 @@ def purge(
 
     svc = PurgeService(pipeline=deps.pipeline, manifest=deps.manifest)
     outcomes = asyncio.run(_collect(svc, selection))
-    if not outcomes:
-        _common.console.print("[yellow]No selected meetings; nothing to do.[/yellow]")
-        return
     _print_purge_outcomes(outcomes)
 
 
