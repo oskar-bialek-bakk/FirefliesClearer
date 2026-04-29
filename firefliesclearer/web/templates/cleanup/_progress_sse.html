@@ -1,0 +1,103 @@
+{# Client-side EventSource wiring for archive/purge in-progress views.
+
+   Opens a Server-Sent Events stream against /api/operations/{op_id}/events
+   and updates per-row sub-state + the progress-bar counters in real time.
+   On a terminal operation_state event the connection is closed and the
+   page is reloaded so the server can redirect to the matching done view.
+
+   The script keys off ``data-operation-id`` on the section root and
+   ``data-meeting-id`` on each row — both attributes are emitted by the
+   step3/step4 templates and the row partials.  No HTMX dependency: a
+   single small <script> block keeps the runtime cost to ~1 KB. #}
+<script>
+(function () {
+  var root = document.querySelector("[data-operation-id]");
+  if (!root) return;
+  var opId = root.dataset.operationId;
+  if (!opId) return;
+  var url = "/api/operations/" + encodeURIComponent(opId) + "/events";
+  var es = new EventSource(url);
+
+  function updateRow(data) {
+    if (!data || !data.id) return;
+    var row = root.querySelector('[data-meeting-id="' + CSS.escape(data.id) + '"]');
+    if (!row) return;
+    if (data.sub_state) {
+      row.dataset.subState = data.sub_state;
+      var subEl = row.querySelector(".row-sub-state");
+      if (subEl) subEl.textContent = data.sub_state;
+      // Mirror the failed-row marker class the server emits on first render.
+      if (data.sub_state === "failed") {
+        if (row.classList.contains("archive-meeting-row")) {
+          row.classList.add("archive-failed-row");
+        }
+        if (row.classList.contains("purge-meeting-row")) {
+          row.classList.add("purge-failed-row");
+        }
+      }
+    }
+    if (data.error) {
+      var errEl = row.querySelector(".row-error");
+      if (errEl) {
+        errEl.textContent = data.error;
+      } else {
+        var span = document.createElement("span");
+        span.className = "row-error";
+        span.textContent = data.error;
+        row.appendChild(span);
+      }
+    }
+  }
+
+  function updateProgress() {
+    var rows = root.querySelectorAll("[data-meeting-id]");
+    var total = rows.length;
+    var completed = 0;
+    rows.forEach(function (r) {
+      var s = r.dataset.subState;
+      if (s === "done" || s === "failed") completed += 1;
+    });
+    var bar = document.getElementById("archive-progress-bar")
+            || document.getElementById("purge-progress-bar");
+    if (!bar) return;
+    bar.dataset.completed = String(completed);
+    var pct = total ? Math.round((completed / total) * 100) : 0;
+    var fill = bar.querySelector(".progress-bar-fill");
+    if (fill) fill.style.width = pct + "%";
+    var label = bar.querySelector(".progress-label strong");
+    if (label) label.textContent = String(completed);
+  }
+
+  es.addEventListener("meeting_state", function (e) {
+    try {
+      var data = JSON.parse(e.data);
+      updateRow(data);
+      updateProgress();
+    } catch (err) {
+      // Bad payload — ignore; the page will reload on terminal anyway.
+    }
+  });
+
+  es.addEventListener("operation_state", function (e) {
+    try {
+      var data = JSON.parse(e.data);
+      var terminal = ["succeeded", "failed", "cancelled"].indexOf(data.state) !== -1;
+      if (terminal) {
+        es.close();
+        // Server-side step3_in_progress / step4_in_progress redirect to the
+        // matching done view when state is terminal.  A simple reload picks
+        // that redirect up.
+        window.location.reload();
+      }
+    } catch (err) {
+      // ignore
+    }
+  });
+
+  es.onerror = function () {
+    // EventSource will auto-retry transient disconnects.  No explicit retry
+    // bookkeeping needed — the terminal-event handler still closes cleanly
+    // when the operation finishes.
+  };
+})();
+</script>

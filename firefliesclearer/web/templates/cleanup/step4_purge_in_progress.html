@@ -34,7 +34,7 @@
     <small class="muted">Stops gracefully after the current meeting finishes.</small>
   </form>
 
-  {# SSE wiring deferred to Task 5.6. #}
-  {# TODO(phase-5.6): wire EventSource("/api/operations/{{ op_id }}/events"). #}
+  {# Live progress via SSE — same client-side wiring as Step 3. #}
+  {% include "cleanup/_progress_sse.html" %}
 </section>
 {% endblock %}
