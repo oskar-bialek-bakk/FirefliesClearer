@@ -1,0 +1,4 @@
+/* firefliesclearer/web/static/styles.css */
+body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 0; }
+.sidebar { background: #0f172a; color: #cbd5e1; width: 200px; min-height: 100vh; padding: 16px; }
+.main { padding: 24px; }
