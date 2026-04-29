@@ -88,7 +88,14 @@ def replace_selection(store: SessionStore, sid: str, ids: list[str]) -> None:
 
 
 def add_to_selection(store: SessionStore, sid: str, ids: list[str]) -> None:
-    """Append *ids* to the selection, deduplicating while preserving insertion order."""
+    """Append *ids* to the selection, deduplicating while preserving insertion order.
+
+    Note: like :func:`replace_selection`, this is a read-modify-write of the
+    wizard slice; concurrent calls on the same session can lose updates. The
+    single-tab single-user assumption of the local app keeps this acceptable.
+    If we ever support multi-tab work, revisit using a callable-based
+    ``SessionStore.update``.
+    """
     current = list(get_state(store, sid).get("selected_ids", []) or [])
     seen = set(current)
     for mid in ids:
@@ -99,7 +106,14 @@ def add_to_selection(store: SessionStore, sid: str, ids: list[str]) -> None:
 
 
 def remove_from_selection(store: SessionStore, sid: str, ids: list[str]) -> None:
-    """Remove *ids* from the selection. Missing IDs are silently ignored."""
+    """Remove *ids* from the selection. Missing IDs are silently ignored.
+
+    Note: like :func:`replace_selection`, this is a read-modify-write of the
+    wizard slice; concurrent calls on the same session can lose updates. The
+    single-tab single-user assumption of the local app keeps this acceptable.
+    If we ever support multi-tab work, revisit using a callable-based
+    ``SessionStore.update``.
+    """
     excl = set(ids)
     current = [
         mid for mid in (get_state(store, sid).get("selected_ids", []) or []) if mid not in excl
@@ -108,7 +122,14 @@ def remove_from_selection(store: SessionStore, sid: str, ids: list[str]) -> None
 
 
 def toggle_in_selection(store: SessionStore, sid: str, mid: str) -> bool:
-    """Toggle *mid* in the selection. Returns ``True`` if added, ``False`` if removed."""
+    """Toggle *mid* in the selection. Returns ``True`` if added, ``False`` if removed.
+
+    Note: like :func:`replace_selection`, this is a read-modify-write of the
+    wizard slice; concurrent calls on the same session can lose updates. The
+    single-tab single-user assumption of the local app keeps this acceptable.
+    If we ever support multi-tab work, revisit using a callable-based
+    ``SessionStore.update``.
+    """
     current = list(get_state(store, sid).get("selected_ids", []) or [])
     if mid in current:
         current.remove(mid)
