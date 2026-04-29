@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -230,6 +230,109 @@ class Manifest:
     def counts_by_state(self) -> dict[MeetingState, int]:
         rows = self._conn.execute("SELECT state, COUNT(*) FROM meetings GROUP BY state").fetchall()
         return {MeetingState(s): c for s, c in rows}
+
+    def last_state_change_at(self) -> datetime | None:
+        """Return the timestamp of the most recent state_log entry, or None."""
+        row = self._conn.execute("SELECT MAX(at) FROM state_log").fetchone()
+        if row is None or row[0] is None:
+            return None
+        return datetime.fromisoformat(row[0])
+
+    def meeting_ids_in_states(self, states: Iterable[MeetingState]) -> list[str]:
+        """Return meeting IDs whose current state is in *states*, ordered by meeting_id ASC."""
+        state_list = list(states)
+        if not state_list:
+            return []
+        placeholders = ", ".join("?" * len(state_list))
+        rows = self._conn.execute(
+            f"SELECT meeting_id FROM meetings WHERE state IN ({placeholders}) ORDER BY meeting_id ASC",
+            [s.value for s in state_list],
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def query_history(
+        self,
+        *,
+        states: Iterable[MeetingState] | None,
+        date_from: datetime | None,
+        date_to: datetime | None,
+        title_contains: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[MeetingRecord]:
+        """Flexible filtered query over meetings, ordered by deleted_at DESC."""
+        where_fragments: list[str] = []
+        params: list[Any] = []
+
+        state_list = list(states) if states is not None else None
+        if state_list is not None and state_list:
+            placeholders = ", ".join("?" * len(state_list))
+            where_fragments.append(f"state IN ({placeholders})")
+            params.extend(s.value for s in state_list)
+
+        if date_from is not None:
+            where_fragments.append("deleted_at >= ?")
+            params.append(_iso(date_from))
+
+        if date_to is not None:
+            where_fragments.append("deleted_at < ?")
+            params.append(_iso(date_to))
+
+        if title_contains:
+            where_fragments.append("title LIKE ?")
+            params.append(f"%{title_contains}%")
+
+        where_clause = f"WHERE {' AND '.join(where_fragments)}" if where_fragments else ""
+        sql = (
+            f"SELECT meeting_id FROM meetings {where_clause} "
+            f"ORDER BY deleted_at DESC NULLS LAST, meeting_id ASC "
+            f"LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+
+        rows = self._conn.execute(sql, params).fetchall()
+        result: list[MeetingRecord] = []
+        for (mid,) in rows:
+            rec = self.get(mid)
+            if rec is not None:
+                result.append(rec)
+        return result
+
+    def count_history(
+        self,
+        *,
+        states: Iterable[MeetingState] | None,
+        date_from: datetime | None,
+        date_to: datetime | None,
+        title_contains: str | None,
+    ) -> int:
+        """Return count of meetings matching the same WHERE conditions as query_history."""
+        where_fragments: list[str] = []
+        params: list[Any] = []
+
+        state_list = list(states) if states is not None else None
+        if state_list is not None and state_list:
+            placeholders = ", ".join("?" * len(state_list))
+            where_fragments.append(f"state IN ({placeholders})")
+            params.extend(s.value for s in state_list)
+
+        if date_from is not None:
+            where_fragments.append("deleted_at >= ?")
+            params.append(_iso(date_from))
+
+        if date_to is not None:
+            where_fragments.append("deleted_at < ?")
+            params.append(_iso(date_to))
+
+        if title_contains:
+            where_fragments.append("title LIKE ?")
+            params.append(f"%{title_contains}%")
+
+        where_clause = f"WHERE {' AND '.join(where_fragments)}" if where_fragments else ""
+        sql = f"SELECT COUNT(*) FROM meetings {where_clause}"
+
+        row = self._conn.execute(sql, params).fetchone()
+        return int(row[0]) if row else 0
 
     def _log(
         self,
