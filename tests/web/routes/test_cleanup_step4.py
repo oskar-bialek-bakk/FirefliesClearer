@@ -324,6 +324,53 @@ def test_purge_in_progress_renders_meeting_list_for_running_op(
 
 
 # ---------------------------------------------------------------------------
+# POST /cleanup/operations/{op_id}/cancel — purge symmetry
+# ---------------------------------------------------------------------------
+
+
+def test_post_cancel_purge_op_returns_204_and_sets_cancel_event(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Cancelling a running purge op returns 204 and trips the cancel_event.
+
+    Mirrors ``test_cancel_returns_204_and_sets_cancel_event`` from Step 3 —
+    cooperative cancel works the same way for any operation kind because
+    the cancel route lives on the registry, not the per-step runner.
+    """
+    _seed_repo(configured_app, 2)
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="purge", selected=["m0"])
+    block = asyncio.Event()
+
+    class BlockingPipeline:
+        async def purge_one(self, meeting):
+            await block.wait()
+            return MeetingState.DELETED
+
+        async def archive_one(self, meeting):
+            return MeetingState.ARCHIVED
+
+    configured_app.state.deps.pipeline = BlockingPipeline()
+    configured_client.post(
+        "/cleanup/purge/start",
+        data={"_csrf": _csrf(configured_client), "confirmed_count": "1"},
+        follow_redirects=False,
+    )
+    op_id = _wizard(configured_app, sid)["operation_id"]
+    try:
+        r = configured_client.post(
+            f"/cleanup/operations/{op_id}/cancel",
+            data={"_csrf": _csrf(configured_client)},
+        )
+        assert r.status_code == 204
+        op = configured_app.state.operation_registry.get(op_id)
+        assert op.cancel_event.is_set()
+    finally:
+        block.set()
+        _wait_for_op(configured_client, configured_app, op_id)
+
+
+# ---------------------------------------------------------------------------
 # GET /cleanup/purge/done
 # ---------------------------------------------------------------------------
 
