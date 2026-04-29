@@ -71,6 +71,12 @@ class LockFile:
                 ) from exc
 
     def _read_existing_url(self) -> str | None:
+        """Best-effort URL of any prior holder for the error hint.
+
+        There is a small TOCTOU window between this read and lock acquisition;
+        if the holder exits in between, the hint may be stale. Acceptable for a
+        single-user local tool.
+        """
         if sys.platform == "win32":
             # The lockfile itself is unreadable while locked on Windows;
             # read from the companion sidecar file instead.
