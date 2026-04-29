@@ -52,7 +52,9 @@ def serve(
         with lockfile.acquire(url=url.split("?", 1)[0]):  # do not leak token to lockfile
             console.print(f"[green]→ FirefliesClearer running at[/green] {url}")
             if not no_open:
-                threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+                timer = threading.Timer(0.5, lambda: webbrowser.open(url))
+                timer.daemon = True
+                timer.start()
 
             uconfig = uvicorn.Config(fastapi_app, host=host, port=chosen_port, log_level="warning")
             server = uvicorn.Server(uconfig)
@@ -66,8 +68,7 @@ def serve(
 
 
 def _pick_free_port(host: str) -> int:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind((host, 0))
-    port: int = s.getsockname()[1]
-    s.close()
-    return port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        port: int = s.getsockname()[1]
+        return port
