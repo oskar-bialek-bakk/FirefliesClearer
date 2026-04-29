@@ -196,3 +196,36 @@ class Pipeline:
             report.skipped += 1
             return
         await self._delete(meeting, report)
+
+    # ------------------------------------------------------------------
+    # Public per-meeting helpers (used by ArchiveService and the web layer)
+    # ------------------------------------------------------------------
+
+    async def archive_one(self, meeting: Meeting) -> MeetingState:
+        """Archive a single meeting; return its final state."""
+        report = RunReport()
+        existing = self._manifest.get(meeting.meeting_id)
+        if existing and existing.state is MeetingState.DELETED:
+            return MeetingState.DELETED
+        if existing is None or existing.state is MeetingState.PENDING:
+            self._manifest.register(meeting, at=self._clock.now())
+            await self._archive(meeting, report)
+        elif existing.state.value.startswith("failed_"):
+            self._manifest.transition(
+                meeting.meeting_id,
+                to=MeetingState.PENDING,
+                at=self._clock.now(),
+            )
+            await self._archive(meeting, report)
+        rec = self._manifest.get(meeting.meeting_id)
+        return rec.state if rec else MeetingState.PENDING
+
+    async def purge_one(self, meeting: Meeting) -> MeetingState:
+        """Verify archive then delete from Fireflies; return final state."""
+        report = RunReport()
+        existing = self._manifest.get(meeting.meeting_id)
+        if existing is None or existing.state is not MeetingState.ARCHIVED:
+            return existing.state if existing else MeetingState.PENDING
+        await self._delete(meeting, report)
+        rec = self._manifest.get(meeting.meeting_id)
+        return rec.state if rec else MeetingState.PENDING

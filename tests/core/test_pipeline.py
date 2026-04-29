@@ -340,3 +340,83 @@ async def test_archive_only_idempotent_skips_archived(tmp_path: Path) -> None:
     rec2 = manifest.get(m.meeting_id)
     assert rec2 is not None and rec2.state is MeetingState.ARCHIVED
     assert repo.deleted == []
+
+
+# ---------------------------------------------------------------------------
+# archive_one / purge_one public helpers
+# ---------------------------------------------------------------------------
+
+
+async def test_archive_one_returns_archived_state_on_success(tmp_path: Path) -> None:
+    """Calling pipeline.archive_one(meeting) on a fresh meeting transitions it
+    to ARCHIVED and returns ARCHIVED."""
+    m = _meeting()
+    pipeline, repo, manifest, _, _ = _build(tmp_path, [m])
+    state = await pipeline.archive_one(m)
+    assert state is MeetingState.ARCHIVED
+    rec = manifest.get(m.meeting_id)
+    assert rec is not None and rec.state is MeetingState.ARCHIVED
+    assert repo.deleted == []
+
+
+async def test_archive_one_returns_failed_fetch_on_repo_error(tmp_path: Path) -> None:
+    """When the repo raises during fetch, archive_one returns FAILED_FETCH."""
+    m = _meeting()
+    pipeline, _, manifest, _, _ = _build(tmp_path, [m], fail_fetch_for=[m.meeting_id])
+    state = await pipeline.archive_one(m)
+    assert state is MeetingState.FAILED_FETCH
+    rec = manifest.get(m.meeting_id)
+    assert rec is not None and rec.state is MeetingState.FAILED_FETCH
+    assert rec.last_error is not None
+
+
+async def test_purge_one_returns_deleted_state_after_archive(tmp_path: Path) -> None:
+    """archive_one(meeting) -> ARCHIVED, then purge_one(meeting) -> DELETED."""
+    m = _meeting()
+    pipeline, repo, manifest, _, _ = _build(tmp_path, [m])
+    archived_state = await pipeline.archive_one(m)
+    assert archived_state is MeetingState.ARCHIVED
+
+    deleted_state = await pipeline.purge_one(m)
+    assert deleted_state is MeetingState.DELETED
+    rec = manifest.get(m.meeting_id)
+    assert rec is not None and rec.state is MeetingState.DELETED
+    assert repo.deleted == [m.meeting_id]
+
+
+async def test_purge_one_skips_unarchived_meeting(tmp_path: Path) -> None:
+    """purge_one on a meeting that was never archived returns its current state
+    (PENDING/None) without calling delete."""
+    m = _meeting()
+    pipeline, repo, _manifest, _, _ = _build(tmp_path, [m])
+    state = await pipeline.purge_one(m)
+    # meeting was never registered — returns PENDING (the sentinel for "not found")
+    assert state is MeetingState.PENDING
+    assert repo.deleted == []
+
+
+async def test_archive_one_already_deleted_returns_deleted(tmp_path: Path) -> None:
+    """archive_one on a DELETED meeting short-circuits and returns DELETED."""
+    m = _meeting()
+    pipeline, repo, manifest, _, _ = _build(tmp_path, [m])
+    # First full APPLY run to get to DELETED
+    await pipeline.run([m], mode=PipelineMode.APPLY)
+    assert manifest.get(m.meeting_id).state is MeetingState.DELETED
+
+    state = await pipeline.archive_one(m)
+    assert state is MeetingState.DELETED
+    # No second delete call
+    assert repo.deleted == [m.meeting_id]
+
+
+async def test_archive_one_retries_failed_state(tmp_path: Path) -> None:
+    """archive_one on FAILED_FETCH meeting re-queues to PENDING and re-archives."""
+    m = _meeting()
+    pipeline, repo, _manifest, _, _ = _build(tmp_path, [m], fail_fetch_for=[m.meeting_id])
+    state1 = await pipeline.archive_one(m)
+    assert state1 is MeetingState.FAILED_FETCH
+
+    # Clear the failure and retry via archive_one
+    repo.fail_fetch_for = set()
+    state2 = await pipeline.archive_one(m)
+    assert state2 is MeetingState.ARCHIVED
