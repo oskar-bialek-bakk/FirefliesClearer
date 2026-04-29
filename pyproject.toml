@@ -14,6 +14,13 @@ dependencies = [
     "platformdirs>=4.2",
     "reportlab>=4.0",
     "tomli-w>=1.0",
+    # v2 web UI
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "itsdangerous>=2.2",
+    "sse-starlette>=2.1",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +32,8 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "pre-commit>=3.7",
+    "selectolax>=0.3",  # CSS-selector-based HTML assertions in route tests
+    "trio>=0.25",       # optional async backend for some web tests
 ]
 
 [project.scripts]
@@ -70,4 +79,11 @@ addopts = [
     "-ra",
     "--cov=firefliesclearer",
     "--cov-report=term-missing",
+]
+
+[tool.hatch.build]
+include = [
+  "firefliesclearer/**",
+  "firefliesclearer/web/templates/**",
+  "firefliesclearer/web/static/**",
 ]
