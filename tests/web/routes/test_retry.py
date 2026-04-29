@@ -161,7 +161,7 @@ def test_retry_returns_409_for_archived_meeting(
     )
     assert r.status_code == 409
     # Pretend the operator might read the message; smoke-check the wording.
-    assert "retry-able" in r.text.lower() or "retry" in r.text.lower()
+    assert "retry-able" in r.text.lower()
 
 
 def test_retry_returns_409_when_same_kind_already_running(
