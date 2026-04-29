@@ -24,6 +24,7 @@ from starlette.responses import Response
 from firefliesclearer.application.audit_service import AuditService, StateSummary
 from firefliesclearer.core.manifest import Manifest, MeetingRecord
 from firefliesclearer.core.models import Meeting, MeetingState
+from firefliesclearer.ports.meeting_repository import MeetingFilter, MeetingRepository
 from firefliesclearer.web.deps import get_deps
 from firefliesclearer.web.operations import (
     Event,
@@ -90,23 +91,18 @@ def _needs_attention_rows(manifest: Manifest, summary: StateSummary) -> list[Mee
     return rows
 
 
-def _meeting_from_manifest(rec: MeetingRecord) -> Meeting:
-    """Reconstruct a minimal :class:`Meeting` from a manifest record.
+async def _fetch_meeting_from_source(*, repo: MeetingRepository, meeting_id: str) -> Meeting | None:
+    """Look up the live Meeting metadata from Fireflies.
 
-    The pipeline's ``archive_one`` / ``purge_one`` only need ``meeting_id``
-    and ``title`` for archive paths and audit logs — duration, host, and
-    participants are filter/UI metadata that the retry flow doesn't use.
-    Re-listing the Fireflies API just to re-hydrate those fields is
-    wasteful, so we synthesize them with neutral defaults instead.
+    Used by the retry flow to reconstruct the full Meeting (duration, host,
+    participants, tags) needed to write a faithful metadata.json. Returns
+    None if the meeting is no longer present in the source (e.g. the user
+    deleted it from Fireflies between the failed archive and the retry).
     """
-    return Meeting(
-        meeting_id=rec.meeting_id,
-        title=rec.title,
-        meeting_date=rec.meeting_date,
-        duration_minutes=0.0,
-        host_email="",
-        participant_count=0,
-    )
+    async for meeting in repo.list_meetings(MeetingFilter()):
+        if meeting.meeting_id == meeting_id:
+            return meeting
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +169,13 @@ async def retry_meeting(
             detail="Meeting not in a retry-able state.",
         )
 
-    meeting = _meeting_from_manifest(rec)
+    meeting = await _fetch_meeting_from_source(repo=deps.client, meeting_id=meeting_id)
+    if meeting is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Meeting no longer in Fireflies",
+        )
+
     runner = _make_retry_runner(deps=deps, meeting=meeting, kind=kind)
     try:
         op = await _registry(request).start(

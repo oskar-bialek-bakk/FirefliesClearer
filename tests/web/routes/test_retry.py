@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 from selectolax.parser import HTMLParser
 
-from firefliesclearer.core.models import Meeting, MeetingState
+from firefliesclearer.core.archiver import Archiver
+from firefliesclearer.core.models import ArtifactBundle, Meeting, MeetingState
+from firefliesclearer.core.pipeline import Pipeline
 from firefliesclearer.web.operations import OperationKind
 from tests.fakes.fake_pipeline import FakePipeline
+from tests.fakes.fake_renderer import FakeSummaryRenderer
+from tests.fakes.frozen_clock import FrozenClock
 
 NOW = datetime(2026, 4, 29, 12, 0, tzinfo=UTC)
 
@@ -41,21 +46,32 @@ def _seed_meeting(
     title: str = "Stuck Meeting",
     state: MeetingState = MeetingState.FAILED_DOWNLOAD,
     last_error: str | None = "Reset by peer",
-) -> None:
+    repo=None,
+    duration_minutes: float = 10.0,
+    host_email: str = "u@x.com",
+    participant_count: int = 2,
+    tags: tuple[str, ...] = (),
+) -> Meeting:
     """Register a meeting and walk it into *state* through legal transitions.
 
     Currently supports any FAILED_* state plus DELETED_FAILED (via ARCHIVED)
     and ARCHIVED itself — the union the retry tests need.
+
+    If *repo* is provided, the same Meeting is also registered with the
+    in-memory repository so the retry handler can re-fetch it from "Fireflies".
     """
     meeting = Meeting(
         meeting_id=meeting_id,
         title=title,
         meeting_date=NOW,
-        duration_minutes=10.0,
-        host_email="u@x.com",
-        participant_count=2,
+        duration_minutes=duration_minutes,
+        host_email=host_email,
+        participant_count=participant_count,
+        tags=tags,
     )
     manifest.register(meeting, at=NOW)
+    if repo is not None:
+        repo._meetings[meeting_id] = meeting
     if state in {
         MeetingState.FAILED_FETCH,
         MeetingState.FAILED_DOWNLOAD,
@@ -153,7 +169,8 @@ def test_retry_returns_409_when_same_kind_already_running(
 ) -> None:
     """A live RETRY_ARCHIVE op blocks a second RETRY_ARCHIVE start."""
     manifest = configured_app.state.deps.manifest
-    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD)
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
 
     # Start a long-running RETRY_ARCHIVE op directly via the registry, on the
     # TestClient's portal loop so the asyncio.Event survives the subsequent
@@ -193,7 +210,8 @@ def test_retry_failed_archive_meeting_starts_retry_archive_op(
     configured_client: TestClient, configured_app
 ) -> None:
     manifest = configured_app.state.deps.manifest
-    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD)
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
 
     r = configured_client.post(
         "/retry/m1",
@@ -221,7 +239,8 @@ def test_retry_deleted_failed_meeting_starts_retry_purge_op(
     configured_client: TestClient, configured_app
 ) -> None:
     manifest = configured_app.state.deps.manifest
-    _seed_meeting(manifest, meeting_id="m2", state=MeetingState.DELETED_FAILED)
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m2", state=MeetingState.DELETED_FAILED, repo=repo)
 
     r = configured_client.post(
         "/retry/m2",
@@ -246,7 +265,8 @@ def test_retry_archive_success_transitions_manifest_to_archived(
 ) -> None:
     """End-to-end through the runner: a successful retry updates the manifest."""
     manifest = configured_app.state.deps.manifest
-    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD)
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
     # Default FakePipeline returns ARCHIVED, which the pipeline-less FakePipeline
     # uses directly — but ArchiveService.archive_meetings goes through
     # pipeline.archive_one which writes the manifest transition. Replace the
@@ -287,7 +307,8 @@ def test_retry_archive_failure_keeps_meeting_failed(
     configured_client: TestClient, configured_app
 ) -> None:
     manifest = configured_app.state.deps.manifest
-    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD)
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
 
     class StillFailingPipeline:
         async def archive_one(self, meeting):
@@ -318,7 +339,8 @@ def test_retry_purge_success_transitions_manifest_to_deleted(
     configured_client: TestClient, configured_app
 ) -> None:
     manifest = configured_app.state.deps.manifest
-    _seed_meeting(manifest, meeting_id="m2", state=MeetingState.DELETED_FAILED)
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m2", state=MeetingState.DELETED_FAILED, repo=repo)
 
     class PurgingPipeline:
         async def purge_one(self, meeting):
@@ -356,3 +378,106 @@ def test_retry_purge_success_transitions_manifest_to_deleted(
     rec = manifest.get("m2")
     assert rec is not None
     assert rec.state is MeetingState.DELETED
+
+
+# ---------------------------------------------------------------------------
+# Metadata fidelity: retry must re-fetch live Meeting from the source
+# ---------------------------------------------------------------------------
+
+
+def test_retry_returns_404_when_meeting_no_longer_in_source(
+    configured_client: TestClient, configured_app
+) -> None:
+    """If the user deletes the meeting from Fireflies between archive failure
+    and retry, the route must 404 instead of writing a stub-metadata archive.
+    """
+    manifest = configured_app.state.deps.manifest
+    # Seed manifest only — repo intentionally has no such meeting.
+    _seed_meeting(
+        manifest,
+        meeting_id="m-deleted-upstream",
+        state=MeetingState.FAILED_DOWNLOAD,
+    )
+
+    r = configured_client.post(
+        "/retry/m-deleted-upstream",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 404
+    assert "no longer" in r.text.lower()
+
+
+def test_retry_writes_full_metadata_to_archive_directory(
+    configured_client: TestClient, configured_app
+) -> None:
+    """A successful retry persists the live Meeting metadata to metadata.json.
+
+    Regression for the silent-fidelity-loss bug where ``_meeting_from_manifest``
+    handed neutral defaults (duration=0, host="", participants=0, tags=()) to
+    the pipeline and the archiver wrote those zeros into ``metadata.json``.
+    """
+    manifest = configured_app.state.deps.manifest
+    repo = configured_app.state.deps.client
+    archive_root = configured_app.state.deps.config.archive.root_dir
+
+    # Seed with full metadata. The repo holds the live Meeting so the retry
+    # handler can re-fetch it; the manifest holds the failed record.
+    _seed_meeting(
+        manifest,
+        meeting_id="m1",
+        title="Standup",
+        state=MeetingState.FAILED_DOWNLOAD,
+        repo=repo,
+        duration_minutes=45.0,
+        host_email="alice@x",
+        participant_count=6,
+        tags=("standup",),
+    )
+    # Provide artifacts so the real Archiver has bytes to write.
+    repo._artifacts["m1"] = ArtifactBundle(
+        audio_bytes=b"AUDIO",
+        transcript_markdown="# T",
+        summary_payload={"overview": "ov"},
+    )
+
+    # Swap in a real Pipeline + Archiver so the retry actually writes the
+    # archive directory (FakePipeline only mutates a state outcome — it
+    # doesn't touch disk, which is exactly what the bug was hiding behind).
+    archiver = Archiver(archive_root=archive_root)
+    renderer = FakeSummaryRenderer()
+    clock = FrozenClock(NOW)
+    configured_app.state.deps.pipeline = Pipeline(
+        repository=repo,
+        manifest=manifest,
+        archiver=archiver,
+        renderer=renderer,
+        clock=clock,
+    )
+
+    r = configured_client.post(
+        "/retry/m1",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 200, r.text
+    doc = HTMLParser(r.text)
+    op_id = doc.css_first("[data-operation-id]").attributes["data-operation-id"]
+    assert op_id is not None
+    _wait_for_op(configured_client, configured_app, op_id)
+
+    rec = manifest.get("m1")
+    assert rec is not None
+    assert rec.state is MeetingState.ARCHIVED
+    assert rec.archive_path is not None
+
+    # Discover the canonical archive directory from the manifest record —
+    # the slugified directory name is built from title + date and isn't
+    # something tests should re-compute.
+    from pathlib import Path as _Path
+
+    metadata_path = _Path(rec.archive_path) / "metadata.json"
+    assert metadata_path.exists(), f"missing metadata.json at {metadata_path}"
+    meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert meta["duration_minutes"] == 45.0
+    assert meta["host_email"] == "alice@x"
+    assert meta["participant_count"] == 6
+    assert meta["tags"] == ["standup"]
