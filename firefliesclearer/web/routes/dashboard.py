@@ -229,6 +229,8 @@ def _make_archive_retry_runner(
     from firefliesclearer.application.archive_service import ArchiveService
 
     async def runner(ctx: _RunnerContext) -> None:
+        if ctx.cancel_event.is_set():
+            return
         svc = ArchiveService(pipeline=deps.pipeline, manifest=deps.manifest)
         ctx.emit(
             Event(
@@ -265,6 +267,8 @@ def _make_purge_retry_runner(
     from firefliesclearer.application.purge_service import PurgeService
 
     async def runner(ctx: _RunnerContext) -> None:
+        if ctx.cancel_event.is_set():
+            return
         svc = PurgeService(pipeline=deps.pipeline, manifest=deps.manifest)
         ctx.emit(
             Event(
