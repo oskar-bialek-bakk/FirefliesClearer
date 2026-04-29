@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -122,9 +123,13 @@ def test_get_archive_renders_preflight_with_count_and_size(
     # 3 meetings selected.
     assert "3" in text
     assert "meetings" in text.lower()
-    # MB estimate present (3 meetings * 30 minutes * 64 kbps ~= 43 MB).
-    # Just check there's a numeric MB estimate at all.
-    assert "MB" in text or "mb" in text
+    # MB estimate present and within a sensible numeric range.
+    # 3 meetings * 30 minutes * 64 kbps ~= 43 MB; allow some drift but pin
+    # the rendered number to catch accidental KBPS changes (e.g. 8, 64000).
+    match = re.search(r"~\s*(\d+)\s*MB", text)
+    assert match is not None, f"no '~ <int> MB' estimate in: {text!r}"
+    mb = int(match.group(1))
+    assert 30 <= mb <= 60, f"unexpected MB estimate: {mb}"
     # Stepper says step 3 active.
     active = doc.css_first("nav.wizard-stepper li.step.active[data-step='archive']")
     assert active is not None
