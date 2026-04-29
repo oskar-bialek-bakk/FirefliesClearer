@@ -33,6 +33,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
+from typing import Final
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -66,6 +67,11 @@ from firefliesclearer.web.sessions import SessionStore
 AUDIO_KBPS = 64
 
 PAGE_SIZE = 100
+
+# Sentinel for "leave this field unchanged" in ``_set_wizard``. Distinct from
+# ``None``, which is a legitimate value for ``operation_id`` (it clears the id
+# when transitioning to the next step).
+_UNSET: Final[object] = object()
 
 logger = logging.getLogger(__name__)
 
@@ -695,13 +701,23 @@ def _set_wizard(
     *,
     step: str,
     selected_ids: list[str] | None = None,
-    operation_id: str | None | object = ...,  # sentinel: leave unchanged
+    operation_id: str | None | object = _UNSET,
 ) -> None:
-    """Update the wizard slice atomically while preserving the rest."""
+    """Update the wizard slice atomically while preserving the rest.
+
+    ``operation_id`` defaults to ``_UNSET`` (a private sentinel) so callers can
+    distinguish "leave the existing id alone" from "clear the id" (``None``).
+    """
     state = wizard_session.get_state(_store(request), _sid(request))
-    new_op_id: str | None = (
-        state.get("operation_id") if operation_id is ... else operation_id  # type: ignore[assignment]
-    )
+    if operation_id is _UNSET:
+        new_op_id: str | None = state.get("operation_id")
+    elif operation_id is None or isinstance(operation_id, str):
+        # Narrow ``operation_id`` away from ``object`` to ``str | None``.
+        new_op_id = operation_id
+    else:
+        # Unreachable: ``operation_id``'s declared union is ``str | None | object``
+        # but the only ``object`` value we accept is the ``_UNSET`` sentinel.
+        raise TypeError(f"unexpected operation_id: {operation_id!r}")
     new_state = wizard_session.WizardState(
         step=step,
         filters=state.get("filters", {}),
