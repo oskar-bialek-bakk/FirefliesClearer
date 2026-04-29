@@ -1,4 +1,12 @@
-{# Needs attention: failed meetings with title + last_error. #}
+{# Needs attention: failed meetings with title + last_error.
+
+   Each row carries a Retry button that POSTs to /retry/{meeting_id} via HTMX.
+   The server determines the retry kind (RETRY_ARCHIVE / RETRY_PURGE) from the
+   meeting's current state and returns an inline progress fragment that
+   replaces this row (hx-target="closest .needs-attention-row",
+   hx-swap="outerHTML"). The fragment then opens an SSE stream and reloads
+   the page on terminal state, so the dashboard re-renders with the updated
+   manifest state. #}
 <section class="needs-attention">
   <h2>Needs attention</h2>
   {% if needs_attention %}
@@ -11,6 +19,17 @@
           {% if rec.last_error %}
             <div class="needs-attention-row__error">{{ rec.last_error }}</div>
           {% endif %}
+          {# CSRF: hx-include picks the value out of the dashboard's hidden
+             _csrf input below, mirroring the approach used by the wizard's
+             POST forms (see _review_toolbar.html, step3 in-progress). #}
+          <form class="needs-attention-row__retry" method="post"
+                hx-post="/retry/{{ rec.meeting_id }}"
+                hx-target="closest .needs-attention-row"
+                hx-swap="outerHTML"
+                hx-include="[name='_csrf']">
+            <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+            <button type="submit" class="retry-btn">Retry</button>
+          </form>
         </li>
       {% endfor %}
     </ul>
