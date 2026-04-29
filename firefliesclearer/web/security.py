@@ -27,7 +27,7 @@ import secrets
 from dataclasses import dataclass
 
 from fastapi import FastAPI, Request, Response
-from itsdangerous import BadSignature, URLSafeSerializer
+from itsdangerous import BadData, URLSafeSerializer
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp
 
@@ -90,7 +90,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 return Response(status_code=403, content="CSRF cookie missing")
             try:
                 self._serializer.loads(cookie)
-            except BadSignature:
+            except BadData:
                 return Response(status_code=403, content="CSRF cookie invalid")
             form = await request.form()
             if form.get(CSRF_FIELD) != cookie:
