@@ -18,6 +18,30 @@
   var url = "/api/operations/" + encodeURIComponent(opId) + "/events";
   var es = new EventSource(url);
 
+  // Sub-state -> display label lookup tables. Mirror the Jinja branches in
+  // _archive_meeting_row.html and _purge_meeting_row.html so the first SSE
+  // update preserves the glyphed labels rendered server-side ("archived ✓",
+  // "deleted ✓", "failed ✗"). Without this the script would replace the
+  // glyphs with raw enum values like "done" / "failed".
+  var ARCHIVE_LABELS = {
+    queued: "queued",
+    fetching: "fetching",
+    downloading: "downloading audio",
+    rendering: "rendering pdf",
+    verifying: "verifying",
+    done: "archived ✓",
+    failed: "failed ✗",
+  };
+  var PURGE_LABELS = {
+    queued: "queued",
+    verifying: "verifying",
+    deleting: "deleting",
+    done: "deleted ✓",
+    failed: "failed ✗",
+  };
+  var kind = root.dataset.kind || "archive";
+  var labels = (kind === "purge") ? PURGE_LABELS : ARCHIVE_LABELS;
+
   function updateRow(data) {
     if (!data || !data.id) return;
     var row = root.querySelector('[data-meeting-id="' + CSS.escape(data.id) + '"]');
@@ -25,7 +49,7 @@
     if (data.sub_state) {
       row.dataset.subState = data.sub_state;
       var subEl = row.querySelector(".row-sub-state");
-      if (subEl) subEl.textContent = data.sub_state;
+      if (subEl) subEl.textContent = labels[data.sub_state] || data.sub_state;
       // Mirror the failed-row marker class the server emits on first render.
       if (data.sub_state === "failed") {
         if (row.classList.contains("archive-meeting-row")) {

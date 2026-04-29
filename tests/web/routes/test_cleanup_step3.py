@@ -292,6 +292,42 @@ def test_in_progress_renders_meeting_list_for_running_op(
         _wait_for_op(configured_client, configured_app, op_id)
 
 
+def test_archive_in_progress_root_has_data_kind_for_sse_label_lookup(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The in-progress root carries data-kind=archive so the SSE script can
+    pick the right sub_state -> display-label table and preserve the
+    server-rendered glyphs (e.g. "archived ✓", "failed ✗").
+    """
+    _seed_repo(configured_app, 2)
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="archive", selected=["m0"])
+    block = asyncio.Event()
+
+    class BlockingPipeline:
+        async def archive_one(self, meeting):
+            await block.wait()
+            return MeetingState.ARCHIVED
+
+    configured_app.state.deps.pipeline = BlockingPipeline()
+    configured_client.post(
+        "/cleanup/archive/start",
+        data={"_csrf": _csrf(configured_client)},
+        follow_redirects=False,
+    )
+    op_id = _wizard(configured_app, sid)["operation_id"]
+    try:
+        r = configured_client.get("/cleanup/archive/in-progress")
+        assert r.status_code == 200
+        doc = HTMLParser(r.text)
+        root = doc.css_first("[data-operation-id]")
+        assert root is not None
+        assert root.attributes.get("data-kind") == "archive"
+    finally:
+        block.set()
+        _wait_for_op(configured_client, configured_app, op_id)
+
+
 # ---------------------------------------------------------------------------
 # GET /cleanup/archive/done
 # ---------------------------------------------------------------------------

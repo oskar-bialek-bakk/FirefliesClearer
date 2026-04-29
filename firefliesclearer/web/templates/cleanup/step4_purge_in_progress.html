@@ -4,7 +4,8 @@
 {% include "cleanup/_stepper.html" %}
 
 <section class="cleanup-step cleanup-step-purge cleanup-step-purge-in-progress"
-         data-operation-id="{{ op_id }}">
+         data-operation-id="{{ op_id }}"
+         data-kind="purge">
   <h1>Step 4 — Purging</h1>
 
   {# Progress bar mirroring Step 3 — completed includes both successes and
