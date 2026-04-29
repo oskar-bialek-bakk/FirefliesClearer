@@ -79,6 +79,7 @@ def patched_deps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         pipeline=pipeline,
         manifest=manifest,
         client=cast(FirefliesClient, repo),  # duck-typed; runtime compatible
+        clock=FrozenClock(NOW),
     )
     monkeypatch.setattr(_common, "build_deps", lambda **kw: deps)
     return tmp_path, archive_root

@@ -18,6 +18,7 @@ from firefliesclearer.infra.config import (
 from firefliesclearer.infra.fireflies_client import FirefliesClient
 from firefliesclearer.infra.pdf_renderer import ReportlabSummaryRenderer
 from firefliesclearer.infra.system_clock import SystemClock
+from firefliesclearer.ports.clock import Clock
 
 console = Console()
 
@@ -28,6 +29,7 @@ class Deps:
     pipeline: Pipeline
     manifest: Manifest
     client: FirefliesClient
+    clock: Clock
 
 
 def build_deps(*, config_override: Path | None = None) -> Deps:
@@ -39,11 +41,12 @@ def build_deps(*, config_override: Path | None = None) -> Deps:
     archiver = Archiver(archive_root=archive_root)
     renderer = ReportlabSummaryRenderer()
     client = FirefliesClient(api_key=cfg.fireflies.api_key)
+    clock = SystemClock()
     pipeline = Pipeline(
         repository=client,
         manifest=manifest,
         archiver=archiver,
         renderer=renderer,
-        clock=SystemClock(),
+        clock=clock,
     )
-    return Deps(config=cfg, pipeline=pipeline, manifest=manifest, client=client)
+    return Deps(config=cfg, pipeline=pipeline, manifest=manifest, client=client, clock=clock)

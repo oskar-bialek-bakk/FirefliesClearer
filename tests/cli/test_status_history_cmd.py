@@ -71,6 +71,7 @@ def patched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         pipeline=pipeline,
         manifest=manifest,
         client=cast(FirefliesClient, repo),
+        clock=FrozenClock(NOW),
     )
     monkeypatch.setattr(_common, "build_deps", lambda **kw: deps)
 
