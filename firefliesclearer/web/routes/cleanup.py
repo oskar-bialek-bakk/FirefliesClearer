@@ -21,6 +21,8 @@ Subsequent tasks (5.3-5.7) attach more handlers to the same router.
 
 from __future__ import annotations
 
+import logging
+import re
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, Request
@@ -32,6 +34,8 @@ from firefliesclearer.application.scan_service import ScanFilters, ScanService
 from firefliesclearer.web import wizard_session
 from firefliesclearer.web.deps import get_deps
 from firefliesclearer.web.sessions import SessionStore
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -59,6 +63,21 @@ def _templates(request: Request) -> Jinja2Templates:
 
 def _service(deps: SimpleNamespace) -> ScanService:
     return ScanService(repo=deps.client, clock=deps.clock)
+
+
+def _validate_regex(filters: ScanFilters) -> str | None:
+    """Eagerly validate ``title_regex`` so bad patterns surface inline.
+
+    Returns ``None`` when the pattern is absent or compiles successfully,
+    otherwise an inline error message suitable for the form/fragment.
+    """
+    if filters.title_regex is None:
+        return None
+    try:
+        re.compile(filters.title_regex)
+    except re.error as exc:
+        return f"Invalid regex: {exc}"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -101,10 +120,19 @@ async def preview_count(
             {"count": None, "message": "Add at least one filter to see a count."},
         )
 
+    err = _validate_regex(filters)
+    if err:
+        return _templates(request).TemplateResponse(
+            request,
+            "cleanup/_preview_count.html",
+            {"count": None, "message": err},
+        )
+
     svc = _service(deps)
     try:
         result = await svc.scan(filters)
     except Exception as exc:  # API error path: fragment, never 5xx.
+        logger.warning("preview-count failed: %s", exc, exc_info=True)
         return _templates(request).TemplateResponse(
             request,
             "cleanup/_preview_count.html",
@@ -134,6 +162,19 @@ async def step1_submit(
                 "presets": [],
                 "step": "filter",
                 "error": "Add at least one filter before continuing.",
+            },
+            status_code=422,
+        )
+    err = _validate_regex(filters)
+    if err:
+        return _templates(request).TemplateResponse(
+            request,
+            "cleanup/step1_filter.html",
+            {
+                "filters": filters,
+                "presets": [],
+                "step": "filter",
+                "error": err,
             },
             status_code=422,
         )

@@ -23,31 +23,36 @@
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
 
     <fieldset class="filter-row">
-      <label>
+      <legend class="visually-hidden">Older than filter</legend>
+      <label class="enable-toggle">
         <input type="checkbox" name="older_than_days_enabled" value="on"
           {% if filters.older_than_days is not none %}checked{% endif %}>
         Older than
       </label>
-      <input type="number" name="older_than_days" min="0" step="1"
+      <label for="older_than_days" class="visually-hidden">Number of days</label>
+      <input type="number" id="older_than_days" name="older_than_days" min="0" step="1"
         value="{% if filters.older_than_days is not none %}{{ filters.older_than_days }}{% endif %}"
         placeholder="N">
-      <span>days</span>
+      <span aria-hidden="true">days</span>
     </fieldset>
 
     <fieldset class="filter-row">
-      <label>
+      <legend class="visually-hidden">Duration below filter</legend>
+      <label class="enable-toggle">
         <input type="checkbox" name="duration_below_minutes_enabled" value="on"
           {% if filters.duration_below_minutes is not none %}checked{% endif %}>
         Duration below
       </label>
-      <input type="number" name="duration_below_minutes" min="0" step="0.1"
+      <label for="duration_below_minutes" class="visually-hidden">Number of minutes</label>
+      <input type="number" id="duration_below_minutes" name="duration_below_minutes" min="0" step="0.1"
         value="{% if filters.duration_below_minutes is not none %}{{ filters.duration_below_minutes }}{% endif %}"
         placeholder="N">
-      <span>minutes</span>
+      <span aria-hidden="true">minutes</span>
     </fieldset>
 
     <fieldset class="filter-row">
-      <label>
+      <legend class="visually-hidden">Transcript filter</legend>
+      <label class="enable-toggle">
         <input type="checkbox" name="no_transcript" value="on"
           {% if filters.no_transcript %}checked{% endif %}>
         No transcript only
@@ -55,6 +60,7 @@
     </fieldset>
 
     <fieldset class="filter-row">
+      <legend class="visually-hidden">Title contains filter</legend>
       <label for="title_contains">Title contains</label>
       <input type="text" id="title_contains" name="title_contains"
         value="{{ filters.title_contains | join(', ') }}"
@@ -65,6 +71,7 @@
     <details class="filter-advanced">
       <summary>Advanced: title regex</summary>
       <fieldset class="filter-row">
+        <legend class="visually-hidden">Title regex filter</legend>
         <label for="title_regex">Title regex</label>
         <input type="text" id="title_regex" name="title_regex"
           value="{{ filters.title_regex or '' }}"
@@ -73,6 +80,7 @@
     </details>
 
     <fieldset class="filter-row">
+      <legend class="visually-hidden">Host email filter</legend>
       <label for="host_email">Host email</label>
       <input type="text" id="host_email" name="host_email"
         value="{{ filters.host_email | join(', ') }}"
@@ -81,6 +89,7 @@
     </fieldset>
 
     <fieldset class="filter-row">
+      <legend class="visually-hidden">Has tag filter</legend>
       <label for="has_tag">Has tag</label>
       <input type="text" id="has_tag" name="has_tag"
         value="{{ filters.has_tag | join(', ') }}"
@@ -89,6 +98,7 @@
     </fieldset>
 
     <fieldset class="filter-row">
+      <legend class="visually-hidden">Participants below filter</legend>
       <label for="participants_below">Participants below</label>
       <input type="number" id="participants_below" name="participants_below" min="0" step="1"
         value="{% if filters.participants_below is not none %}{{ filters.participants_below }}{% endif %}"

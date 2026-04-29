@@ -49,10 +49,13 @@ def get_state(store: SessionStore, sid: str) -> WizardState:
 
 
 def set_state(store: SessionStore, sid: str, state: WizardState) -> None:
-    """Replace the wizard slice atomically (preserving other session keys)."""
-    full = store.get(sid)
-    full["wizard"] = dict(state)
-    store.set(sid, full)
+    """Atomically replace the wizard slice without clobbering other session keys.
+
+    Delegates to :meth:`SessionStore.update`, whose shallow-merge under the
+    internal lock overwrites the ``"wizard"`` key while preserving the rest of
+    the session payload.
+    """
+    store.update(sid, {"wizard": dict(state)})
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from selectolax.parser import HTMLParser
 
 from firefliesclearer.core.models import Meeting
+from tests.fakes.in_memory_repository import InMemoryMeetingRepository
 
 NOW = datetime(2026, 4, 29, 12, 0, tzinfo=UTC)
 
@@ -21,11 +22,11 @@ def configured_client(configured_app) -> TestClient:
     return c
 
 
-def _seed_old_meetings(repo, count: int, days_old: int = 90) -> None:
-    """Inject *count* meetings older than *days_old* into the in-memory repo."""
+def _seed_old_meetings(app, count: int, days_old: int = 90) -> None:
+    """Replace the app's repo with one pre-seeded with *count* old meetings."""
     when = NOW - timedelta(days=days_old)
-    for i in range(count):
-        m = Meeting(
+    meetings = [
+        Meeting(
             meeting_id=f"m{i}",
             title=f"Old Meeting {i}",
             meeting_date=when,
@@ -33,7 +34,11 @@ def _seed_old_meetings(repo, count: int, days_old: int = 90) -> None:
             host_email="host@example.com",
             participant_count=5,
         )
-        repo._meetings[m.meeting_id] = m
+        for i in range(count)
+    ]
+    fresh = InMemoryMeetingRepository(meetings=meetings, api_key="ff_test")
+    fresh.set_user_email_for_key("ff_test", "oskar@example.com")
+    app.state.deps.client = fresh
 
 
 # ---------------------------------------------------------------------------
@@ -120,8 +125,7 @@ def test_preview_count_empty_returns_message(configured_client: TestClient) -> N
 def test_preview_count_with_active_filter_returns_count(
     configured_client: TestClient, configured_app
 ) -> None:
-    repo = configured_app.state.deps.client
-    _seed_old_meetings(repo, count=3, days_old=90)
+    _seed_old_meetings(configured_app, count=3, days_old=90)
 
     csrf = configured_client.cookies["ffc_csrf"]
     r = configured_client.post(
@@ -176,6 +180,22 @@ def test_preview_count_handles_repo_error(configured_client: TestClient, configu
     assert "Could not preview count" in r.text
 
 
+def test_preview_count_with_invalid_regex_returns_inline_message(
+    configured_client: TestClient,
+) -> None:
+    """Bad regex should fail fast in the fragment, not raise inside ScanService."""
+    csrf = configured_client.cookies["ffc_csrf"]
+    r = configured_client.post(
+        "/cleanup/preview-count",
+        data={
+            "_csrf": csrf,
+            "title_regex": "*",  # invalid: nothing to repeat
+        },
+    )
+    assert r.status_code == 200
+    assert "Invalid regex" in r.text
+
+
 # ---------------------------------------------------------------------------
 # POST /cleanup
 # ---------------------------------------------------------------------------
@@ -217,3 +237,20 @@ def test_post_cleanup_with_valid_filter_redirects_and_saves_session(
     assert state["filters"]["older_than_days"] == 30
     assert state["selected_ids"] == []
     assert state["operation_id"] is None
+
+
+def test_post_cleanup_with_invalid_regex_renders_error(configured_client: TestClient) -> None:
+    """Invalid title_regex should re-render the form with an inline error."""
+    csrf = configured_client.cookies["ffc_csrf"]
+    r = configured_client.post(
+        "/cleanup",
+        data={
+            "_csrf": csrf,
+            "title_regex": "*",  # invalid: nothing to repeat
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 422
+    assert "Invalid regex" in r.text
+    doc = HTMLParser(r.text)
+    assert doc.css_first("form#cleanup-step1-form") is not None
