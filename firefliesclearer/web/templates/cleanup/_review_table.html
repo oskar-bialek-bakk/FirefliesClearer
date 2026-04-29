@@ -1,0 +1,42 @@
+{# Review table — HTMX swap target for paged re-renders. #}
+<div class="review-table" id="review-table">
+  <table class="meetings-table">
+    <thead>
+      <tr>
+        <th scope="col" class="col-check"><span class="visually-hidden">Selected</span></th>
+        <th scope="col" class="col-title">Title</th>
+        <th scope="col" class="col-date">Date</th>
+        <th scope="col" class="col-duration">Duration</th>
+        <th scope="col" class="col-host">Host</th>
+        <th scope="col" class="col-participants">Participants</th>
+        <th scope="col" class="col-rules">Matched rules</th>
+        <th scope="col" class="col-link"><span class="visually-hidden">Open in Fireflies</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for match in matches %}
+        {% include "cleanup/_review_row.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if pages > 1 %}
+    <nav class="pagination" aria-label="Pagination">
+      {% if page > 1 %}
+        <a href="/cleanup/review?page={{ page - 1 }}"
+           hx-get="/cleanup/review?page={{ page - 1 }}"
+           hx-target=".review-table"
+           hx-swap="outerHTML"
+           class="page-prev">&larr; Prev</a>
+      {% endif %}
+      <span class="page-indicator">Page {{ page }} of {{ pages }} ({{ total }} matches)</span>
+      {% if page < pages %}
+        <a href="/cleanup/review?page={{ page + 1 }}"
+           hx-get="/cleanup/review?page={{ page + 1 }}"
+           hx-target=".review-table"
+           hx-swap="outerHTML"
+           class="page-next">Next &rarr;</a>
+      {% endif %}
+    </nav>
+  {% endif %}
+</div>

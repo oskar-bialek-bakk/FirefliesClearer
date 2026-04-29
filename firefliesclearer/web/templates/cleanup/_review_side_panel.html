@@ -1,0 +1,46 @@
+{# Side panel content — slotted into `.side-panel` via HTMX innerHTML swap.
+   No outer wrapper — the parent <aside class="side-panel"> stays in the DOM.
+   TODO(phase-9): summary preview (~500 chars) + full participants list — both
+   require fetch_artifacts() which is too expensive for this hover-style panel.
+#}
+<div class="side-panel-inner">
+  <button type="button" class="side-panel-close" aria-label="Close panel"
+          onclick="this.closest('.side-panel').setAttribute('hidden', '')">
+    &times;
+  </button>
+
+  <h2 class="side-panel-title">{{ meeting.title }}</h2>
+
+  <dl class="side-panel-fields">
+    <dt>Date</dt>
+    <dd title="{{ meeting.meeting_date.isoformat() }}">
+      {{ meeting.meeting_date.strftime("%Y-%m-%d %H:%M %Z") }}
+    </dd>
+
+    <dt>Host</dt>
+    <dd>{{ meeting.host_email }}</dd>
+
+    <dt>Duration</dt>
+    <dd>{{ "%.1f" | format(meeting.duration_minutes) }} min</dd>
+
+    <dt>Participants</dt>
+    <dd>{{ meeting.participant_count }}</dd>
+
+    <dt>Tags</dt>
+    <dd>
+      {% if meeting.tags %}
+        {% for tag in meeting.tags %}<span class="rule-chip">{{ tag }}</span>{% endfor %}
+      {% else %}
+        <span class="muted">none</span>
+      {% endif %}
+    </dd>
+
+    <dt>Transcript</dt>
+    <dd>{% if meeting.has_transcript %}available{% else %}missing{% endif %}</dd>
+  </dl>
+
+  <p class="side-panel-source">
+    <a href="https://app.fireflies.ai/view/{{ meeting.meeting_id }}"
+       target="_blank" rel="noopener noreferrer">Open in Fireflies &rarr;</a>
+  </p>
+</div>

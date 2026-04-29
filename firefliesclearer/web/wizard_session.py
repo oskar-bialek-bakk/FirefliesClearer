@@ -59,6 +59,67 @@ def set_state(store: SessionStore, sid: str, state: WizardState) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Selection helpers (Step 2 — Review)
+# ---------------------------------------------------------------------------
+
+
+def get_selected(store: SessionStore, sid: str) -> set[str]:
+    """Return the current ``selected_ids`` slice as a set for fast lookups."""
+    state = get_state(store, sid)
+    return set(state.get("selected_ids", []) or [])
+
+
+def replace_selection(store: SessionStore, sid: str, ids: list[str]) -> None:
+    """Replace the ``selected_ids`` slice while preserving the rest of the wizard state.
+
+    The read-modify-write happens under the SessionStore's internal lock via
+    :meth:`SessionStore.update`, which guarantees consistency for the write
+    itself. The read-modify-write sequence is NOT atomic across concurrent
+    requests for the same session — a single driving tab is assumed.
+    """
+    state = get_state(store, sid)
+    new_state = WizardState(
+        step=state.get("step", "review"),
+        filters=state.get("filters", {}),
+        selected_ids=list(ids),
+        operation_id=state.get("operation_id"),
+    )
+    set_state(store, sid, new_state)
+
+
+def add_to_selection(store: SessionStore, sid: str, ids: list[str]) -> None:
+    """Append *ids* to the selection, deduplicating while preserving insertion order."""
+    current = list(get_state(store, sid).get("selected_ids", []) or [])
+    seen = set(current)
+    for mid in ids:
+        if mid not in seen:
+            current.append(mid)
+            seen.add(mid)
+    replace_selection(store, sid, current)
+
+
+def remove_from_selection(store: SessionStore, sid: str, ids: list[str]) -> None:
+    """Remove *ids* from the selection. Missing IDs are silently ignored."""
+    excl = set(ids)
+    current = [
+        mid for mid in (get_state(store, sid).get("selected_ids", []) or []) if mid not in excl
+    ]
+    replace_selection(store, sid, current)
+
+
+def toggle_in_selection(store: SessionStore, sid: str, mid: str) -> bool:
+    """Toggle *mid* in the selection. Returns ``True`` if added, ``False`` if removed."""
+    current = list(get_state(store, sid).get("selected_ids", []) or [])
+    if mid in current:
+        current.remove(mid)
+        replace_selection(store, sid, current)
+        return False
+    current.append(mid)
+    replace_selection(store, sid, current)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # ScanFilters <-> dict
 # ---------------------------------------------------------------------------
 

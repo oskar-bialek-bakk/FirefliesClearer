@@ -147,3 +147,98 @@ def test_set_state_preserves_other_session_keys():
     assert full["email"] == "a@b.com"
     assert full["wizard"]["step"] == "review"
     assert full["wizard"]["filters"]["older_than_days"] == 30
+
+
+# ---------------------------------------------------------------------------
+# Selection helpers (Task 5.3)
+# ---------------------------------------------------------------------------
+
+
+def _seed_wizard(store: SessionStore, sid: str, *, selected: list[str] | None = None) -> None:
+    wizard_session.set_state(
+        store,
+        sid,
+        wizard_session.WizardState(
+            step="review",
+            filters={"older_than_days": 30},
+            selected_ids=list(selected or []),
+            operation_id=None,
+        ),
+    )
+
+
+def test_get_selected_returns_set():
+    store = SessionStore()
+    _seed_wizard(store, "sid", selected=["a", "b", "c"])
+    assert wizard_session.get_selected(store, "sid") == {"a", "b", "c"}
+
+
+def test_get_selected_returns_empty_when_no_state():
+    store = SessionStore()
+    assert wizard_session.get_selected(store, "sid") == set()
+
+
+def test_replace_selection_overwrites_entirely():
+    store = SessionStore()
+    _seed_wizard(store, "sid", selected=["a", "b"])
+    wizard_session.replace_selection(store, "sid", ["x", "y", "z"])
+    state = wizard_session.get_state(store, "sid")
+    assert state["selected_ids"] == ["x", "y", "z"]
+
+
+def test_replace_selection_preserves_other_wizard_fields():
+    store = SessionStore()
+    _seed_wizard(store, "sid", selected=["a"])
+    wizard_session.replace_selection(store, "sid", ["x"])
+    state = wizard_session.get_state(store, "sid")
+    assert state["step"] == "review"
+    assert state["filters"]["older_than_days"] == 30
+
+
+def test_add_to_selection_is_idempotent():
+    store = SessionStore()
+    _seed_wizard(store, "sid", selected=["a"])
+    wizard_session.add_to_selection(store, "sid", ["a", "b", "a"])
+    state = wizard_session.get_state(store, "sid")
+    # No duplicates, "a" appears once, "b" added once.
+    assert state["selected_ids"] == ["a", "b"]
+
+
+def test_add_to_selection_appends_in_order():
+    store = SessionStore()
+    _seed_wizard(store, "sid", selected=[])
+    wizard_session.add_to_selection(store, "sid", ["c", "a", "b"])
+    state = wizard_session.get_state(store, "sid")
+    assert state["selected_ids"] == ["c", "a", "b"]
+
+
+def test_remove_from_selection_strips_listed_ids():
+    store = SessionStore()
+    _seed_wizard(store, "sid", selected=["a", "b", "c"])
+    wizard_session.remove_from_selection(store, "sid", ["a", "c"])
+    state = wizard_session.get_state(store, "sid")
+    assert state["selected_ids"] == ["b"]
+
+
+def test_remove_from_selection_ignores_missing_ids():
+    store = SessionStore()
+    _seed_wizard(store, "sid", selected=["a", "b"])
+    wizard_session.remove_from_selection(store, "sid", ["x", "y"])
+    state = wizard_session.get_state(store, "sid")
+    assert state["selected_ids"] == ["a", "b"]
+
+
+def test_toggle_in_selection_adds_when_absent_and_returns_true():
+    store = SessionStore()
+    _seed_wizard(store, "sid", selected=["a"])
+    added = wizard_session.toggle_in_selection(store, "sid", "b")
+    assert added is True
+    assert wizard_session.get_state(store, "sid")["selected_ids"] == ["a", "b"]
+
+
+def test_toggle_in_selection_removes_when_present_and_returns_false():
+    store = SessionStore()
+    _seed_wizard(store, "sid", selected=["a", "b"])
+    added = wizard_session.toggle_in_selection(store, "sid", "a")
+    assert added is False
+    assert wizard_session.get_state(store, "sid")["selected_ids"] == ["b"]
