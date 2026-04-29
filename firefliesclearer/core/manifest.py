@@ -250,6 +250,38 @@ class Manifest:
         ).fetchall()
         return [row[0] for row in rows]
 
+    def _build_history_where(
+        self,
+        *,
+        states: list[MeetingState] | None,
+        date_from: datetime | None,
+        date_to: datetime | None,
+        title_contains: str | None,
+    ) -> tuple[str, list[Any]]:
+        """Build a parameterized WHERE clause for history queries.
+
+        Returns ``(clause, params)`` where ``clause`` is either an empty
+        string or starts with ``WHERE``. Empty/None values are skipped so
+        callers can pass any subset of filters.
+        """
+        fragments: list[str] = []
+        params: list[Any] = []
+        if states:
+            placeholders = ", ".join("?" * len(states))
+            fragments.append(f"state IN ({placeholders})")
+            params.extend(s.value for s in states)
+        if date_from is not None:
+            fragments.append("deleted_at >= ?")
+            params.append(_iso(date_from))
+        if date_to is not None:
+            fragments.append("deleted_at < ?")
+            params.append(_iso(date_to))
+        if title_contains:
+            fragments.append("title LIKE ?")
+            params.append(f"%{title_contains}%")
+        clause = f"WHERE {' AND '.join(fragments)}" if fragments else ""
+        return clause, params
+
     def query_history(
         self,
         *,
@@ -261,28 +293,13 @@ class Manifest:
         offset: int,
     ) -> list[MeetingRecord]:
         """Flexible filtered query over meetings, ordered by deleted_at DESC."""
-        where_fragments: list[str] = []
-        params: list[Any] = []
-
         state_list = list(states) if states is not None else None
-        if state_list is not None and state_list:
-            placeholders = ", ".join("?" * len(state_list))
-            where_fragments.append(f"state IN ({placeholders})")
-            params.extend(s.value for s in state_list)
-
-        if date_from is not None:
-            where_fragments.append("deleted_at >= ?")
-            params.append(_iso(date_from))
-
-        if date_to is not None:
-            where_fragments.append("deleted_at < ?")
-            params.append(_iso(date_to))
-
-        if title_contains:
-            where_fragments.append("title LIKE ?")
-            params.append(f"%{title_contains}%")
-
-        where_clause = f"WHERE {' AND '.join(where_fragments)}" if where_fragments else ""
+        where_clause, params = self._build_history_where(
+            states=state_list,
+            date_from=date_from,
+            date_to=date_to,
+            title_contains=title_contains,
+        )
         sql = (
             f"SELECT meeting_id FROM meetings {where_clause} "
             f"ORDER BY deleted_at DESC NULLS LAST, meeting_id ASC "
@@ -307,28 +324,13 @@ class Manifest:
         title_contains: str | None,
     ) -> int:
         """Return count of meetings matching the same WHERE conditions as query_history."""
-        where_fragments: list[str] = []
-        params: list[Any] = []
-
         state_list = list(states) if states is not None else None
-        if state_list is not None and state_list:
-            placeholders = ", ".join("?" * len(state_list))
-            where_fragments.append(f"state IN ({placeholders})")
-            params.extend(s.value for s in state_list)
-
-        if date_from is not None:
-            where_fragments.append("deleted_at >= ?")
-            params.append(_iso(date_from))
-
-        if date_to is not None:
-            where_fragments.append("deleted_at < ?")
-            params.append(_iso(date_to))
-
-        if title_contains:
-            where_fragments.append("title LIKE ?")
-            params.append(f"%{title_contains}%")
-
-        where_clause = f"WHERE {' AND '.join(where_fragments)}" if where_fragments else ""
+        where_clause, params = self._build_history_where(
+            states=state_list,
+            date_from=date_from,
+            date_to=date_to,
+            title_contains=title_contains,
+        )
         sql = f"SELECT COUNT(*) FROM meetings {where_clause}"
 
         row = self._conn.execute(sql, params).fetchone()

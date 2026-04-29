@@ -43,7 +43,7 @@ def _open_manifest(tmp_path: Path) -> Manifest:
 
 def _build(tmp_path: Path) -> tuple[AuditService, Manifest]:
     manifest = _open_manifest(tmp_path)
-    svc = AuditService(manifest)
+    svc = AuditService(manifest=manifest)
     return svc, manifest
 
 

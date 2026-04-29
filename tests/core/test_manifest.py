@@ -245,3 +245,38 @@ def test_count_history_returns_total_ignoring_limit_offset(manifest):
         title_contains=None,
     )
     assert total == 3
+
+
+def test_query_history_filters_by_title_contains(manifest):
+    """SQLite LIKE is case-insensitive for ASCII — 'Sync' matches 'sync'."""
+    titles = {
+        "a": "Daily Sync",
+        "b": "Sprint Planning",
+        "c": "Sync with Customer",
+    }
+    for mid, title in titles.items():
+        meeting = Meeting(
+            meeting_id=mid,
+            title=title,
+            meeting_date=NOW,
+            duration_minutes=30.0,
+            host_email="u@x.com",
+            participant_count=2,
+            tags=(),
+            has_transcript=True,
+        )
+        manifest.register(meeting, at=NOW)
+        manifest.transition(mid, to=MeetingState.ARCHIVED, at=NOW)
+        manifest.transition(mid, to=MeetingState.DELETED, at=NOW)
+
+    result = manifest.query_history(
+        states=None,
+        date_from=None,
+        date_to=None,
+        title_contains="Sync",
+        limit=50,
+        offset=0,
+    )
+    assert len(result) == 2
+    result_ids = {r.meeting_id for r in result}
+    assert result_ids == {"a", "c"}

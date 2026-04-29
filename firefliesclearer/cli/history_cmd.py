@@ -39,7 +39,7 @@ def history(
         limit=1000,
         offset=0,
     )
-    svc = AuditService(deps.manifest)
+    svc = AuditService(manifest=deps.manifest)
     entries = svc.history(filt)
 
     table = Table(title=f"Deleted in {year:04d}-{mnum:02d}")

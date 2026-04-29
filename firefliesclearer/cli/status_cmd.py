@@ -18,7 +18,7 @@ def status(
 ) -> None:
     """Show counts per state and recent failures."""
     deps = _common.build_deps(config_override=config)
-    svc = AuditService(deps.manifest)
+    svc = AuditService(manifest=deps.manifest)
     summary = svc.summary()
 
     table = Table(title="Manifest state")

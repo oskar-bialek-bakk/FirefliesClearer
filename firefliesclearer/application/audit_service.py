@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 
 from firefliesclearer.core.manifest import Manifest, StateLogEntry
 from firefliesclearer.core.models import MeetingState
@@ -24,10 +25,10 @@ _FAILED_STATES: tuple[MeetingState, ...] = (
 class StateSummary:
     """Snapshot of manifest health for the status view."""
 
-    counts_by_state: dict[MeetingState, int]
+    counts_by_state: Mapping[MeetingState, int]
     last_run_at: datetime | None
     failed_meeting_ids: tuple[str, ...]
-    last_errors: dict[str, str]
+    last_errors: Mapping[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +66,7 @@ class AuditService:
         The SQLite-backed manifest; the single data source for all audit reads.
     """
 
-    def __init__(self, manifest: Manifest) -> None:
+    def __init__(self, *, manifest: Manifest) -> None:
         self._manifest = manifest
 
     # ------------------------------------------------------------------
@@ -87,10 +88,10 @@ class AuditService:
                 last_errors[mid] = rec.last_error
 
         return StateSummary(
-            counts_by_state=counts,
+            counts_by_state=MappingProxyType(counts),
             last_run_at=last_run_at,
             failed_meeting_ids=failed_meeting_ids,
-            last_errors=last_errors,
+            last_errors=MappingProxyType(last_errors),
         )
 
     def history(self, filt: HistoryFilter) -> tuple[HistoryEntry, ...]:
@@ -126,6 +127,6 @@ class AuditService:
             title_contains=filt.title_contains,
         )
 
-    def state_log(self, meeting_id: str) -> Iterable[StateLogEntry]:
+    def state_log(self, meeting_id: str) -> list[StateLogEntry]:
         """Return state log entries for *meeting_id* in chronological order."""
         return self._manifest.state_log(meeting_id)
