@@ -80,3 +80,6 @@ logs/
 *.pdf
 !docs/**/*.pdf
 !templates/**/*.pdf
+
+# Superpowers brainstorm artefacts (mockups, server state)
+.superpowers/
