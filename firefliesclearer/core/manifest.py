@@ -105,6 +105,7 @@ class Manifest:
     @classmethod
     def open(cls, path: Path) -> Manifest:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # TODO(phase-5): accept check_same_thread flag for background workers (SSE ops).
         conn = sqlite3.connect(str(path), isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
