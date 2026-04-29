@@ -812,7 +812,10 @@ async def step3_in_progress(
     if op.state in {"succeeded", "failed", "cancelled"}:
         return _redirect("/cleanup/archive/done")
 
-    rows, completed, _failed = _replay_meeting_states(op)
+    rows, archived, failed = _replay_meeting_states(op)
+    # Progress bar reads as "meetings processed", so failures advance it too.
+    # Mirrors the purge in-progress handler for consistency (spec § 5.3).
+    completed = archived + failed
     total = max(op.total, len(rows))
     progress_pct = round(100.0 * completed / total) if total else 0
     return _templates(request).TemplateResponse(
