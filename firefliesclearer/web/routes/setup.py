@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from platformdirs import user_documents_dir
 from starlette.responses import Response
 
 from firefliesclearer.application.setup_service import (
@@ -75,8 +76,6 @@ async def api_key_submit(request: Request, api_key: str = Form(...)) -> Response
 
 @router.get("/archive-root")
 async def archive_root_form(request: Request, error: str | None = None) -> Response:
-    from platformdirs import user_documents_dir
-
     default_root = Path(user_documents_dir()) / "firefliesclearer-archive"
     return _templates(request).TemplateResponse(
         request,
@@ -148,7 +147,12 @@ async def defaults_submit(
         )
 
     svc = _service(request)
-    config_path: Path = request.app.state.config_path
+    config_path: Path | None = request.app.state.config_path
+    if config_path is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Server is missing a config_path; cannot write config.",
+        )
     svc.write_config(
         config_path,
         SetupValues(

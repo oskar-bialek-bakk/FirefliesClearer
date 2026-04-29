@@ -12,13 +12,18 @@ Two middlewares are installed via install_security():
    in the form body (cookie double-submit pattern).  The cookie is set on the
    first GET response so the browser has it ready for later POSTs.
 
-Known issue: BaseHTTPMiddleware reads (and buffers) the request body when
-``await request.form()`` is called.  In modern Starlette (≥0.20) the body is
-properly buffered, so downstream route handlers can read form data again.
-However, older Starlette versions may leave the body stream consumed, causing
-route handlers that also call ``await request.form()`` to hang or see empty
-data.  Routes that need form access should be tested after any Starlette
-upgrade.
+The CSRF middleware reads the request body via ``await request.body()`` and parses
+it as ``application/x-www-form-urlencoded`` to extract the ``_csrf`` field.
+``request.body()`` caches the raw bytes in ``request._body`` so subsequent
+``request.form()`` calls (or FastAPI ``Form(...)`` extractors in route handlers)
+re-parse the same cached bytes — solving the body-stream consumption problem that
+plagues ``BaseHTTPMiddleware`` + form parsing in Starlette.
+
+Browser callers MUST send CSRF-protected POSTs as ``application/x-www-form-urlencoded``.
+``app.js`` enforces this for ``sendBeacon`` heartbeats by wrapping the body in a
+``Blob`` with the explicit Content-Type. Multipart bodies are not parsed for CSRF
+extraction in this middleware (intentional — the wizard and HTMX forms all
+submit urlencoded).
 """
 
 from __future__ import annotations

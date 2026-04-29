@@ -9,12 +9,17 @@
   function ping() {
     const url = "/_alive";
     const csrf = getCsrf();
+    const body = "_csrf=" + encodeURIComponent(csrf);
     if (navigator.sendBeacon) {
-      const fd = new FormData();
-      fd.append("_csrf", csrf);
-      navigator.sendBeacon(url, fd);
+      // sendBeacon ignores Content-Type unless the body is a Blob with one.
+      // Match the CSRF middleware's urlencoded parser (see security.py).
+      navigator.sendBeacon(url, new Blob([body], { type: "application/x-www-form-urlencoded" }));
     } else {
-      fetch(url, { method: "POST", body: "_csrf=" + encodeURIComponent(csrf), headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+      fetch(url, {
+        method: "POST",
+        body: body,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      });
     }
   }
   window.addEventListener("load", ping);
