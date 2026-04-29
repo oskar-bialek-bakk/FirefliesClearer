@@ -109,3 +109,38 @@ async def test_quit_button_requests_shutdown_immediately():
     await asyncio.wait_for(fired.wait(), timeout=1.0)
     coord.stop()
     await task
+
+
+async def test_shutdown_callbacks_isolated_on_exception():
+    """One failing callback must not block subsequent callbacks."""
+    clock = FrozenClock(t0())
+    tracker = HeartbeatTracker(clock=clock, idle_threshold=timedelta(seconds=60))
+    coord = ShutdownCoordinator(
+        tracker=tracker,
+        is_active=lambda: False,
+        clock=clock,
+        poll_interval=timedelta(seconds=5),
+    )
+
+    called = []
+
+    def boom() -> None:
+        raise RuntimeError("bad cleanup")
+
+    def good() -> None:
+        called.append("good")
+
+    coord.on_shutdown_requested(boom)
+    coord.on_shutdown_requested(good)
+
+    task = asyncio.create_task(coord.run())
+
+    clock.advance(timedelta(seconds=70))
+    coord.tick_now_for_test()
+    await asyncio.sleep(0)
+
+    coord.stop()
+    await task
+
+    # good callback must have been called despite boom raising
+    assert "good" in called

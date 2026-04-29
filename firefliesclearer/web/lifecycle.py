@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from firefliesclearer.ports.clock import Clock
+
+logger = logging.getLogger(__name__)
 
 
 class HeartbeatTracker:
@@ -77,5 +80,9 @@ class ShutdownCoordinator:
             should_shutdown = self._quit_requested or self._tracker.is_idle()
             if should_shutdown and not self._is_active():
                 for cb in self._on_shutdown:
-                    cb()
+                    try:
+                        cb()
+                    except Exception:
+                        # One failing callback must not block the others.
+                        logger.exception("Shutdown callback raised; continuing.")
                 return
