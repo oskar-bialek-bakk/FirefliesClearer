@@ -9,6 +9,7 @@ queues.  See spec sections 10.1-10.2 for the design contract.
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
@@ -17,6 +18,10 @@ from enum import StrEnum
 from typing import Any
 
 from firefliesclearer.ports.clock import Clock
+
+logger = logging.getLogger(__name__)
+
+_TERMINAL_STATES: frozenset[str] = frozenset({"succeeded", "failed", "cancelled"})
 
 
 class OperationKind(StrEnum):
@@ -86,18 +91,26 @@ class Operation:
         return iter(list(self._events))
 
     async def subscribe(self) -> AsyncIterator[Event]:
-        """Yield live events until a terminal ``operation_state`` arrives."""
+        """Yield every event in this operation, including those emitted before
+        subscription, with no gap window. Terminates on terminal operation_state.
+        """
         q: asyncio.Queue[Event] = asyncio.Queue()
+        # Register BEFORE snapshotting so any concurrent _emit() reaches us.
         self._subscribers.append(q)
         try:
+            snapshot = list(self._events)
+            seen_seqs: set[int] = set()
+            for evt in snapshot:
+                seen_seqs.add(evt.seq)
+                yield evt
+                if evt.kind == "operation_state" and evt.data.get("state") in _TERMINAL_STATES:
+                    return
             while True:
                 evt = await q.get()
+                if evt.seq in seen_seqs:
+                    continue
                 yield evt
-                if evt.kind == "operation_state" and evt.data.get("state") in {
-                    "succeeded",
-                    "failed",
-                    "cancelled",
-                }:
+                if evt.kind == "operation_state" and evt.data.get("state") in _TERMINAL_STATES:
                     return
         finally:
             self._subscribers.remove(q)
@@ -157,6 +170,8 @@ class OperationRegistry:
         return any(o.state == "running" for o in self._ops.values())
 
     def gc(self) -> None:
+        # Safe without self._lock: sync method, no awaits, runs atomically
+        # relative to other coroutines in this event loop.
         now = self._clock.now()
         for op_id, op in list(self._ops.items()):
             if op.finished_at is not None and (now - op.finished_at) > self.GC_AGE:
@@ -183,15 +198,11 @@ class OperationRegistry:
         try:
             await runner(ctx)
             terminal = "cancelled" if op.cancel_event.is_set() else "succeeded"
+            terminal_data: dict[str, Any] = {"state": terminal}
         except Exception as exc:
-            op._emit(
-                Event(
-                    seq=next_seq(),
-                    kind="operation_state",
-                    data={"state": "failed", "error": str(exc)},
-                )
-            )
+            logger.exception("Operation %s failed", op_id)
             terminal = "failed"
+            terminal_data = {"state": terminal, "error": str(exc)}
         op.state = terminal
         op.finished_at = self._clock.now()
-        op._emit(Event(seq=next_seq(), kind="operation_state", data={"state": terminal}))
+        op._emit(Event(seq=next_seq(), kind="operation_state", data=terminal_data))
