@@ -23,9 +23,12 @@
   {# Table fragment — HTMX swap target for pagination + bulk-action re-renders. #}
   {% include "cleanup/_review_table.html" %}
 
-  {# Continue form — submits the saved selection, advances wizard to "archive". #}
+  {# Continue form — submits the saved selection, advances wizard to "archive".
+     Hidden ``page`` field preserves the user's current page on the 422 error
+     re-render so they don't get bounced back to page 1. #}
   <form method="post" action="/cleanup/review" class="continue-form">
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+    <input type="hidden" name="page" value="{{ page }}">
     <div class="form-actions">
       <button type="submit" class="continue-btn"
         {% if not selected_count %}disabled{% endif %}>

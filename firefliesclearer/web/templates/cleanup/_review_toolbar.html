@@ -1,6 +1,8 @@
 {# Review toolbar — selected count, bulk-action buttons, "select all N" banner.
    Rendered both on full page load and as an HTMX out-of-band swap when the
-   selection changes server-side.
+   selection changes server-side. The cleanup route renders this partial after
+   every selection mutation and concatenates it with the table fragment so the
+   ``hx-swap-oob`` directive lands a fresh copy in the response.
 #}
 <div class="review-toolbar" id="review-toolbar" hx-swap-oob="true">
   <span class="selected-count">
@@ -20,10 +22,10 @@
       hx-post="/cleanup/review/invert">Invert page</button>
   </form>
 
-  {% if total > 100 %}
+  {% if total > page_size %}
     <div class="banner-select-all" role="status">
-      <strong>{{ page_size if (page * page_size) < total else (total - (page - 1) * page_size) }}</strong>
-      of <strong>{{ total }}</strong> selected on this page.
+      <strong>{{ selected_on_page }}</strong> of <strong>{{ total }}</strong>
+      selected on this page.
       <form method="post" hx-post="/cleanup/review/select-all"
             hx-target=".review-table" hx-swap="outerHTML"
             style="display:inline">

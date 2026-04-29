@@ -213,6 +213,30 @@ def test_select_all_with_all_flag_adds_every_match(
     assert len(selected) == 250
 
 
+def test_select_all_response_includes_oob_toolbar(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Selection-mutating POSTs return both the table fragment AND an OOB toolbar.
+
+    Regression for an issue where ``_render_table_fragment`` rendered only the
+    table, so the toolbar's ``hx-swap-oob`` directive never fired and the
+    selected-count counter went stale after toggle / select-all / etc.
+    """
+    _seed_repo_with_meetings(configured_app, 5)
+    sid = _sid_from_client(configured_client)
+    _set_filters_in_session(configured_app, sid, ScanFilters(older_than_days=30))
+    r = configured_client.post(
+        "/cleanup/review/select-all",
+        data={"_csrf": _csrf(configured_client), "page": "1"},
+    )
+    assert r.status_code == 200
+    # Toolbar partial is included as an OOB swap target.
+    assert 'id="review-toolbar"' in r.text
+    assert 'hx-swap-oob="true"' in r.text
+    # Counter reflects the post-mutation selection (5 of 5).
+    assert "<strong>5</strong> of <strong>5</strong> selected" in r.text
+
+
 # ---------------------------------------------------------------------------
 # POST /cleanup/review/deselect-all
 # ---------------------------------------------------------------------------
@@ -344,6 +368,30 @@ def test_post_review_with_empty_selection_renders_error(
     )
     assert r.status_code == 422
     assert "select at least one" in r.text.lower()
+
+
+def test_post_review_empty_selection_preserves_current_page(
+    configured_client: TestClient, configured_app
+) -> None:
+    """422 re-render keeps the user on their current page (was hard-coded to 1)."""
+    _seed_repo_with_meetings(configured_app, 250)
+    sid = _sid_from_client(configured_client)
+    _set_filters_in_session(configured_app, sid, ScanFilters(older_than_days=30))
+    r = configured_client.post(
+        "/cleanup/review",
+        data={"_csrf": _csrf(configured_client), "page": "2"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 422
+    doc = HTMLParser(r.text)
+    # Page 2 = rows 100..199, so first row is m100 not m0.
+    rows = doc.css(".row[data-meeting-id]")
+    assert len(rows) == 100
+    assert rows[0].attributes.get("data-meeting-id") == "m100"
+    # Pagination indicator confirms page 2.
+    indicator = doc.css_first(".page-indicator")
+    assert indicator is not None
+    assert "Page 2" in indicator.text()
 
 
 def test_post_review_with_selection_redirects_to_archive(

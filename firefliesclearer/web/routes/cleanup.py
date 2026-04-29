@@ -262,6 +262,8 @@ def _review_context(
     error: str | None = None,
 ) -> dict[str, object]:
     """Shared template context for full-page + table-fragment renders."""
+    page_ids = {m.meeting.meeting_id for m in matches_page}
+    selected_on_page = len(selected_ids & page_ids)
     return {
         "matches": matches_page,
         "total": total,
@@ -270,6 +272,7 @@ def _review_context(
         "page_size": PAGE_SIZE,
         "selected_ids": selected_ids,
         "selected_count": len(selected_ids),
+        "selected_on_page": selected_on_page,
         "step": "review",
         "error": error,
     }
@@ -447,16 +450,19 @@ async def step2_submit(
     if filters is None:
         return _redirect("/cleanup")
 
+    form = await request.form()
+    page = _safe_page(form.get("page"))
+
     selected_ids = wizard_session.get_selected(_store(request), _sid(request))
     if not selected_ids:
         result = await _scan_or_none(deps, filters)
         matches = result.matches if result is not None else ()
-        page_matches, total, pages = _page_slice(matches, 1)
+        page_matches, total, pages = _page_slice(matches, page)
         ctx = _review_context(
             request,
             matches_page=page_matches,
             total=total,
-            page=1,
+            page=page,
             pages=pages,
             selected_ids=set(),
             error="Please select at least one meeting before continuing.",
@@ -491,7 +497,16 @@ async def _render_table_fragment(
     *,
     page: int | None = None,
 ) -> Response:
-    """Re-run the scan and render only the table fragment (HTMX swap target)."""
+    """Re-run the scan and render the table + OOB toolbar fragment.
+
+    Returns the concatenation of ``_review_table.html`` (HTMX primary swap
+    target) and ``_review_toolbar.html`` (out-of-band swap target). This keeps
+    the toolbar's selected-count and "select all N" banner in sync after every
+    selection mutation (toggle / select-all / deselect-all / invert).
+
+    CSRF for these POST handlers is enforced by the global ``CSRFMiddleware``
+    in ``firefliesclearer.web.security``; no per-route check is needed.
+    """
     page = page if page is not None else _safe_page(request.query_params.get("page"))
     result = await _scan_or_none(deps, filters)
     matches = result.matches if result is not None else ()
@@ -505,7 +520,14 @@ async def _render_table_fragment(
         pages=pages,
         selected_ids=selected_ids,
     )
-    return _templates(request).TemplateResponse(request, "cleanup/_review_table.html", ctx)
+    templates = _templates(request)
+    table_html = templates.get_template("cleanup/_review_table.html").render(
+        {"request": request, **ctx}
+    )
+    toolbar_html = templates.get_template("cleanup/_review_toolbar.html").render(
+        {"request": request, **ctx}
+    )
+    return Response(table_html + toolbar_html, media_type="text/html")
 
 
 def _safe_page(raw: object) -> int:
