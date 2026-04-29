@@ -17,7 +17,7 @@ from firefliesclearer.infra.system_clock import SystemClock
 from firefliesclearer.ports.clock import Clock
 from firefliesclearer.ports.meeting_repository import MeetingRepository
 from firefliesclearer.web.lifecycle import HeartbeatTracker, ShutdownCoordinator
-from firefliesclearer.web.routes import _heartbeat, _quit, setup
+from firefliesclearer.web.routes import _heartbeat, _quit, dashboard, setup
 from firefliesclearer.web.security import SecurityConfig, install_security
 from firefliesclearer.web.sessions import SessionStore
 
@@ -63,15 +63,7 @@ def create_app(
     app.include_router(_heartbeat.router)
     app.include_router(_quit.router)
     app.include_router(setup.router)
-
-    @app.get("/")
-    def home(request: Request) -> Response:
-        templates: Jinja2Templates = request.app.state.templates
-        return templates.TemplateResponse(
-            request,
-            "base.html",
-            {"version": request.app.state.version},
-        )
+    app.include_router(dashboard.router)
 
     # CRITICAL: redirect middleware MUST be added BEFORE install_security
     # so it ends up INNERMOST in the middleware stack. Order in Starlette:

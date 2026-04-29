@@ -1,0 +1,20 @@
+{# Needs attention: failed meetings with title + last_error. #}
+<section class="needs-attention">
+  <h2>Needs attention</h2>
+  {% if needs_attention %}
+    <ul class="needs-attention__list">
+      {% for rec in needs_attention %}
+        <li class="needs-attention-row" data-meeting-id="{{ rec.meeting_id }}">
+          <div class="needs-attention-row__title">
+            {{ rec.title }} ({{ rec.meeting_date.date().isoformat() }}) &mdash; {{ rec.state.value }}
+          </div>
+          {% if rec.last_error %}
+            <div class="needs-attention-row__error">{{ rec.last_error }}</div>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="needs-attention-empty">All clear &mdash; nothing needs your attention.</p>
+  {% endif %}
+</section>
