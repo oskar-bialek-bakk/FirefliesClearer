@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Cleanup Step 1 — Filter — FirefliesClearer{% endblock %}
+{% block page %}
+{% include "cleanup/_stepper.html" %}
+
+<section class="cleanup-step cleanup-step-filter">
+  <h1>Step 1 — Filter</h1>
+  <p class="muted">Choose criteria for the meetings you want to clean up. The match count below updates live.</p>
+
+  {% if error %}
+    <p class="error-banner" role="alert" style="color: #b91c1c;">{{ error }}</p>
+  {% endif %}
+
+  <div class="preset-row">
+    <label for="preset-select">Load preset</label>
+    <select id="preset-select" name="preset" disabled>
+      <option value="">Load preset (coming soon)</option>
+      {% for p in presets %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+    </select>
+  </div>
+
+  <form id="cleanup-step1-form" method="post" action="/cleanup">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+
+    <fieldset class="filter-row">
+      <label>
+        <input type="checkbox" name="older_than_days_enabled" value="on"
+          {% if filters.older_than_days is not none %}checked{% endif %}>
+        Older than
+      </label>
+      <input type="number" name="older_than_days" min="0" step="1"
+        value="{% if filters.older_than_days is not none %}{{ filters.older_than_days }}{% endif %}"
+        placeholder="N">
+      <span>days</span>
+    </fieldset>
+
+    <fieldset class="filter-row">
+      <label>
+        <input type="checkbox" name="duration_below_minutes_enabled" value="on"
+          {% if filters.duration_below_minutes is not none %}checked{% endif %}>
+        Duration below
+      </label>
+      <input type="number" name="duration_below_minutes" min="0" step="0.1"
+        value="{% if filters.duration_below_minutes is not none %}{{ filters.duration_below_minutes }}{% endif %}"
+        placeholder="N">
+      <span>minutes</span>
+    </fieldset>
+
+    <fieldset class="filter-row">
+      <label>
+        <input type="checkbox" name="no_transcript" value="on"
+          {% if filters.no_transcript %}checked{% endif %}>
+        No transcript only
+      </label>
+    </fieldset>
+
+    <fieldset class="filter-row">
+      <label for="title_contains">Title contains</label>
+      <input type="text" id="title_contains" name="title_contains"
+        value="{{ filters.title_contains | join(', ') }}"
+        placeholder="standup, review, retro">
+      <small class="hint">Comma-separated; substring match.</small>
+    </fieldset>
+
+    <details class="filter-advanced">
+      <summary>Advanced: title regex</summary>
+      <fieldset class="filter-row">
+        <label for="title_regex">Title regex</label>
+        <input type="text" id="title_regex" name="title_regex"
+          value="{{ filters.title_regex or '' }}"
+          placeholder="^Daily.*">
+      </fieldset>
+    </details>
+
+    <fieldset class="filter-row">
+      <label for="host_email">Host email</label>
+      <input type="text" id="host_email" name="host_email"
+        value="{{ filters.host_email | join(', ') }}"
+        placeholder="alice@example.com, bob@example.com">
+      <small class="hint">Comma-separated.</small>
+    </fieldset>
+
+    <fieldset class="filter-row">
+      <label for="has_tag">Has tag</label>
+      <input type="text" id="has_tag" name="has_tag"
+        value="{{ filters.has_tag | join(', ') }}"
+        placeholder="ad-hoc, internal">
+      <small class="hint">Comma-separated.</small>
+    </fieldset>
+
+    <fieldset class="filter-row">
+      <label for="participants_below">Participants below</label>
+      <input type="number" id="participants_below" name="participants_below" min="0" step="1"
+        value="{% if filters.participants_below is not none %}{{ filters.participants_below }}{% endif %}"
+        placeholder="N">
+    </fieldset>
+
+    <div id="preview-count"
+         class="preview-count"
+         hx-post="/cleanup/preview-count"
+         hx-trigger="input changed delay:500ms from:closest form, load"
+         hx-target="this"
+         hx-swap="outerHTML"
+         hx-include="closest form">
+      Add at least one filter to see a count.
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="continue-btn">Continue &rarr;</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

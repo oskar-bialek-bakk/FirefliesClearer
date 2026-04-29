@@ -1,0 +1,8 @@
+<nav class="wizard-stepper" aria-label="Cleanup steps">
+  <ol>
+    <li class="step{% if step == 'filter' %} active{% endif %}" data-step="filter">1. Filter</li>
+    <li class="step{% if step == 'review' %} active{% endif %}" data-step="review">2. Review</li>
+    <li class="step{% if step == 'archive' %} active{% endif %}" data-step="archive">3. Archive</li>
+    <li class="step{% if step == 'purge' %} active{% endif %}" data-step="purge">4. Purge</li>
+  </ol>
+</nav>
