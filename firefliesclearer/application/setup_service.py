@@ -27,6 +27,14 @@ class InvalidApiKeyError(Exception):
 InvalidApiKey = InvalidApiKeyError
 
 
+class ApiUnavailableError(Exception):
+    """Raised when verification cannot complete for reasons unrelated to the key.
+
+    Examples: rate limiting, network failure, GraphQL server errors, malformed
+    response. The key may still be valid; the user should retry later.
+    """
+
+
 class ConfigAlreadyExistsError(Exception):
     """Raised when write_config finds an existing config and force=False."""
 
@@ -80,13 +88,23 @@ class SetupService:
         Raises
         ------
         InvalidApiKey
-            If the key is rejected by the Fireflies API.
+            If the key is definitively rejected by the Fireflies API
+            (HTTP 401 / 403).
+        ApiUnavailableError
+            If the API responds with a transient error (rate limit, network
+            failure, GraphQL server error, malformed response). The key may
+            still be valid.
         """
         repo = self._repo_factory(api_key)
         try:
             return await repo.ping_user()
         except PermissionError as exc:
             raise InvalidApiKeyError(f"API key rejected: {api_key!r}") from exc
+        except Exception as exc:
+            # Anything else (FirefliesError including rate limits / network
+            # errors, OSError, etc.) is "API unavailable" — surface as a
+            # distinct error so the caller can prompt the user to retry.
+            raise ApiUnavailableError(str(exc)) from exc
 
     def write_config(
         self,

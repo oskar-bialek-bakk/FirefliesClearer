@@ -72,6 +72,71 @@ def test_api_key_step_accepts_good_key_and_advances(client: TestClient):
     assert "/setup/archive-root" in r.headers["location"]
 
 
+def test_api_key_step_handles_rate_limit_with_friendly_message(tmp_path: Path):
+    """When Fireflies returns too_many_requests, render an inline message, not 500."""
+
+    class _RateLimitedRepo:
+        def __init__(self, api_key: str) -> None:
+            self._api_key = api_key
+
+        async def ping_user(self) -> str:
+            raise RuntimeError(
+                "graphql: [{'code': 'too_many_requests', 'message': 'retry tomorrow'}]"
+            )
+
+    from firefliesclearer.web.app import create_app
+
+    app = create_app(
+        session_token="T",
+        csrf_secret="S",
+        config_path=tmp_path / "config.toml",
+        repo_factory=_RateLimitedRepo,  # type: ignore[arg-type]
+    )
+    c = TestClient(app)
+    c.get("/?token=T", follow_redirects=False)
+    csrf = c.cookies.get("ffc_csrf", "")
+
+    r = c.post(
+        "/setup/api-key",
+        data={"_csrf": csrf, "api_key": "ff_anything"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200, r.text  # NOT 500
+    body = r.text.lower()
+    assert "rate" in body or "too_many_requests" in body
+
+
+def test_api_key_step_handles_network_error_with_friendly_message(tmp_path: Path):
+    """A generic network exception → ApiUnavailable inline message, not 500."""
+
+    class _NetworkBrokenRepo:
+        def __init__(self, api_key: str) -> None:
+            self._api_key = api_key
+
+        async def ping_user(self) -> str:
+            raise OSError("connection refused")
+
+    from firefliesclearer.web.app import create_app
+
+    app = create_app(
+        session_token="T",
+        csrf_secret="S",
+        config_path=tmp_path / "config.toml",
+        repo_factory=_NetworkBrokenRepo,  # type: ignore[arg-type]
+    )
+    c = TestClient(app)
+    c.get("/?token=T", follow_redirects=False)
+    csrf = c.cookies.get("ffc_csrf", "")
+
+    r = c.post(
+        "/setup/api-key",
+        data={"_csrf": csrf, "api_key": "ff_anything"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200, r.text  # NOT 500
+    assert b"could not reach" in r.content.lower() or b"connection" in r.content.lower()
+
+
 def test_finish_writes_config_and_redirects_home(client: TestClient, tmp_path: Path):
     csrf = client.cookies["ffc_csrf"]
     client.post("/setup/api-key", data={"_csrf": csrf, "api_key": "ff_good"})
