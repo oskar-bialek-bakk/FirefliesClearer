@@ -1918,13 +1918,6 @@ body > main[style*="max-width:640px"] {
    21. MISC / ADDITIONAL SHARED ELEMENTS
    ============================================================ */
 
-/* Needs attention empty message */
-.needs-attention-empty {
-  color: #6b7280;
-  font-size: 0.875rem;
-  font-style: italic;
-}
-
 /* History table links */
 .history-table a {
   color: #2563eb;
