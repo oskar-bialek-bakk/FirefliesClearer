@@ -90,14 +90,36 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if request.url.path.startswith("/static/"):
             return await call_next(request)
 
-        if request.method not in self.SAFE_METHODS:
-            cookie = request.cookies.get(CSRF_COOKIE)
-            if not cookie:
-                return Response(status_code=403, content="CSRF cookie missing")
+        # Detect a cookie signed under a stale secret (e.g. server restarted
+        # and rolled the secret while a browser tab kept its old cookie). On
+        # safe methods, we transparently mint a fresh one below. On unsafe
+        # methods, we still need to short-circuit with 403 — the request can't
+        # be authenticated — but the next GET will rotate the cookie so the
+        # subsequent retry succeeds.
+        cookie = request.cookies.get(CSRF_COOKIE)
+        cookie_is_valid = False
+        if cookie:
             try:
                 self._serializer.loads(cookie)
+                cookie_is_valid = True
             except BadData:
-                return Response(status_code=403, content="CSRF cookie invalid")
+                cookie_is_valid = False
+
+        if request.method not in self.SAFE_METHODS:
+            if not cookie:
+                return Response(status_code=403, content="CSRF cookie missing")
+            if not cookie_is_valid:
+                # Stale signature (typically: server restart). Rotate the
+                # cookie on this 403 so the next retry-after-GET works.
+                return self._rotate_csrf_cookie(
+                    Response(
+                        status_code=403,
+                        content=(
+                            "CSRF cookie expired (server may have restarted). "
+                            "Refresh the page and try again."
+                        ),
+                    )
+                )
             # Use request.body() rather than request.form() so the body bytes
             # are cached in request._body.  Downstream route handlers can then
             # re-parse via request.form() or Form(...) parameters; calling
@@ -111,15 +133,23 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 return Response(status_code=403, content="CSRF mismatch")
 
         response = await call_next(request)
-        if not request.cookies.get(CSRF_COOKIE):
-            new_token = self._serializer.dumps(secrets.token_urlsafe(16))
-            response.set_cookie(
-                CSRF_COOKIE,
-                new_token,
-                httponly=False,  # JS must read this for fetch()-based POSTs
-                samesite="strict",
-                max_age=24 * 60 * 60,
-            )
+        # Mint a fresh cookie when none exists OR when the existing one is
+        # stale-signed. The latter case lets a stale browser tab self-heal on
+        # any safe-method navigation, instead of requiring the user to clear
+        # cookies manually.
+        if not cookie or not cookie_is_valid:
+            self._rotate_csrf_cookie(response)
+        return response
+
+    def _rotate_csrf_cookie(self, response: Response) -> Response:
+        new_token = self._serializer.dumps(secrets.token_urlsafe(16))
+        response.set_cookie(
+            CSRF_COOKIE,
+            new_token,
+            httponly=False,  # JS must read this for fetch()-based POSTs
+            samesite="strict",
+            max_age=24 * 60 * 60,
+        )
         return response
 
 
