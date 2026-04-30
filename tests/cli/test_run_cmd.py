@@ -200,6 +200,7 @@ def test_run_with_named_preset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     result = runner.invoke(app, ["run", "--preset", "Foo", "--config", str(config_path)])
     assert result.exit_code == 0, result.output
     assert "Foo" in result.output
+    assert "1" in result.output  # only very_old (400d) matches, not old (200d)
     # dry-run: no mutations
     assert manifest.get("very_old") is None
     assert repo.deleted == []

@@ -22,7 +22,9 @@ def run(
     apply: bool = typer.Option(False, "--apply", help="Actually mutate (default: dry-run)."),
     yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt above threshold."),
     config: Path | None = typer.Option(None, "--config"),  # noqa: B008
-    preset_name: str | None = typer.Option(None, "--preset", help="Named preset to use."),
+    preset_name: str | None = typer.Option(
+        None, "--preset", help="Named preset to use (omit to use the default preset)."
+    ),
 ) -> None:
     """Apply a preset's filters (age, transcript, etc.)."""
     user_path = config or user_config_path()
