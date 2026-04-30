@@ -54,6 +54,7 @@
 {# Results #}
 <p class="history-total">{{ total }} meeting{{ 's' if total != 1 else '' }} found</p>
 
+<div class="history-layout">
 {% if rows %}
 <table class="history-table">
   <thead>
@@ -68,7 +69,7 @@
   <tbody>
     {% for row in rows %}
     <tr>
-      <td><a href="/history/{{ row.meeting_id }}/panel">{{ row.title }}</a></td>
+      <td><a hx-get="/history/{{ row.meeting_id }}/panel" hx-target="#history-panel" hx-push-url="false">{{ row.title }}</a></td>
       <td>{{ row.meeting_date.strftime("%Y-%m-%d") }}</td>
       <td>{{ row.state.value }}</td>
       <td>{{ row.archived_at.strftime("%Y-%m-%d %H:%M") if row.archived_at else "-" }}</td>
@@ -80,6 +81,8 @@
 {% else %}
 <p class="history-empty">No meetings found for the selected filters.</p>
 {% endif %}
+<aside id="history-panel"></aside>
+</div>
 
 {# Pagination #}
 {% if total_pages > 1 %}

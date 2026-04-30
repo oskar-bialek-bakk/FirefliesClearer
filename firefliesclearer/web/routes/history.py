@@ -6,7 +6,7 @@ import math
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
@@ -130,3 +130,22 @@ async def history(
         "version": str(request.app.state.version),
     }
     return _templates(request).TemplateResponse(request, "history.html", ctx)
+
+
+@router.get("/history/{meeting_id}/panel")
+async def history_panel(
+    request: Request,
+    meeting_id: str,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Render the side-panel fragment for the given meeting."""
+    audit = AuditService(manifest=deps.manifest)
+    record = deps.manifest.get(meeting_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    log_entries = audit.state_log(meeting_id)
+    return _templates(request).TemplateResponse(
+        request,
+        "history_panel.html",
+        {"record": record, "log_entries": log_entries},
+    )

@@ -296,3 +296,118 @@ def test_history_invalid_page_clamped_to_1(configured_client: TestClient, config
         doc = HTMLParser(r.text)
         pagination_or_total = doc.css_first(".history-total")
         assert pagination_or_total is not None
+
+
+# ---------------------------------------------------------------------------
+# Panel tests (GET /history/{meeting_id}/panel)
+# ---------------------------------------------------------------------------
+
+
+def test_history_panel_404_for_unknown_meeting(configured_client: TestClient) -> None:
+    """GET /history/nope/panel returns 404 for an unknown meeting_id."""
+    r = configured_client.get("/history/nope/panel")
+    assert r.status_code == 404
+
+
+def test_history_panel_renders_record_metadata(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Panel shows title, state and archive_path for a seeded ARCHIVED meeting."""
+    manifest = configured_app.state.deps.manifest
+    archive_path = "/archive/my_meeting.zip"
+    manifest.register(
+        Meeting(
+            meeting_id="panel_m1",
+            title="Panel Test Meeting",
+            meeting_date=NOW,
+            duration_minutes=45.0,
+            host_email="h@x.com",
+            participant_count=3,
+        ),
+        at=NOW,
+    )
+    manifest.transition(
+        "panel_m1",
+        to=MeetingState.ARCHIVED,
+        at=NOW + timedelta(minutes=5),
+        archive_path=archive_path,
+    )
+
+    r = configured_client.get("/history/panel_m1/panel")
+    assert r.status_code == 200
+    assert "Panel Test Meeting" in r.text
+    assert "archived" in r.text.lower()
+    assert archive_path in r.text
+
+
+def test_history_panel_renders_state_log(configured_client: TestClient, configured_app) -> None:
+    """Panel shows all state transitions in chronological order."""
+    manifest = configured_app.state.deps.manifest
+    t0 = NOW
+    t1 = NOW + timedelta(minutes=10)
+    t2 = NOW + timedelta(minutes=20)
+    manifest.register(
+        Meeting(
+            meeting_id="panel_m2",
+            title="Log Order Meeting",
+            meeting_date=t0,
+            duration_minutes=20.0,
+            host_email="h@x.com",
+            participant_count=1,
+        ),
+        at=t0,
+    )
+    manifest.transition("panel_m2", to=MeetingState.ARCHIVED, at=t1)
+    manifest.transition("panel_m2", to=MeetingState.DELETED, at=t2)
+
+    r = configured_client.get("/history/panel_m2/panel")
+    assert r.status_code == 200
+
+    # All three timestamps must appear (register + 2 transitions)
+    assert t0.isoformat() in r.text
+    assert t1.isoformat() in r.text
+    assert t2.isoformat() in r.text
+
+    # State names must appear (checked via the state-log list specifically)
+    doc = HTMLParser(r.text)
+    log_items = doc.css(".state-log li")
+    assert len(log_items) == 3, f"Expected 3 log items, got {len(log_items)}"
+
+    # Extract text of each list item in order
+    item_texts = [item.text().lower() for item in log_items]
+
+    # First entry: PENDING transition (from None)
+    assert "pending" in item_texts[0]
+    # Second entry: ARCHIVED
+    assert "archived" in item_texts[1]
+    # Third entry: DELETED
+    assert "deleted" in item_texts[2]
+
+
+def test_history_panel_renders_last_error_when_present(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Panel renders last_error text for a failed meeting."""
+    manifest = configured_app.state.deps.manifest
+    error_msg = "Connection timed out while fetching transcript"
+    manifest.register(
+        Meeting(
+            meeting_id="panel_m3",
+            title="Failed Meeting",
+            meeting_date=NOW,
+            duration_minutes=10.0,
+            host_email="h@x.com",
+            participant_count=1,
+        ),
+        at=NOW,
+    )
+    manifest.transition(
+        "panel_m3",
+        to=MeetingState.FAILED_FETCH,
+        at=NOW + timedelta(minutes=1),
+        last_error=error_msg,
+    )
+
+    r = configured_client.get("/history/panel_m3/panel")
+    assert r.status_code == 200
+    assert error_msg in r.text
