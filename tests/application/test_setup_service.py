@@ -5,6 +5,7 @@ from __future__ import annotations
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 import tomli_w
@@ -94,7 +95,7 @@ _NO_RULES_AUTO_TOML = {
 }
 
 
-def _write_toml(path: Path, payload: dict) -> None:
+def _write_toml(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         tomli_w.dump(payload, f)

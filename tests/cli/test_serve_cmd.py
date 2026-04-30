@@ -48,7 +48,7 @@ def test_serve_refuses_non_loopback_host_without_flag():
 # ---------------------------------------------------------------------------
 
 
-def test_serve_wiring_migration_function_is_imported_from_serve_cmd():
+def test_serve_wiring_migration_function_is_imported_from_serve_cmd() -> None:
     """Verify that migrate_v1_rules_auto is wired into serve_cmd at module level."""
     import firefliesclearer.cli.serve_cmd as serve_module
 
