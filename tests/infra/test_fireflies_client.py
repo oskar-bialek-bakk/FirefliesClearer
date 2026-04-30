@@ -288,6 +288,95 @@ async def test_fetch_artifacts_handles_missing_action_items(
 
 
 @respx.mock
+async def test_host_email_uses_value_when_populated(client: FirefliesClient) -> None:
+    """When host_email is populated, it wins over organizer_email (issue #2)."""
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "transcripts": [
+                        {
+                            "id": "a",
+                            "title": "M",
+                            "date": "2026-01-01T10:00:00Z",
+                            "duration": 1.0,
+                            "host_email": "host@x.com",
+                            "organizer_email": "organizer@x.com",
+                            "participants": [],
+                            "transcript_url": None,
+                        }
+                    ]
+                }
+            },
+        )
+    )
+    async for m in client.list_meetings(MeetingFilter(limit=1)):
+        assert m.host_email == "host@x.com"
+        break
+
+
+@respx.mock
+async def test_host_email_falls_back_to_organizer_email_when_empty(
+    client: FirefliesClient,
+) -> None:
+    """When host_email is empty, organizer_email fills the host_email slot (issue #2)."""
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "transcripts": [
+                        {
+                            "id": "a",
+                            "title": "M",
+                            "date": "2026-01-01T10:00:00Z",
+                            "duration": 1.0,
+                            "host_email": "",
+                            "organizer_email": "organizer@x.com",
+                            "participants": [],
+                            "transcript_url": None,
+                        }
+                    ]
+                }
+            },
+        )
+    )
+    async for m in client.list_meetings(MeetingFilter(limit=1)):
+        assert m.host_email == "organizer@x.com"
+        break
+
+
+@respx.mock
+async def test_host_email_empty_when_both_missing(client: FirefliesClient) -> None:
+    """When both host_email and organizer_email are missing/empty, fall back to '' (issue #2)."""
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "transcripts": [
+                        {
+                            "id": "a",
+                            "title": "M",
+                            "date": "2026-01-01T10:00:00Z",
+                            "duration": 1.0,
+                            "host_email": None,
+                            "organizer_email": "",
+                            "participants": [],
+                            "transcript_url": None,
+                        }
+                    ]
+                }
+            },
+        )
+    )
+    async for m in client.list_meetings(MeetingFilter(limit=1)):
+        assert m.host_email == ""
+        break
+
+
+@respx.mock
 async def test_ping_user_returns_email(client: FirefliesClient) -> None:
     """ping_user() returns the authenticated user's email on success."""
     respx.post(API_URL).mock(

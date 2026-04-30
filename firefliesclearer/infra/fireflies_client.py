@@ -24,6 +24,7 @@ query Transcripts($limit: Int, $skip: Int, $toDate: DateTime) {
     date
     duration
     host_email
+    organizer_email
     participants
     transcript_url
     summary { overview action_items keywords }
@@ -46,6 +47,7 @@ query TranscriptDetail($id: String!) {
     date
     duration
     host_email
+    organizer_email
     participants
     transcript_url
     audio_url
@@ -269,7 +271,7 @@ def _meeting_from_raw(raw: dict[str, Any]) -> Meeting:
         title=raw.get("title") or "(untitled)",
         meeting_date=_parse_date(raw["date"]),
         duration_minutes=float(raw.get("duration") or 0.0),
-        host_email=raw.get("host_email") or "",
+        host_email=raw.get("host_email") or raw.get("organizer_email") or "",
         participant_count=len(participants),
         tags=(),  # Fireflies' Transcript type does not expose tags as of 2026-04
         has_transcript=bool(raw.get("transcript_url")),
