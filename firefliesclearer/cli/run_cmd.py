@@ -1,21 +1,20 @@
-"""`firefliesclearer run` — auto path."""
+"""`firefliesclearer run` — preset-driven auto path."""
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 
 import typer
 
+from firefliesclearer.application.preset_service import PresetNotFoundError, PresetService
+from firefliesclearer.application.scan_service import ScanService
 from firefliesclearer.cli import _common
 from firefliesclearer.cli.app import app
 from firefliesclearer.cli.archive_cmd import _print_report
-from firefliesclearer.core.models import Meeting
 from firefliesclearer.core.pipeline import PipelineMode
-from firefliesclearer.core.rules import NoTranscript, OlderThanDays, Rule, RuleEngine
-from firefliesclearer.ports.meeting_repository import MeetingFilter
+from firefliesclearer.infra.config import user_config_path
+from firefliesclearer.web.wizard_session import filters_from_dict
 
 
 @app.command()
@@ -23,29 +22,46 @@ def run(
     apply: bool = typer.Option(False, "--apply", help="Actually mutate (default: dry-run)."),
     yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt above threshold."),
     config: Path | None = typer.Option(None, "--config"),  # noqa: B008
+    preset_name: str | None = typer.Option(None, "--preset", help="Named preset to use."),
 ) -> None:
-    """Apply hard rules from config (age + no-transcript)."""
+    """Apply a preset's filters (age, transcript, etc.)."""
+    user_path = config or user_config_path()
+    svc = PresetService(user_path)
+
+    if preset_name is not None:
+        try:
+            preset = svc.get(preset_name)
+        except PresetNotFoundError:
+            _common.console.print(
+                f"[red]Preset {preset_name!r} not found.[/red] "
+                "Use `firefliesclearer presets` to list available presets."
+            )
+            raise typer.Exit(code=1) from None
+    else:
+        maybe_preset = svc.get_default()
+        if maybe_preset is None:
+            _common.console.print(
+                "[red]No default preset configured.[/red] "
+                "Pass --preset NAME or create one in the UI."
+            )
+            raise typer.Exit(code=1)
+        preset = maybe_preset
+
+    filters = filters_from_dict(preset.filters.model_dump())
+
     deps = _common.build_deps(config_override=config)
-    auto = deps.config.auto_rules()
-    matched: list[Meeting] = []
-    now = datetime.now(tz=UTC)
+    scan_svc = ScanService(repo=deps.client, clock=deps.clock)
 
-    async def _collect() -> None:
-        engine = RuleEngine(cast("list[Rule]", [OlderThanDays(auto.older_than_days)]))
-        no_transcript = NoTranscript()
-        async for m in deps.client.list_meetings(MeetingFilter()):
-            age_match = engine.evaluate(m, now=now).matched
-            no_t_match = auto.delete_failed_transcripts and no_transcript.matches(m, now=now)
-            if age_match or no_t_match:
-                matched.append(m)
-
-    asyncio.run(_collect())
+    scan_result = asyncio.run(scan_svc.scan(filters))
+    matched = [m.meeting for m in scan_result.matches]
 
     if not matched:
         _common.console.print("[green]Nothing matched.[/green]")
         return
 
-    _common.console.print(f"[bold]{len(matched)}[/bold] meetings match auto rules.")
+    _common.console.print(
+        f"[bold]{len(matched)}[/bold] meetings match preset [bold]{preset.name!r}[/bold]."
+    )
     if not apply:
         _common.console.print("[yellow]Dry-run; pass --apply to mutate.[/yellow]")
         return
