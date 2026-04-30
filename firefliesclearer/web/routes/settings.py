@@ -118,7 +118,7 @@ async def settings_connection_test(request: Request) -> Response:
     try:
         email = await svc.verify_api_key(api_key)
         html = f'<span class="settings-connection-ok">Connected as <strong>{email}</strong></span>'
-    except (InvalidApiKeyError, Exception) as exc:
+    except (InvalidApiKeyError, OSError, ValueError) as exc:
         html = f'<span class="settings-connection-err">Connection failed: {exc}</span>'
 
     from fastapi.responses import HTMLResponse
@@ -146,7 +146,7 @@ async def settings_connection_save(request: Request) -> Response:
     svc = _svc(request)
     try:
         await svc.verify_api_key(api_key)
-    except (InvalidApiKeyError, Exception) as exc:
+    except (InvalidApiKeyError, OSError, ValueError) as exc:
         return _render_settings(
             request,
             errors={"connection": f"Key rejected: {exc}"},
