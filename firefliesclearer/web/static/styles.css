@@ -1928,13 +1928,6 @@ body > main[style*="max-width:640px"] {
   text-decoration: underline;
 }
 
-/* View folder button */
-.view-folder-btn {
-  background-color: #ffffff;
-  border-color: #d1d5db;
-  color: #374151;
-}
-
 /* Inline range + output in settings */
 .settings-section__body div:has(input[type="range"]) {
   display: flex;
