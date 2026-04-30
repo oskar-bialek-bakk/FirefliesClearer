@@ -1,4 +1,22 @@
 {# firefliesclearer/web/templates/base.html #}
+{#-
+  HTMX partial-render gate: when an HTMX request arrives (HX-Request header
+  set), emit only the inner page block — no html/head/body/sidebar chrome.
+  This makes the sidebar nav links (hx-get + hx-target="#page") swap clean
+  page content into the existing layout instead of nesting a duplicate
+  sidebar inside the content area.
+
+  Form-level HTMX swaps (e.g. hx-target="#preview-count" on the cleanup
+  filter) still work because HTMX picks the matching element out of the
+  returned partial. Small fragments returned by partial-only routes (like
+  /sidebar/status) skip base.html entirely, so they're unaffected.
+
+  Setup-wizard pages override `{% block layout %}` to render a different
+  outer (no sidebar). They never reach this code via HTMX, so the
+  conditional below is a no-op for them.
+-#}
+{%- set is_htmx = request is defined and request.headers.get('hx-request') == 'true' -%}
+{%- if not is_htmx -%}
 <!doctype html>
 <html lang="en">
 <head>
@@ -10,27 +28,34 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  {% block layout %}
-  <div style="display: flex">
-    <aside class="sidebar">
-      <div><strong>FirefliesClearer</strong> <small>v{{ version }}</small></div>
-      <nav>
-        <a href="/" hx-get="/" hx-target="#page" hx-push-url="true">Dashboard</a><br>
-        <a href="/cleanup" hx-get="/cleanup" hx-target="#page" hx-push-url="true">Cleanup</a><br>
-        <a href="/presets" hx-get="/presets" hx-target="#page" hx-push-url="true">Presets</a><br>
-        <a href="/history" hx-get="/history" hx-target="#page" hx-push-url="true">History</a><br>
-        <a href="/settings" hx-get="/settings" hx-target="#page" hx-push-url="true">Settings</a>
-      </nav>
-      <hr>
-      <div hx-get="/sidebar/status" hx-trigger="every 30s" hx-swap="innerHTML">{% block sidebar_status %}{% endblock %}</div>
-      <button data-action="quit">Quit app</button>
-    </aside>
-    <main class="main">
-      <div id="page">
-        {% block page %}{% endblock %}
-      </div>
-    </main>
-  </div>
-  {% endblock %}
+{%- endif %}
+{% block layout %}
+{%- if not is_htmx -%}
+<div style="display: flex">
+  <aside class="sidebar">
+    <div><strong>FirefliesClearer</strong> <small>v{{ version }}</small></div>
+    <nav>
+      <a href="/" hx-get="/" hx-target="#page" hx-push-url="true">Dashboard</a><br>
+      <a href="/cleanup" hx-get="/cleanup" hx-target="#page" hx-push-url="true">Cleanup</a><br>
+      <a href="/presets" hx-get="/presets" hx-target="#page" hx-push-url="true">Presets</a><br>
+      <a href="/history" hx-get="/history" hx-target="#page" hx-push-url="true">History</a><br>
+      <a href="/settings" hx-get="/settings" hx-target="#page" hx-push-url="true">Settings</a>
+    </nav>
+    <hr>
+    <div hx-get="/sidebar/status" hx-trigger="every 30s" hx-swap="innerHTML">{% block sidebar_status %}{% endblock %}</div>
+    <button data-action="quit">Quit app</button>
+  </aside>
+  <main class="main">
+    <div id="page">
+{%- endif %}
+      {% block page %}{% endblock %}
+{%- if not is_htmx %}
+    </div>
+  </main>
+</div>
+{%- endif %}
+{% endblock %}
+{%- if not is_htmx %}
 </body>
 </html>
+{%- endif %}
