@@ -38,7 +38,7 @@ dev = [
 ]
 
 [project.scripts]
-firefliesclearer = "firefliesclearer.cli.app:main"
+firefliesclearer = "firefliesclearer.cli.app:cli"
 
 [build-system]
 requires = ["hatchling"]

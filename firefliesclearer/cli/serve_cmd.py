@@ -73,7 +73,10 @@ def serve(
     lockfile = LockFile(config_path.parent / ".serve.lock")
     try:
         with lockfile.acquire(url=url.split("?", 1)[0]):  # do not leak token to lockfile
-            console.print(f"[green]-> FirefliesClearer running at[/green] {url}")
+            # Plain print() is unconditional; Rich's Console() can autodetect
+            # the wrapper exe context as a non-tty and emit nothing, leaving
+            # the user with no URL to navigate to.
+            print(f"-> FirefliesClearer running at {url}", flush=True)
             if not no_open:
                 timer = threading.Timer(0.5, lambda: webbrowser.open(url))
                 timer.daemon = True
