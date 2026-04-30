@@ -1,0 +1,79 @@
+name: Scheduled smoke
+
+on:
+  schedule:
+    # Sundays at 02:00 UTC (well past UTC midnight so the daily rate-limit
+    # window is fresh; in Europe/Warsaw that's Sunday 03:00 / 04:00 depending
+    # on DST). Once a week is plenty for a regression smoke that deletes a
+    # real meeting.
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write    # to open a failure issue
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run smoke (live API)
+        id: smoke
+        env:
+          FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          # `tee` writes to both smoke.log (for the failure-issue body) and to
+          # the runner stdout (for the live UI). `set -o pipefail` propagates
+          # the script's non-zero exit through the pipe so this step fails
+          # when the smoke fails, instead of being masked by tee's success.
+          set -o pipefail
+          python scripts/scheduled_smoke.py 2>&1 | tee smoke.log
+
+      - name: Upload log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-log
+          path: smoke.log
+          if-no-files-found: warn
+
+      - name: Open issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Bound the body length — issues have practical limits and the log
+          # might be megabytes if Pipeline crashed verbosely.
+          BODY_FILE=$(mktemp)
+          {
+            echo "## Scheduled smoke failed"
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Trigger: \`${{ github.event_name }}\`"
+            echo "Commit: \`${{ github.sha }}\`"
+            echo
+            echo "<details><summary>Last 200 lines of the smoke log</summary>"
+            echo
+            echo '```'
+            tail -n 200 smoke.log
+            echo '```'
+            echo
+            echo "</details>"
+          } > "$BODY_FILE"
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Scheduled smoke failed: $(date -u +%Y-%m-%d)" \
+            --label "smoke,bug" \
+            --body-file "$BODY_FILE"
