@@ -52,9 +52,13 @@ def test_get_cleanup_passes_presets_to_template(configured_app) -> None:
     assert r.status_code == 200
     assert "Alpha" in r.text
     assert "Beta" in r.text
-    # Dropdown should have a select element that is no longer disabled
-    assert 'id="preset-select"' in r.text
-    assert "disabled" not in r.text or 'id="preset-select"' in r.text
+    # Dropdown should have a select element that is not disabled
+    from selectolax.parser import HTMLParser
+
+    tree = HTMLParser(r.text)
+    select = tree.css_first("#preset-select")
+    assert select is not None
+    assert select.attributes.get("disabled") is None
 
 
 def test_get_cleanup_with_preset_query_overrides_session_filters(configured_app) -> None:

@@ -96,6 +96,21 @@ async def history(
 
     states = _parse_states(state)
 
+    audit = AuditService(manifest=deps.manifest)
+
+    # Count first so we can clamp page before querying rows.
+    count_filt = HistoryFilter(
+        states=states,
+        date_from=date_from,
+        date_to=date_to,
+        title_contains=q or None,
+    )
+    total = audit.history_count(count_filt)
+    total_pages = max(1, math.ceil(total / _PAGE_SIZE))
+
+    # Clamp page to [1, total_pages] before computing offset.
+    page = max(1, min(page, total_pages))
+
     filt = HistoryFilter(
         states=states,
         date_from=date_from,
@@ -105,13 +120,7 @@ async def history(
         offset=(page - 1) * _PAGE_SIZE,
     )
 
-    audit = AuditService(manifest=deps.manifest)
     rows = audit.history(filt)
-    total = audit.history_count(filt)
-    total_pages = max(1, math.ceil(total / _PAGE_SIZE))
-
-    # Clamp page to total_pages after we know the count
-    page = min(page, total_pages)
 
     all_states = list(MeetingState)
 

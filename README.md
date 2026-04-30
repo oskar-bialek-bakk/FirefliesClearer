@@ -106,9 +106,8 @@ summary_format = "pdf"
 [run]
 concurrency = 3
 delete_confirmation_threshold = 10
-
-[logs]
-retention_days = 30
+default_age_days = 180
+log_retention_days = 30
 ```
 
 Presets (saved filter combinations) are managed via `firefliesclearer serve` → `/presets`, not in the TOML file.

@@ -221,7 +221,12 @@ class Pipeline:
         return rec.state if rec else MeetingState.PENDING
 
     async def purge_one(self, meeting: Meeting) -> MeetingState:
-        """Verify archive then delete from Fireflies; return final state."""
+        """Delete *meeting* from the source repository; return final state.
+
+        Requires the meeting to be in ARCHIVED state in the manifest. Does NOT
+        re-verify the archive on disk before deletion (deferred to v2.x — tracked
+        as the verify-before-delete gap).
+        """
         report = RunReport()
         existing = self._manifest.get(meeting.meeting_id)
         if existing is None or existing.state is not MeetingState.ARCHIVED:

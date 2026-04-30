@@ -298,6 +298,66 @@ def test_history_invalid_page_clamped_to_1(configured_client: TestClient, config
         assert pagination_or_total is not None
 
 
+def test_history_out_of_range_high_page_returns_last_page_rows(
+    configured_client: TestClient, configured_app
+) -> None:
+    """?page=999 on a 1-page dataset returns the actual rows (clamped to last page).
+
+    Regression for fix 7: page must be clamped BEFORE offset is computed so that
+    out-of-range high page numbers don't produce an empty result set.
+    """
+    manifest = configured_app.state.deps.manifest
+    for i in range(3):
+        _seed_meeting(
+            manifest,
+            meeting_id=f"clamp_high_{i}",
+            title=f"Clamp High Meeting {i}",
+            state=MeetingState.ARCHIVED,
+            archived_at=NOW - timedelta(minutes=i),
+        )
+
+    r = configured_client.get("/history?range=all-time&page=999")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    # Total must show all 3 rows
+    total = doc.css_first(".history-total")
+    assert total is not None
+    assert "3 meetings" in total.text()
+    # Table rows must NOT be empty — clamping should yield page 1
+    rows = doc.css(".history-table tbody tr")
+    assert len(rows) == 3, f"Expected 3 rows after page clamp, got {len(rows)}"
+    # Rendered page must equal total_pages (1), not 999
+    pagination = doc.css_first(".pagination")
+    # With only 1 page there is no pagination nav; that is acceptable.
+    # If it were present it must not say "Page 999".
+    if pagination is not None:
+        assert "999" not in pagination.text()
+
+
+def test_history_out_of_range_low_page_returns_rows(
+    configured_client: TestClient, configured_app
+) -> None:
+    """?page=-5 is clamped to 1 and returns the actual rows, not an empty table."""
+    manifest = configured_app.state.deps.manifest
+    for i in range(2):
+        _seed_meeting(
+            manifest,
+            meeting_id=f"clamp_low_{i}",
+            title=f"Clamp Low Meeting {i}",
+            state=MeetingState.ARCHIVED,
+            archived_at=NOW - timedelta(minutes=i),
+        )
+
+    r = configured_client.get("/history?range=all-time&page=-5")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    rows = doc.css(".history-table tbody tr")
+    assert len(rows) == 2, f"Expected 2 rows after page clamp, got {len(rows)}"
+    total = doc.css_first(".history-total")
+    assert total is not None
+    assert "2 meetings" in total.text()
+
+
 # ---------------------------------------------------------------------------
 # Panel tests (GET /history/{meeting_id}/panel)
 # ---------------------------------------------------------------------------

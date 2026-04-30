@@ -37,25 +37,8 @@
   // Side panel close on Esc.
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") {
-      const panel = document.querySelector(".side-panel.open");
-      if (panel) panel.classList.remove("open");
+      const panel = document.querySelector(".side-panel:not([hidden])");
+      if (panel) panel.setAttribute("hidden", "");
     }
-  });
-
-  // Shift-click range select on tables with data-shift-select.
-  document.addEventListener("click", function (e) {
-    if (!e.shiftKey) return;
-    const cb = e.target.closest("input[type='checkbox'][data-row-checkbox]");
-    if (!cb) return;
-    const table = cb.closest("table[data-shift-select]");
-    if (!table) return;
-    const all = Array.from(table.querySelectorAll("input[type='checkbox'][data-row-checkbox]"));
-    const last = table.dataset.lastClickedIndex ? parseInt(table.dataset.lastClickedIndex, 10) : null;
-    const idx = all.indexOf(cb);
-    if (last !== null) {
-      const [a, b] = [Math.min(last, idx), Math.max(last, idx)];
-      for (let i = a; i <= b; i++) all[i].checked = cb.checked;
-    }
-    table.dataset.lastClickedIndex = idx;
   });
 })();

@@ -10,8 +10,18 @@ mkdir -p "$BIN_DIR"
 # Detect platform
 PLATFORM=""
 case "$(uname -s)" in
-  Linux*)   PLATFORM="linux-x64";;
-  Darwin*)  PLATFORM="macos-arm64";;  # adjust if x64 needed
+  Linux*)
+    case "$(uname -m)" in
+      x86_64) PLATFORM="linux-x64";;
+      aarch64|arm64) PLATFORM="linux-arm64";;
+      *) echo "Unsupported Linux arch: $(uname -m)"; exit 1;;
+    esac;;
+  Darwin*)
+    case "$(uname -m)" in
+      x86_64) PLATFORM="macos-x64";;
+      arm64) PLATFORM="macos-arm64";;
+      *) echo "Unsupported macOS arch: $(uname -m)"; exit 1;;
+    esac;;
   MINGW*|MSYS*|CYGWIN*) PLATFORM="windows-x64.exe";;
   *) echo "Unsupported platform: $(uname -s)"; exit 1;;
 esac
@@ -30,5 +40,6 @@ INPUT="$ROOT/firefliesclearer/web/tailwind.input.css"
 OUTPUT="$ROOT/firefliesclearer/web/static/styles.css"
 
 echo "Compiling $INPUT → $OUTPUT..."
+cd "$ROOT"
 "$BIN" -i "$INPUT" -o "$OUTPUT" --minify
 echo "Done."
