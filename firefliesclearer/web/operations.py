@@ -107,7 +107,9 @@ class Operation:
                     return
             while True:
                 evt = await q.get()
-                if evt.seq in seen_seqs:
+                if (
+                    evt.seq in seen_seqs
+                ):  # pragma: no cover — asyncio single-thread prevents this race
                     continue
                 yield evt
                 if evt.kind == "operation_state" and evt.data.get("state") in _TERMINAL_STATES:

@@ -144,3 +144,34 @@ async def test_shutdown_callbacks_isolated_on_exception():
 
     # good callback must have been called despite boom raising
     assert "good" in called
+
+
+async def test_stop_during_tick_returns_immediately():
+    """If stop() is called while run() is blocked in wait_for(), the early-return
+    guard at line 78 executes — shutdown callbacks are NOT called."""
+    clock = FrozenClock(t0())
+    tracker = HeartbeatTracker(clock=clock, idle_threshold=timedelta(seconds=60))
+    # Use a very long poll interval so wait_for doesn't time out on its own.
+    coord = ShutdownCoordinator(
+        tracker=tracker,
+        is_active=lambda: False,
+        clock=clock,
+        poll_interval=timedelta(seconds=999),
+    )
+
+    fired = asyncio.Event()
+    coord.on_shutdown_requested(lambda: fired.set())
+
+    task = asyncio.create_task(coord.run())
+    # Yield several times to ensure run() is blocked inside wait_for.
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    # stop() sets _stop=True AND calls _tick.set() so wait_for unblocks.
+    # After wait_for returns, _tick.clear() runs, then `if self._stop.is_set(): return`
+    # hits line 78.
+    coord.stop()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    # The shutdown callback must NOT have fired — we returned early.
+    assert not fired.is_set()

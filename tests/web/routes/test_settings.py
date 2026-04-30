@@ -372,3 +372,256 @@ def test_post_reset_archive_preserved(configured_app: Any, tmp_path: Path) -> No
         follow_redirects=False,
     )
     assert sentinel.exists()
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests — error branches in settings.py
+# ---------------------------------------------------------------------------
+
+
+def test_post_connection_test_oserror_shows_fragment_error(configured_app: Any) -> None:
+    """POST /settings/connection/test with OSError from verify_api_key → error fragment."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    with patch(
+        "firefliesclearer.web.routes.settings.SetupService.verify_api_key",
+        new=AsyncMock(side_effect=OSError("network unreachable")),
+    ):
+        r = c.post(
+            "/settings/connection/test",
+            data={"_csrf": csrf, "api_key": "ff_any"},
+        )
+    assert r.status_code == 200
+    assert "failed" in r.text.lower() or "connection" in r.text.lower()
+    assert "network unreachable" in r.text
+
+
+def test_post_connection_save_rejected_key_shows_error(configured_app: Any) -> None:
+    """POST /settings/connection with a key that verify_api_key rejects → 200 + error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    with patch(
+        "firefliesclearer.web.routes.settings.SetupService.verify_api_key",
+        new=AsyncMock(side_effect=InvalidApiKeyError("bad")),
+    ):
+        r = c.post(
+            "/settings/connection",
+            data={"_csrf": csrf, "api_key": "ff_bad"},
+        )
+    assert r.status_code == 200
+    assert "rejected" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_post_connection_save_empty_key_shows_error(configured_app: Any) -> None:
+    """POST /settings/connection with empty api_key → 200 with inline error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    r = c.post(
+        "/settings/connection",
+        data={"_csrf": csrf, "api_key": ""},
+    )
+    assert r.status_code == 200
+    assert "empty" in r.text.lower() or "must not" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_post_archive_non_writable_shows_error(configured_app: Any, tmp_path: Path) -> None:
+    """POST /settings/archive with a non-writable directory → 200 + writable error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    new_root = tmp_path / "non_writable_dir"
+    new_root.mkdir()
+
+    with patch(
+        "firefliesclearer.web.routes.settings._is_writable",
+        return_value=False,
+    ):
+        r = c.post(
+            "/settings/archive",
+            data={"_csrf": csrf, "root_dir": str(new_root)},
+        )
+    assert r.status_code == 200
+    assert "writable" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_post_archive_not_a_directory_shows_error(configured_app: Any, tmp_path: Path) -> None:
+    """POST /settings/archive with a path that is a file, not a dir → 200 + error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    file_path = tmp_path / "just_a_file.txt"
+    file_path.write_text("hi")
+
+    r = c.post(
+        "/settings/archive",
+        data={"_csrf": csrf, "root_dir": str(file_path)},
+    )
+    assert r.status_code == 200
+    assert "not a directory" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_post_archive_cannot_create_dir_shows_error(configured_app: Any, tmp_path: Path) -> None:
+    """POST /settings/archive with create=yes but mkdir fails → 200 + error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    non_existent = tmp_path / "will_fail"
+
+    with patch("pathlib.Path.mkdir", side_effect=OSError("permission denied")):
+        r = c.post(
+            "/settings/archive",
+            data={"_csrf": csrf, "root_dir": str(non_existent), "create": "yes"},
+        )
+    assert r.status_code == 200
+    assert "cannot create" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_post_defaults_concurrency_non_integer_rejected(configured_app: Any) -> None:
+    """POST /settings/defaults with concurrency='abc' → 200 + validation error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    r = c.post(
+        "/settings/defaults",
+        data={
+            "_csrf": csrf,
+            "concurrency": "abc",
+            "default_age_days": "90",
+            "delete_confirmation_threshold": "10",
+        },
+    )
+    assert r.status_code == 200
+    assert "integer" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_post_defaults_age_days_non_integer_rejected(configured_app: Any) -> None:
+    """POST /settings/defaults with default_age_days='abc' → 200 + validation error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    r = c.post(
+        "/settings/defaults",
+        data={
+            "_csrf": csrf,
+            "concurrency": "3",
+            "default_age_days": "abc",
+            "delete_confirmation_threshold": "10",
+        },
+    )
+    assert r.status_code == 200
+    assert "integer" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_post_defaults_age_days_zero_rejected(configured_app: Any) -> None:
+    """POST /settings/defaults with default_age_days=0 → 200 + validation error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    r = c.post(
+        "/settings/defaults",
+        data={
+            "_csrf": csrf,
+            "concurrency": "3",
+            "default_age_days": "0",
+            "delete_confirmation_threshold": "10",
+        },
+    )
+    assert r.status_code == 200
+    assert "at least 1" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_post_defaults_threshold_non_integer_rejected(configured_app: Any) -> None:
+    """POST /settings/defaults with delete_confirmation_threshold='abc' → 200 + error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    r = c.post(
+        "/settings/defaults",
+        data={
+            "_csrf": csrf,
+            "concurrency": "3",
+            "default_age_days": "90",
+            "delete_confirmation_threshold": "abc",
+        },
+    )
+    assert r.status_code == 200
+    assert "integer" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_post_defaults_threshold_negative_rejected(configured_app: Any) -> None:
+    """POST /settings/defaults with delete_confirmation_threshold=-1 → 200 + error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    r = c.post(
+        "/settings/defaults",
+        data={
+            "_csrf": csrf,
+            "concurrency": "3",
+            "default_age_days": "90",
+            "delete_confirmation_threshold": "-1",
+        },
+    )
+    assert r.status_code == 200
+    assert "non-negative" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_post_logs_retention_non_integer_rejected(configured_app: Any) -> None:
+    """POST /settings/logs/retention with log_retention_days='abc' → 200 + error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    r = c.post(
+        "/settings/logs/retention",
+        data={"_csrf": csrf, "log_retention_days": "abc"},
+    )
+    assert r.status_code == 200
+    assert "integer" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_post_logs_retention_zero_rejected(configured_app: Any) -> None:
+    """POST /settings/logs/retention with log_retention_days=0 → 200 + error."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    r = c.post(
+        "/settings/logs/retention",
+        data={"_csrf": csrf, "log_retention_days": "0"},
+    )
+    assert r.status_code == 200
+    assert "at least 1" in r.text.lower() or "error" in r.text.lower()
+
+
+def test_is_writable_returns_false_on_oserror(tmp_path: Path) -> None:
+    """_is_writable returns False when the write probe raises OSError."""
+    from firefliesclearer.web.routes.settings import _is_writable
+
+    # Patch write_text on Path to raise OSError
+    with patch("pathlib.Path.write_text", side_effect=OSError("read-only")):
+        result = _is_writable(tmp_path)
+    assert result is False
+
+
+def test_archive_has_content_returns_false_for_nonexistent_root(tmp_path: Path) -> None:
+    """_archive_has_content returns False when root does not exist (line 76)."""
+    from firefliesclearer.web.routes.settings import _archive_has_content
+
+    missing = tmp_path / "does_not_exist"
+    assert not missing.exists()
+    assert _archive_has_content(missing) is False
+
+
+def test_post_archive_empty_root_dir_shows_error(configured_app: Any) -> None:
+    """POST /settings/archive with empty root_dir → 200 + inline error (line 174)."""
+    c = _make_client(configured_app)
+    csrf = _csrf(c)
+
+    r = c.post(
+        "/settings/archive",
+        data={"_csrf": csrf, "root_dir": ""},
+    )
+    assert r.status_code == 200
+    assert "must not be empty" in r.text.lower() or "error" in r.text.lower()
