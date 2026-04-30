@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import logging
 import random
 from collections.abc import AsyncIterator
@@ -15,6 +16,12 @@ from firefliesclearer.core.models import ArtifactBundle, Meeting
 from firefliesclearer.ports.meeting_repository import MeetingFilter
 
 logger = logging.getLogger(__name__)
+
+# Maximum time we'll voluntarily sleep on a Retry-After before giving up and
+# raising. The Fireflies daily-quota retry-after is typically hours-to-half-a-day
+# in the future; sleeping that long blocks the request handler with no
+# user-visible feedback. Fail fast and let the caller render a friendly message.
+_MAX_RETRY_AFTER_SECONDS = 60.0
 
 LIST_QUERY = """
 query Transcripts($limit: Int, $skip: Int, $toDate: DateTime) {
@@ -68,6 +75,18 @@ query {
 
 class FirefliesError(Exception):
     pass
+
+
+class RateLimitedError(FirefliesError):
+    """Raised when Fireflies signals rate-limiting (429 or GraphQL too_many_requests).
+
+    Callers (web routes, CLI) should render this to the user as 'try again later'
+    rather than a generic 500, since the key may be perfectly valid.
+    """
+
+    def __init__(self, message: str, *, retry_after_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class FirefliesClient:
@@ -193,37 +212,46 @@ class FirefliesClient:
             except httpx.HTTPError as e:
                 if attempt >= self._retry_max:
                     raise FirefliesError(f"network: {e}") from e
-                await self._sleep(attempt, retry_after=None)
+                await self._sleep(attempt, retry_after_seconds=None)
                 continue
 
             if resp.status_code == 429:
+                ra_seconds = _parse_retry_after(resp.headers.get("Retry-After"))
+                # Fail fast: if Fireflies tells us to wait longer than the cap
+                # (typical for daily-quota lockouts that span until UTC
+                # midnight), don't burn through retries — surface immediately.
+                if ra_seconds is not None and ra_seconds > _MAX_RETRY_AFTER_SECONDS:
+                    raise RateLimitedError(
+                        f"rate limited; retry after {ra_seconds:.0f}s",
+                        retry_after_seconds=ra_seconds,
+                    )
                 if attempt >= self._retry_max:
-                    raise FirefliesError("rate limited")
-                ra = resp.headers.get("Retry-After")
-                await self._sleep(attempt, retry_after=ra)
+                    raise RateLimitedError("rate limited", retry_after_seconds=ra_seconds)
+                await self._sleep(attempt, retry_after_seconds=ra_seconds)
                 continue
             if 500 <= resp.status_code < 600:
                 if attempt >= self._retry_max:
                     raise FirefliesError(f"server {resp.status_code}")
-                await self._sleep(attempt, retry_after=None)
+                await self._sleep(attempt, retry_after_seconds=None)
                 continue
             if 400 <= resp.status_code < 500:
                 raise FirefliesError(f"{resp.status_code}: {resp.text[:200]}")
 
             data: dict[str, Any] = resp.json()
             if data.get("errors"):
+                # Some Fireflies errors are HTTP 200 with an `errors` array —
+                # detect rate-limit there too so the caller can react.
+                if _errors_indicate_rate_limit(data["errors"]):
+                    raise RateLimitedError(f"graphql: {data['errors']}")
                 raise FirefliesError(f"graphql: {data['errors']}")
             return data
 
         raise FirefliesError("retries exhausted")
 
-    async def _sleep(self, attempt: int, *, retry_after: str | None) -> None:
-        if retry_after is not None:
-            try:
-                await asyncio.sleep(min(float(retry_after), 60.0))
-                return
-            except ValueError:
-                pass
+    async def _sleep(self, attempt: int, *, retry_after_seconds: float | None) -> None:
+        if retry_after_seconds is not None:
+            await asyncio.sleep(min(retry_after_seconds, _MAX_RETRY_AFTER_SECONDS))
+            return
         delay = self._retry_base * (4**attempt)
         delay *= 1 + random.uniform(-0.25, 0.25)
         await asyncio.sleep(max(0.0, delay))
@@ -300,3 +328,49 @@ def _render_transcript_md(t: dict[str, Any]) -> str:
         lines.append(f"**{last_speaker}:** {' '.join(buf)}")
         lines.append("")
     return "\n".join(lines)
+
+
+def _parse_retry_after(header_value: str | None) -> float | None:
+    """Parse a Retry-After header into seconds.
+
+    Per RFC 7231 §7.1.3 the value is either an HTTP-date or a positive integer
+    number of seconds. Returns ``None`` when the header is missing or
+    unparseable. Negative deltas are clamped to 0.
+    """
+    if header_value is None:
+        return None
+    raw = header_value.strip()
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    parsed_dt = email.utils.parsedate_to_datetime(raw)
+    if parsed_dt is None:
+        return None
+    if parsed_dt.tzinfo is None:
+        parsed_dt = parsed_dt.replace(tzinfo=UTC)
+    delta = (parsed_dt - datetime.now(tz=UTC)).total_seconds()
+    return max(0.0, delta)
+
+
+def _errors_indicate_rate_limit(errors: Any) -> bool:
+    """True iff a GraphQL `errors` array contains a too_many_requests entry.
+
+    Fireflies sometimes returns HTTP 200 with this shape:
+        {"errors": [{"code": "too_many_requests", "extensions": {"status": 429}}]}
+    """
+    if not isinstance(errors, list):
+        return False
+    for entry in errors:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("code") == "too_many_requests":
+            return True
+        ext = entry.get("extensions")
+        if isinstance(ext, dict) and (
+            ext.get("code") == "too_many_requests" or ext.get("status") == 429
+        ):
+            return True
+    return False

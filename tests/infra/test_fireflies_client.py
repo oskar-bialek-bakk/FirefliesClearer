@@ -14,6 +14,7 @@ import respx
 from firefliesclearer.infra.fireflies_client import (
     FirefliesClient,
     FirefliesError,
+    RateLimitedError,
 )
 from firefliesclearer.ports.meeting_repository import MeetingFilter
 
@@ -96,6 +97,67 @@ async def test_429_with_retry_after_is_honored(
     async for _ in client.list_meetings(MeetingFilter()):
         pass
     assert route.call_count == 2
+
+
+@respx.mock
+async def test_429_with_far_future_retry_after_fails_fast(
+    client: FirefliesClient,
+) -> None:
+    """Retry-After > 60s (e.g. daily-quota lockout until UTC midnight) should
+    raise RateLimitedError immediately rather than burn through retries."""
+    route = respx.post(API_URL).mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "36000"}),  # 10h
+    )
+    with pytest.raises(RateLimitedError) as exc_info:
+        async for _ in client.list_meetings(MeetingFilter()):
+            pass
+    # Failed on the FIRST attempt — no exponential backoff burned.
+    assert route.call_count == 1
+    assert exc_info.value.retry_after_seconds is not None
+    assert exc_info.value.retry_after_seconds >= 36000
+
+
+@respx.mock
+async def test_429_with_http_date_retry_after_parses_correctly(
+    client: FirefliesClient,
+) -> None:
+    """Retry-After can be an HTTP-date (RFC 7231); a far-future date should
+    also fail fast."""
+    route = respx.post(API_URL).mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "Sun, 01 Jan 2099 00:00:00 GMT"}),
+    )
+    with pytest.raises(RateLimitedError) as exc_info:
+        async for _ in client.list_meetings(MeetingFilter()):
+            pass
+    assert route.call_count == 1
+    assert exc_info.value.retry_after_seconds is not None
+    assert exc_info.value.retry_after_seconds > 60
+
+
+@respx.mock
+async def test_graphql_too_many_requests_error_raises_rate_limited(
+    client: FirefliesClient,
+) -> None:
+    """Fireflies sometimes returns HTTP 200 with errors[].code='too_many_requests'.
+    Detect that shape and surface RateLimitedError so callers can react."""
+    route = respx.post(API_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "errors": [
+                    {
+                        "code": "too_many_requests",
+                        "message": "Too many requests. Please retry after Fri, 01 May 2026 00:00:00 GMT (UTC)",
+                        "extensions": {"code": "too_many_requests", "status": 429},
+                    }
+                ]
+            },
+        ),
+    )
+    with pytest.raises(RateLimitedError):
+        async for _ in client.list_meetings(MeetingFilter()):
+            pass
+    assert route.call_count == 1
 
 
 @respx.mock
