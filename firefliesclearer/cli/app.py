@@ -44,3 +44,15 @@ from firefliesclearer.cli import (  # noqa: E402,F401
     serve_cmd,
     status_cmd,
 )
+
+
+def cli() -> None:
+    """Console-scripts entry point.
+
+    Dispatches to the Typer app. Pyproject's ``[project.scripts]`` was
+    previously pointing at ``main`` (the Typer ``@app.callback()`` for
+    ``--version``), so the wrapper exe ran the callback in isolation and
+    exited 0 without ever reaching any subcommand. This dispatcher is the
+    correct console-scripts hook.
+    """
+    app()
