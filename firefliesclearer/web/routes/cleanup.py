@@ -41,6 +41,10 @@ from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
 from firefliesclearer.application.archive_service import ArchiveService
+from firefliesclearer.application.preset_service import (
+    PresetNotFoundError,
+    PresetService,
+)
 from firefliesclearer.application.scan_service import (
     ScanFilters,
     ScanMatch,
@@ -48,6 +52,7 @@ from firefliesclearer.application.scan_service import (
     ScanService,
 )
 from firefliesclearer.core.models import Meeting
+from firefliesclearer.infra.config import ScanFiltersModel
 from firefliesclearer.ports.meeting_repository import MeetingFilter
 from firefliesclearer.web import wizard_session
 from firefliesclearer.web.deps import get_deps
@@ -128,17 +133,40 @@ async def step1_form(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
-    """Render the Step 1 filter form, pre-populated from session state."""
+    """Render the Step 1 filter form, pre-populated from session state.
+
+    If ``?preset=NAME`` is supplied, the preset's filters override the session
+    state for this render (they are not persisted to the session until the user
+    submits the form).
+    """
     state = wizard_session.get_state(_store(request), _sid(request))
     filters = wizard_session.filters_from_dict(state.get("filters", {}))
+
+    config_path = request.app.state.config_path
+    preset_svc = PresetService(config_path) if config_path else None
+    presets = preset_svc.list() if preset_svc else []
+
+    preset_name_param = request.query_params.get("preset")
+    preset_error: str | None = None
+    loaded_preset: str | None = None
+
+    if preset_name_param and preset_svc:
+        try:
+            preset = preset_svc.get(preset_name_param)
+            filters = wizard_session.filters_from_dict(preset.filters.model_dump())
+            loaded_preset = preset.name
+        except PresetNotFoundError:
+            preset_error = f'Preset "{preset_name_param}" not found.'
+
     return _templates(request).TemplateResponse(
         request,
         "cleanup/step1_filter.html",
         {
             "filters": filters,
-            "presets": [],
+            "presets": presets,
+            "loaded_preset": loaded_preset,
             "step": "filter",
-            "error": None,
+            "error": preset_error,
         },
     )
 
@@ -191,13 +219,18 @@ async def step1_submit(
     """Submit the filter form. On success, redirect to Step 2 (Review)."""
     form = await request.form()
     filters = wizard_session.parse_filter_form(dict(form))
+
+    config_path = request.app.state.config_path
+    presets = PresetService(config_path).list() if config_path else []
+
     if filters.is_empty():
         return _templates(request).TemplateResponse(
             request,
             "cleanup/step1_filter.html",
             {
                 "filters": filters,
-                "presets": [],
+                "presets": presets,
+                "loaded_preset": None,
                 "step": "filter",
                 "error": "Add at least one filter before continuing.",
             },
@@ -210,7 +243,8 @@ async def step1_submit(
             "cleanup/step1_filter.html",
             {
                 "filters": filters,
-                "presets": [],
+                "presets": presets,
+                "loaded_preset": None,
                 "step": "filter",
                 "error": err,
             },
@@ -229,6 +263,66 @@ async def step1_submit(
 def _redirect(location: str) -> RedirectResponse:
     """RedirectResponse helper with 303 (See Other) for POST -> GET."""
     return RedirectResponse(location, status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Save-as-preset (inline from Step 1)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/cleanup/save-as-preset")
+async def save_as_preset(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Save the current wizard session filters as a named preset.
+
+    Re-renders Step 1 with a success or error banner.
+    """
+    form_data = await request.form()
+    form = dict(form_data)
+
+    preset_name = str(form.get("preset_name", "")).strip()
+    preset_description = str(form.get("preset_description", "")).strip()
+    preset_default = str(form.get("preset_default", "")) in {"on", "true", "1", "yes"}
+
+    config_path = request.app.state.config_path
+    preset_svc = PresetService(config_path) if config_path else None
+    presets = preset_svc.list() if preset_svc else []
+
+    # Read current session filters
+    filters = _filters_from_session(request)
+    if filters is None:
+        filters = wizard_session.filters_from_dict({})
+
+    save_preset_error: str | None = None
+    save_preset_success: str | None = None
+
+    if preset_name and preset_svc:
+        filters_model = ScanFiltersModel.model_validate(wizard_session.filters_to_dict(filters))
+        try:
+            preset_svc.create(
+                preset_name, preset_description, filters_model, default=preset_default
+            )
+            save_preset_success = f"Saved preset: {preset_name}"
+        except Exception as exc:  # surface errors as banners
+            save_preset_error = str(exc)
+    elif not preset_name:
+        save_preset_error = "Preset name is required."
+
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step1_filter.html",
+        {
+            "filters": filters,
+            "presets": presets,
+            "loaded_preset": None,
+            "step": "filter",
+            "error": None,
+            "save_preset_error": save_preset_error,
+            "save_preset_success": save_preset_success,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

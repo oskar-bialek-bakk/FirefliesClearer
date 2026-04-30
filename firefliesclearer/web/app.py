@@ -18,7 +18,15 @@ from firefliesclearer.ports.clock import Clock
 from firefliesclearer.ports.meeting_repository import MeetingRepository
 from firefliesclearer.web.lifecycle import HeartbeatTracker, ShutdownCoordinator
 from firefliesclearer.web.operations import OperationRegistry
-from firefliesclearer.web.routes import _heartbeat, _quit, cleanup, dashboard, progress, setup
+from firefliesclearer.web.routes import (
+    _heartbeat,
+    _quit,
+    cleanup,
+    dashboard,
+    presets,
+    progress,
+    setup,
+)
 from firefliesclearer.web.security import SecurityConfig, install_security
 from firefliesclearer.web.sessions import SessionStore
 
@@ -67,6 +75,7 @@ def create_app(
     app.include_router(setup.router)
     app.include_router(dashboard.router)
     app.include_router(cleanup.router)
+    app.include_router(presets.router)
     app.include_router(progress.router)
 
     # CRITICAL: redirect middleware MUST be added BEFORE install_security

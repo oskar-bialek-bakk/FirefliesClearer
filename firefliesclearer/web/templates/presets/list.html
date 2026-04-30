@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Presets — FirefliesClearer{% endblock %}
+{% block page %}
+<section class="presets-page">
+  <header class="presets-header">
+    <h1>Presets</h1>
+    <a href="/presets/new" class="btn-primary">+ New preset</a>
+  </header>
+
+  {% if not presets %}
+    <p class="presets-empty">
+      No presets yet.
+      <a href="/presets/new">Create your first preset</a> to save a filter combination for reuse.
+    </p>
+  {% else %}
+    <ul class="presets-list">
+      {% for p in presets %}
+      <li class="preset-card{% if p.default %} preset-card--default{% endif %}">
+        <div class="preset-card__title">
+          {% if p.default %}<span class="preset-star" title="Default preset">★</span>{% endif %}
+          <strong>{{ p.name }}</strong>
+          {% if p.default %}<span class="preset-badge">(default)</span>{% endif %}
+        </div>
+        {% if p.description %}
+          <p class="preset-card__desc">{{ p.description }}</p>
+        {% endif %}
+        <p class="preset-card__filters">
+          {%- set parts = [] -%}
+          {%- if p.filters.older_than_days is not none -%}{{ parts.append("older_than_days=" ~ p.filters.older_than_days) or "" }}{%- endif -%}
+          {%- if p.filters.duration_below_minutes is not none -%}{{ parts.append("duration_below=" ~ p.filters.duration_below_minutes) or "" }}{%- endif -%}
+          {%- if p.filters.no_transcript -%}{{ parts.append("no_transcript") or "" }}{%- endif -%}
+          {%- if p.filters.title_contains -%}{{ parts.append("title_contains=" ~ p.filters.title_contains | join(",")) or "" }}{%- endif -%}
+          {%- if p.filters.title_regex -%}{{ parts.append("title_regex=" ~ p.filters.title_regex) or "" }}{%- endif -%}
+          {%- if p.filters.host_email -%}{{ parts.append("host_email=" ~ p.filters.host_email | join(",")) or "" }}{%- endif -%}
+          {%- if p.filters.participants_below is not none -%}{{ parts.append("participants_below=" ~ p.filters.participants_below) or "" }}{%- endif -%}
+          {%- if p.filters.has_tag -%}{{ parts.append("has_tag=" ~ p.filters.has_tag | join(",")) or "" }}{%- endif -%}
+          {{ parts | join(" · ") if parts else "(no filters)" }}
+        </p>
+        <div class="preset-card__actions">
+          <a href="/cleanup?preset={{ p.name | urlencode }}">Run cleanup</a>
+          <a href="/presets/{{ p.name | urlencode }}/edit">Edit</a>
+          <form method="post" action="/presets/{{ p.name | urlencode }}/delete"
+                style="display:inline"
+                onsubmit="return confirm('Delete preset {{ p.name }}?')">
+            <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+            <button type="submit" class="btn-link btn-danger">Delete</button>
+          </form>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+{% endblock %}

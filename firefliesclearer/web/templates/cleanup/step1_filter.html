@@ -13,9 +13,18 @@
 
   <div class="preset-row">
     <label for="preset-select">Load preset</label>
-    <select id="preset-select" name="preset" disabled>
-      <option value="">Load preset (coming soon)</option>
-      {% for p in presets %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+    <select id="preset-select" name="preset"
+            hx-get="/cleanup"
+            hx-include="this"
+            hx-target="body"
+            hx-push-url="true">
+      <option value="">— Choose preset —</option>
+      {% for p in presets %}
+      <option value="{{ p.name }}"
+        {% if loaded_preset and loaded_preset == p.name %}selected{% endif %}>
+        {{ p.name }}{% if p.default %} ★{% endif %}
+      </option>
+      {% endfor %}
     </select>
   </div>
 
@@ -119,5 +128,18 @@
       <button type="submit" class="continue-btn">Continue &rarr;</button>
     </div>
   </form>
+
+  <details class="save-as-preset">
+    <summary>Save current filters as a preset</summary>
+    <form method="post" action="/cleanup/save-as-preset">
+      <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+      <label>Name <input type="text" name="preset_name" maxlength="60" required></label>
+      <label>Description <input type="text" name="preset_description" maxlength="200"></label>
+      <label><input type="checkbox" name="preset_default" value="on"> Set as default</label>
+      <button type="submit">Save preset</button>
+    </form>
+    {% if save_preset_error %}<p class="error-banner" role="alert">{{ save_preset_error }}</p>{% endif %}
+    {% if save_preset_success %}<p class="success-banner" role="status">{{ save_preset_success }}</p>{% endif %}
+  </details>
 </section>
 {% endblock %}
