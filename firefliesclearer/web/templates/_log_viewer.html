@@ -1,0 +1,11 @@
+{# HTMX fragment — swap target for GET /settings/logs/today #}
+{% if log_content is not none %}
+<div class="log-viewer">
+  <p class="log-viewer__header">Log for {{ today }}</p>
+  <pre class="log-viewer__pre">{{ log_content }}</pre>
+</div>
+{% else %}
+<div class="log-viewer log-viewer--empty">
+  <p>No log for today ({{ today }}).</p>
+</div>
+{% endif %}

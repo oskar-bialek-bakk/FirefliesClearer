@@ -57,6 +57,8 @@ class AutoRulesConfig(BaseModel):
 class RunConfig(BaseModel):
     concurrency: int = Field(default=3, ge=1, le=20)
     delete_confirmation_threshold: int = Field(default=10, ge=0)
+    default_age_days: int = Field(default=180, ge=1, le=3650)
+    log_retention_days: int = Field(default=30, ge=1, le=3650)
 
 
 class AppConfig(BaseModel):

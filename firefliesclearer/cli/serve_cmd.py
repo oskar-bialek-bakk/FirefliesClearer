@@ -17,6 +17,7 @@ from firefliesclearer.cli._common import console
 from firefliesclearer.cli.app import app
 from firefliesclearer.infra.config import user_config_path
 from firefliesclearer.infra.fireflies_client import FirefliesClient
+from firefliesclearer.infra.log_retention import sweep_old_logs
 from firefliesclearer.web.app import create_app
 from firefliesclearer.web.lockfile import AnotherInstanceRunningError, LockFile
 
@@ -54,9 +55,14 @@ def serve(
     )
 
     # If config exists, run the one-shot v1→v2 migration (no-op when already
-    # migrated), then load deps so they reflect the post-migration state.
+    # migrated), sweep old logs, then load deps so they reflect the
+    # post-migration state.
     if config_path.exists():
         migrate_v1_rules_auto(config_path)
+        from firefliesclearer.infra.config import load_config
+
+        _cfg = load_config(user_config=config_path)
+        sweep_old_logs(_cfg.archive.root_dir, _cfg.run.log_retention_days)
         deps = _common.build_deps(config_override=config_path)
         fastapi_app.state.deps = deps
     else:

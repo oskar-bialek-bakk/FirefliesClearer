@@ -26,6 +26,7 @@ from firefliesclearer.web.routes import (
     history,
     presets,
     progress,
+    settings,
     setup,
 )
 from firefliesclearer.web.security import SecurityConfig, install_security
@@ -79,6 +80,7 @@ def create_app(
     app.include_router(presets.router)
     app.include_router(progress.router)
     app.include_router(history.router)
+    app.include_router(settings.router)
 
     # CRITICAL: redirect middleware MUST be added BEFORE install_security
     # so it ends up INNERMOST in the middleware stack. Order in Starlette:
