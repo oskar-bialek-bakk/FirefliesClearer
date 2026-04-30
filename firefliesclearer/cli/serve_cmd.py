@@ -11,6 +11,7 @@ from pathlib import Path
 import typer
 import uvicorn
 
+from firefliesclearer.application.setup_service import migrate_v1_rules_auto
 from firefliesclearer.cli import _common
 from firefliesclearer.cli._common import console
 from firefliesclearer.cli.app import app
@@ -52,10 +53,10 @@ def serve(
         repo_factory=lambda key: FirefliesClient(api_key=key),
     )
 
-    # If config exists, load deps now and attach. Otherwise the wizard runs and
-    # the user lands on / once config is written; deps will be needed by Phase 4+
-    # routes (not this task).
+    # If config exists, run the one-shot v1→v2 migration (no-op when already
+    # migrated), then load deps so they reflect the post-migration state.
     if config_path.exists():
+        migrate_v1_rules_auto(config_path)
         deps = _common.build_deps(config_override=config_path)
         fastapi_app.state.deps = deps
     else:
