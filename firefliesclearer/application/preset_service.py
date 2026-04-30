@@ -246,6 +246,9 @@ class PresetService:
         """Serialise *presets* back into *payload* and write atomically."""
         # Dump each preset using mode="json" + exclude_none to match the
         # existing write_config behaviour from Task 6.1.
-        payload["presets"] = [p.model_dump(mode="json", exclude_none=True) for p in presets]
+        new_payload = {
+            **payload,
+            "presets": [p.model_dump(mode="json", exclude_none=True) for p in presets],
+        }
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        write_atomic_toml(self._config_path, payload)
+        write_atomic_toml(self._config_path, new_payload)
