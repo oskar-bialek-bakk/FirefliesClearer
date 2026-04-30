@@ -16,7 +16,8 @@
     <select id="preset-select" name="preset"
             hx-get="/cleanup"
             hx-include="this"
-            hx-target="body"
+            hx-target="#page"
+            hx-swap="innerHTML"
             hx-push-url="true">
       <option value="">— Choose preset —</option>
       {% for p in presets %}
