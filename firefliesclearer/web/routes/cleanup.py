@@ -195,16 +195,14 @@ async def preview_count(
             {"count": None, "message": err},
         )
 
-    svc = _service(deps)
-    try:
-        result = await svc.scan(filters)
-    except Exception as exc:  # API error path: fragment, never 5xx.
-        logger.warning("preview-count failed: %s", exc, exc_info=True)
+    result, scan_error = await _scan_or_error(deps, filters)
+    if scan_error is not None:
         return _templates(request).TemplateResponse(
             request,
             "cleanup/_preview_count.html",
-            {"count": None, "message": f"Could not preview count: {exc}."},
+            {"count": None, "message": scan_error},
         )
+    assert result is not None  # mypy: scan_error None implies result non-None
     return _templates(request).TemplateResponse(
         request,
         "cleanup/_preview_count.html",
@@ -348,12 +346,41 @@ async def _scan_or_none(deps: SimpleNamespace, filters: ScanFilters) -> ScanResu
     Errors are logged. Callers decide how to surface "no scan available" — for
     Step 2 today that means rendering an empty table.
     """
+    result, _err = await _scan_or_error(deps, filters)
+    return result
+
+
+async def _scan_or_error(
+    deps: SimpleNamespace, filters: ScanFilters
+) -> tuple[ScanResult | None, str | None]:
+    """Run the scan, returning (result, error_message).
+
+    On rate limit: error_message describes the retry window.
+    On other API errors: error_message is the exception text (truncated).
+    On success: error_message is None.
+    """
+    from firefliesclearer.infra.fireflies_client import FirefliesError, RateLimitedError
+
     svc = _service(deps)
     try:
-        return await svc.scan(filters)
-    except Exception as exc:  # API error path: degrade gracefully.
-        logger.warning("review scan failed: %s", exc, exc_info=True)
-        return None
+        return await svc.scan(filters), None
+    except RateLimitedError as exc:
+        logger.warning("scan rate-limited: %s", exc)
+        if exc.retry_after_seconds is not None and exc.retry_after_seconds > 60:
+            mins = int(exc.retry_after_seconds // 60) + 1
+            msg = (
+                f"Fireflies is rate-limiting this account. Retry after about {mins} "
+                f"minute{'s' if mins != 1 else ''} (typically resets at next UTC midnight)."
+            )
+        else:
+            msg = "Fireflies is rate-limiting this account. Please retry in a moment."
+        return None, msg
+    except FirefliesError as exc:
+        logger.warning("scan failed (FirefliesError): %s", exc)
+        return None, f"Fireflies API error: {exc}"
+    except Exception as exc:
+        logger.warning("scan failed: %s", exc, exc_info=True)
+        return None, f"Could not reach Fireflies: {exc}"
 
 
 def _page_slice(
@@ -412,7 +439,7 @@ async def step2_review(
         return _redirect("/cleanup")
 
     page = _safe_page(request.query_params.get("page"))
-    result = await _scan_or_none(deps, filters)
+    result, scan_error = await _scan_or_error(deps, filters)
     matches = result.matches if result is not None else ()
     page_matches, total, pages = _page_slice(matches, page)
 
@@ -422,6 +449,10 @@ async def step2_review(
     inline_error: str | None = None
     if request.query_params.get("error") == "empty-selection":
         inline_error = "Select at least one meeting before continuing."
+    elif scan_error is not None:
+        # Bubble scan failures (rate limit, network, etc.) so the user sees
+        # WHY the table is empty instead of a confusing zero-results page.
+        inline_error = scan_error
 
     ctx = _review_context(
         request,

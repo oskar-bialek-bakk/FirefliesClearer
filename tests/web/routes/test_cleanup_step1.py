@@ -177,7 +177,12 @@ def test_preview_count_handles_repo_error(configured_client: TestClient, configu
         },
     )
     assert r.status_code == 200
-    assert "Could not preview count" in r.text
+    # The fragment surfaces the underlying error message; previously prefixed
+    # with "Could not preview count:", now uses the unified scan-error helper
+    # which renders the descriptive message directly. RuntimeError isn't a
+    # FirefliesError or RateLimitedError, so it falls through to the generic
+    # "Could not reach Fireflies" branch with the raw message.
+    assert "Could not reach Fireflies" in r.text or "boom" in r.text
 
 
 def test_preview_count_with_invalid_regex_returns_inline_message(
