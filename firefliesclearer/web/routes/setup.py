@@ -16,6 +16,7 @@ from platformdirs import user_documents_dir
 from starlette.responses import Response
 
 from firefliesclearer.application.setup_service import (
+    ApiUnavailableError,
     InvalidApiKeyError,
     SetupService,
     SetupValues,
@@ -69,6 +70,24 @@ async def api_key_submit(request: Request, api_key: str = Form(...)) -> Response
             request,
             "setup/api_key.html",
             {"error": f"Fireflies rejected this key: {exc}"},
+        )
+    except ApiUnavailableError as exc:
+        msg = str(exc).lower()
+        if "too_many_requests" in msg or "rate" in msg:
+            friendly = (
+                "Fireflies is currently rate-limiting this account. The key may be "
+                "fine. Wait until the retry window resets (usually next UTC midnight) "
+                "and try again."
+            )
+        else:
+            friendly = (
+                f"Could not reach Fireflies to verify the key: {exc}. "
+                "Check your network connection and try again."
+            )
+        return _templates(request).TemplateResponse(
+            request,
+            "setup/api_key.html",
+            {"error": friendly},
         )
     _store(request).update(_sid(request), {"api_key": api_key, "email": email})
     return RedirectResponse("/setup/archive-root", status_code=303)

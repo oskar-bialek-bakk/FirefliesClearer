@@ -11,6 +11,7 @@ import pytest
 import tomli_w
 
 from firefliesclearer.application.setup_service import (
+    ApiUnavailableError,
     ConfigAlreadyExists,
     InvalidApiKey,
     SetupService,
@@ -154,6 +155,33 @@ async def test_verify_api_key_propagates_key_in_exception() -> None:
     with pytest.raises(InvalidApiKey) as exc_info:
         await svc.verify_api_key("bad_key")
     assert "bad_key" in str(exc_info.value)
+
+
+async def test_verify_api_key_maps_rate_limit_to_api_unavailable() -> None:
+    """Fireflies rate limit / network / GraphQL error → ApiUnavailableError, not 500."""
+
+    class _RateLimitedRepo:
+        async def ping_user(self) -> str:
+            raise RuntimeError(
+                "graphql: [{'code': 'too_many_requests', 'message': 'retry after midnight'}]"
+            )
+
+    svc = SetupService(repo_factory=lambda _key: _RateLimitedRepo())  # type: ignore[arg-type]
+    with pytest.raises(ApiUnavailableError) as exc_info:
+        await svc.verify_api_key("ff_anything")
+    assert "too_many_requests" in str(exc_info.value)
+
+
+async def test_verify_api_key_invalid_key_still_raises_invalid_not_unavailable() -> None:
+    """PermissionError path still maps to InvalidApiKey, not ApiUnavailableError."""
+
+    class _Forbidden:
+        async def ping_user(self) -> str:
+            raise PermissionError("401 unauthorized")
+
+    svc = SetupService(repo_factory=lambda _key: _Forbidden())  # type: ignore[arg-type]
+    with pytest.raises(InvalidApiKey):
+        await svc.verify_api_key("ff_anything")
 
 
 # ---------------------------------------------------------------------------
