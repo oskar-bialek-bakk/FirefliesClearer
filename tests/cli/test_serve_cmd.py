@@ -43,6 +43,28 @@ def test_serve_refuses_non_loopback_host_without_flag():
     assert "Refusing to bind a non-loopback host" in _strip_ansi(r.output)
 
 
+def test_serve_cmd_console_print_strings_are_ascii_safe() -> None:
+    """Regression: every console.print / typer.echo string in serve_cmd.py must be ASCII.
+
+    Windows default console encoding is cp1252; printing non-ASCII glyphs (e.g. an arrow
+    "->") via Rich's legacy_windows renderer raises UnicodeEncodeError BEFORE uvicorn
+    starts, so the server never binds and the user sees a confusing crash.
+    """
+    src = (
+        Path(__file__).resolve().parents[2] / "firefliesclearer" / "cli" / "serve_cmd.py"
+    ).read_text(encoding="utf-8")
+    offenders: list[tuple[int, str]] = []
+    for i, line in enumerate(src.splitlines(), 1):
+        if "console.print" in line or "typer.echo" in line:
+            for ch in line:
+                if ord(ch) > 127:
+                    offenders.append((i, line.rstrip()))
+                    break
+    assert not offenders, (
+        f"non-ASCII characters in console.print/typer.echo lines (crashes Windows cp1252): {offenders}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Wiring: migrate_v1_rules_auto is called by serve on startup
 # ---------------------------------------------------------------------------
