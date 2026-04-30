@@ -22,12 +22,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import queue
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
@@ -47,6 +50,22 @@ from firefliesclearer.ports.meeting_repository import MeetingFilter
 TARGET_TITLE = "Daily Team OB"
 WEB_PROBE_PAGES = ("/", "/cleanup", "/presets", "/history", "/settings")
 SERVE_BOOT_TIMEOUT_SECONDS = 15
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Disable automatic redirect following so probes assert the bare-path
+    response. FastAPI middlewares (redirect-to-setup, the empty-selection
+    bouncer, etc.) all use 30x; if we silently follow them the smoke would
+    report 200 for a path that's actually broken or in the wrong state.
+    """
+
+    def http_error_301(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    http_error_302 = http_error_303 = http_error_307 = http_error_308 = http_error_301
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
 def log(msg: str) -> None:
@@ -175,43 +194,87 @@ def probe_web_routes(api_key: str, archive_root: Path) -> None:
         stderr=subprocess.STDOUT,
         text=True,
     )
+    # Pump child stdout in a thread so the boot timeout is actually enforced
+    # (proc.stdout.readline() blocks; a blocking read can't honour wall-clock
+    # deadlines).
+    line_queue: queue.Queue[str] = queue.Queue()
+
+    def _pump() -> None:
+        assert proc.stdout is not None
+        for line in iter(proc.stdout.readline, ""):
+            line_queue.put(line)
+        line_queue.put("")  # sentinel: stdout closed
+
+    pump_thread = threading.Thread(target=_pump, daemon=True)
+    pump_thread.start()
+
     try:
-        # Wait for either the URL banner or the boot timeout.
+        # Stage 1: wait for the URL banner (bounded by SERVE_BOOT_TIMEOUT).
         token: str | None = None
         deadline = time.monotonic() + SERVE_BOOT_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
-            assert proc.stdout is not None
-            line = proc.stdout.readline()
-            if not line:
+            try:
+                line = line_queue.get(timeout=0.5)
+            except queue.Empty:
                 if proc.poll() is not None:
-                    raise RuntimeError("serve exited before binding")
+                    raise RuntimeError("serve exited before printing banner") from None
                 continue
+            if line == "":
+                raise RuntimeError("serve closed stdout before printing banner")
             if "running at" in line and "?token=" in line:
                 token = line.split("?token=", 1)[1].strip()
-                log("serve up; probing pages with session token…")
+                log("serve printed banner; waiting for socket bind…")
                 break
         if token is None:
             raise RuntimeError("serve did not print URL banner within timeout")
 
-        # Establish session cookie + CSRF cookie via initial handshake.
-        cookie_jar: list[str] = []
+        # Stage 2: the banner is printed BEFORE uvicorn.Server.run() binds the
+        # socket. Poll connect-to-port until success or the same deadline.
         url = f"http://127.0.0.1:{port}/?token={urllib.parse.quote(token)}"
-        with urllib.request.urlopen(url, timeout=5) as resp:
-            for header, value in resp.headers.items():
-                if header.lower() == "set-cookie":
-                    cookie_jar.append(value.split(";", 1)[0])
-            if resp.status != 200:
-                raise RuntimeError(f"GET / handshake returned {resp.status}")
-        cookies_header = "; ".join(cookie_jar)
+        cookies_header = ""
+        last_err: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                with _NO_REDIRECT_OPENER.open(url, timeout=2) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(
+                            f"GET / handshake returned {resp.status} (expected 200, "
+                            "no redirect should fire)"
+                        )
+                    cookie_jar: list[str] = []
+                    for header, value in resp.headers.items():
+                        if header.lower() == "set-cookie":
+                            cookie_jar.append(value.split(";", 1)[0])
+                    cookies_header = "; ".join(cookie_jar)
+                    log("server bound; probing pages…")
+                    break
+            except (OSError, urllib.error.URLError) as exc:
+                last_err = exc
+                time.sleep(0.25)
+        else:
+            raise RuntimeError(
+                f"serve never accepted connections on :{port} within timeout "
+                f"(last err: {last_err!r})"
+            )
 
+        # Stage 3: probe each page with the session cookie. Redirects are
+        # disabled — the smoke should report exactly the path's true status,
+        # not the result of following a /setup-bounce or post-redirect target.
         for path in WEB_PROBE_PAGES:
             req = urllib.request.Request(
                 f"http://127.0.0.1:{port}{path}",
                 headers={"Cookie": cookies_header},
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"GET {path} returned {resp.status}")
+            try:
+                with _NO_REDIRECT_OPENER.open(req, timeout=5) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(
+                            f"GET {path} returned {resp.status} (expected 200, no redirect)"
+                        )
+            except urllib.error.HTTPError as exc:
+                # _NoRedirectHandler returns None on 30x, which urllib turns
+                # into HTTPError; surface that as a hard fail with the code.
+                raise RuntimeError(f"GET {path} returned {exc.code}") from exc
             log(f"  {path}: 200")
 
     finally:
@@ -220,6 +283,7 @@ def probe_web_routes(api_key: str, archive_root: Path) -> None:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+        pump_thread.join(timeout=2)
 
 
 async def amain() -> int:

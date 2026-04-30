@@ -34,9 +34,10 @@ jobs:
           FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}
           PYTHONIOENCODING: utf-8
         run: |
-          # Capture the log to a file AND tee to the action stdout so it's
-          # visible in the run UI. The trailing exit-status pipe preserves
-          # the script's exit code despite tee.
+          # `tee` writes to both smoke.log (for the failure-issue body) and to
+          # the runner stdout (for the live UI). `set -o pipefail` propagates
+          # the script's non-zero exit through the pipe so this step fails
+          # when the smoke fails, instead of being masked by tee's success.
           set -o pipefail
           python scripts/scheduled_smoke.py 2>&1 | tee smoke.log
 
