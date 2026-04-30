@@ -80,3 +80,9 @@ logs/
 *.pdf
 !docs/**/*.pdf
 !templates/**/*.pdf
+
+# Superpowers brainstorm artefacts (mockups, server state)
+.superpowers/
+
+# Tailwind standalone CLI binary (downloaded by tools/build_static.sh, ~50MB)
+tools/bin/

@@ -1,0 +1,45 @@
+{# History side-panel fragment — slotted into #history-panel via HTMX swap.
+   Not a full page: no {% extends "base.html" %}.
+#}
+<section class="history-panel">
+  <h2>{{ record.title }}</h2>
+
+  <dl class="history-panel-fields">
+    <dt>Meeting date</dt>
+    <dd>{{ record.meeting_date.isoformat() }}</dd>
+
+    <dt>State</dt>
+    <dd>{{ record.state.value }}</dd>
+
+    {% if record.archive_path %}
+    <dt>Archive</dt>
+    <dd>{{ record.archive_path }}</dd>
+    {% endif %}
+
+    {% if record.last_error %}
+    <dt>Last error</dt>
+    <dd class="history-panel-error">{{ record.last_error }}</dd>
+    {% endif %}
+  </dl>
+
+  <h3>State log</h3>
+  <ol class="state-log">
+    {% for entry in log_entries %}
+    <li>
+      <time datetime="{{ entry.at.isoformat() }}">{{ entry.at.isoformat() }}</time>
+      <strong>{{ entry.to_state.value }}</strong>
+      {% if entry.from_state %}
+      <span class="state-log-from">from {{ entry.from_state.value }}</span>
+      {% endif %}
+      {% if entry.details %}
+      <pre class="state-log-details">{{ entry.details | tojson(indent=2) }}</pre>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+
+  <button type="button"
+          hx-on:click="document.getElementById('history-panel').innerHTML = ''">
+    Close
+  </button>
+</section>

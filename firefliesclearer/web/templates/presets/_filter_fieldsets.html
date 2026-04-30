@@ -1,0 +1,92 @@
+{# Shared filter fieldsets for new.html and edit.html.
+   Context vars expected:
+     preset (optional, Preset instance for edit mode)
+     form_values (optional dict from POST round-trip)
+   Helpers: _fv(key) picks form_values over preset.filters.
+#}
+{%- set fv = form_values if form_values else {} -%}
+{%- set pf = preset.filters if preset else none -%}
+
+<fieldset class="filter-row">
+  <legend class="visually-hidden">Older than filter</legend>
+  {%- set otd_enabled = fv.get("older_than_days_enabled") or (pf and pf.older_than_days is not none) -%}
+  {%- set otd_val = fv.get("older_than_days") or (pf.older_than_days if pf and pf.older_than_days is not none else "") -%}
+  <label class="enable-toggle">
+    <input type="checkbox" name="older_than_days_enabled" value="on"
+      {% if otd_enabled %}checked{% endif %}>
+    Older than
+  </label>
+  <input type="number" name="older_than_days" min="0" step="1"
+    value="{{ otd_val }}" placeholder="N">
+  <span aria-hidden="true">days</span>
+</fieldset>
+
+<fieldset class="filter-row">
+  <legend class="visually-hidden">Duration below filter</legend>
+  {%- set db_enabled = fv.get("duration_below_minutes_enabled") or (pf and pf.duration_below_minutes is not none) -%}
+  {%- set db_val = fv.get("duration_below_minutes") or (pf.duration_below_minutes if pf and pf.duration_below_minutes is not none else "") -%}
+  <label class="enable-toggle">
+    <input type="checkbox" name="duration_below_minutes_enabled" value="on"
+      {% if db_enabled %}checked{% endif %}>
+    Duration below
+  </label>
+  <input type="number" name="duration_below_minutes" min="0" step="0.1"
+    value="{{ db_val }}" placeholder="N">
+  <span aria-hidden="true">minutes</span>
+</fieldset>
+
+<fieldset class="filter-row">
+  <legend class="visually-hidden">Transcript filter</legend>
+  {%- set nt_checked = fv.get("no_transcript") or (pf and pf.no_transcript) -%}
+  <label class="enable-toggle">
+    <input type="checkbox" name="no_transcript" value="on"
+      {% if nt_checked %}checked{% endif %}>
+    No transcript only
+  </label>
+</fieldset>
+
+<fieldset class="filter-row">
+  <legend class="visually-hidden">Title contains filter</legend>
+  {%- set tc_val = fv.get("title_contains") or (pf.title_contains | join(", ") if pf and pf.title_contains else "") -%}
+  <label for="pf_title_contains">Title contains</label>
+  <input type="text" id="pf_title_contains" name="title_contains"
+    value="{{ tc_val }}" placeholder="standup, review, retro">
+  <small class="hint">Comma-separated; substring match.</small>
+</fieldset>
+
+<details class="filter-advanced">
+  <summary>Advanced: title regex</summary>
+  <fieldset class="filter-row">
+    <legend class="visually-hidden">Title regex filter</legend>
+    {%- set tr_val = fv.get("title_regex") or (pf.title_regex if pf and pf.title_regex else "") -%}
+    <label for="pf_title_regex">Title regex</label>
+    <input type="text" id="pf_title_regex" name="title_regex"
+      value="{{ tr_val }}" placeholder="^Daily.*">
+  </fieldset>
+</details>
+
+<fieldset class="filter-row">
+  <legend class="visually-hidden">Host email filter</legend>
+  {%- set he_val = fv.get("host_email") or (pf.host_email | join(", ") if pf and pf.host_email else "") -%}
+  <label for="pf_host_email">Host email</label>
+  <input type="text" id="pf_host_email" name="host_email"
+    value="{{ he_val }}" placeholder="alice@example.com, bob@example.com">
+  <small class="hint">Comma-separated.</small>
+</fieldset>
+
+<fieldset class="filter-row">
+  <legend class="visually-hidden">Has tag filter</legend>
+  {%- set ht_val = fv.get("has_tag") or (pf.has_tag | join(", ") if pf and pf.has_tag else "") -%}
+  <label for="pf_has_tag">Has tag</label>
+  <input type="text" id="pf_has_tag" name="has_tag"
+    value="{{ ht_val }}" placeholder="ad-hoc, internal">
+  <small class="hint">Comma-separated.</small>
+</fieldset>
+
+<fieldset class="filter-row">
+  <legend class="visually-hidden">Participants below filter</legend>
+  {%- set pb_val = fv.get("participants_below") or (pf.participants_below if pf and pf.participants_below is not none else "") -%}
+  <label for="pf_participants_below">Participants below</label>
+  <input type="number" id="pf_participants_below" name="participants_below" min="0" step="1"
+    value="{{ pb_val }}" placeholder="N">
+</fieldset>

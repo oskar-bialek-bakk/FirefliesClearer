@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from firefliesclearer.infra.config import (
     AppConfig,
     ConfigError,
+    Preset,
+    ScanFiltersModel,
     load_config,
     write_config,
 )
@@ -140,3 +144,156 @@ def test_write_config_round_trip(tmp_path: Path) -> None:
     write_config(cfg, target)
     loaded = load_config(user_config=target)
     assert loaded.fireflies.api_key == "ff_xyz"
+
+
+# ---------------------------------------------------------------------------
+# Preset model tests — Task 6.1
+# ---------------------------------------------------------------------------
+
+_BASE_TOML = """
+[fireflies]
+api_key = "ff_test"
+
+[archive]
+root_dir = "C:/tmp/arch"
+"""
+
+_TWO_PRESETS_TOML = (
+    _BASE_TOML
+    + """
+[[presets]]
+name = "Auto cleanup"
+description = "Old meetings (>180d) and anything without a transcript"
+default = true
+created_at = "2026-04-29T10:14:00+02:00"
+
+[presets.filters]
+older_than_days = 180
+no_transcript = true
+
+[[presets]]
+name = "Drafts and tests"
+description = "Short meetings whose title contains test/draft/temp"
+default = false
+created_at = "2026-04-29T10:18:00+02:00"
+
+[presets.filters]
+duration_below_minutes = 5.0
+title_contains = ["test", "draft", "temp"]
+"""
+)
+
+
+def test_two_presets_load_correctly(tmp_path: Path) -> None:
+    user = _write_user(tmp_path, _TWO_PRESETS_TOML)
+    cfg = load_config(user_config=user)
+
+    assert len(cfg.presets) == 2
+
+    first = cfg.presets[0]
+    assert first.name == "Auto cleanup"
+    assert first.description == "Old meetings (>180d) and anything without a transcript"
+    assert first.default is True
+    assert first.filters.older_than_days == 180
+    assert first.filters.no_transcript is True
+
+    second = cfg.presets[1]
+    assert second.name == "Drafts and tests"
+    assert second.default is False
+    assert second.filters.duration_below_minutes == 5.0
+    assert second.filters.title_contains == ["test", "draft", "temp"]
+
+
+def test_no_presets_section_defaults_to_empty_list(tmp_path: Path) -> None:
+    user = _write_user(tmp_path, _BASE_TOML)
+    cfg = load_config(user_config=user)
+    assert cfg.presets == []
+
+
+def test_preset_round_trip(tmp_path: Path) -> None:
+    user = _write_user(tmp_path, _TWO_PRESETS_TOML)
+    cfg = load_config(user_config=user)
+
+    target = tmp_path / "out.toml"
+    write_config(cfg, target)
+    loaded = load_config(user_config=target)
+
+    assert len(loaded.presets) == 2
+    assert loaded.presets[0].name == "Auto cleanup"
+    assert loaded.presets[0].default is True
+    assert loaded.presets[0].filters.older_than_days == 180
+    assert loaded.presets[0].filters.no_transcript is True
+    assert loaded.presets[1].name == "Drafts and tests"
+    assert loaded.presets[1].filters.title_contains == ["test", "draft", "temp"]
+
+
+def test_preset_name_too_short_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Preset(
+            name="",
+            created_at=datetime(2026, 4, 29, tzinfo=UTC),
+        )
+
+
+def test_preset_name_too_long_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Preset(
+            name="x" * 61,
+            created_at=datetime(2026, 4, 29, tzinfo=UTC),
+        )
+
+
+def test_preset_description_too_long_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Preset(
+            name="Valid name",
+            description="d" * 201,
+            created_at=datetime(2026, 4, 29, tzinfo=UTC),
+        )
+
+
+def test_preset_filters_title_contains_round_trips(tmp_path: Path) -> None:
+    created = datetime(2026, 4, 29, 10, 0, 0, tzinfo=UTC)
+    preset = Preset(
+        name="Filter test",
+        created_at=created,
+        filters=ScanFiltersModel(title_contains=["a", "b"]),
+    )
+    cfg = AppConfig.model_validate(
+        {
+            "fireflies": {"api_key": "ff_test"},
+            "archive": {"root_dir": "C:/tmp/arch"},
+            "presets": [preset.model_dump(mode="json")],
+        }
+    )
+    target = tmp_path / "out.toml"
+    write_config(cfg, target)
+    loaded = load_config(user_config=target)
+
+    assert len(loaded.presets) == 1
+    assert loaded.presets[0].filters.title_contains == ["a", "b"]
+
+
+def test_preset_name_at_max_length_accepted(tmp_path: Path) -> None:
+    """A 60-char name (the max) is valid; ensures we test the boundary, not just past it."""
+    # Round-trip a TOML with a 60-char name through load_config to confirm acceptance.
+    name_60 = "x" * 60
+    user = _write_user(
+        tmp_path,
+        f"""
+        [fireflies]
+        api_key = "k"
+        [archive]
+        root_dir = "C:/tmp/arch"
+        summary_format = "pdf"
+
+        [[presets]]
+        name = "{name_60}"
+        description = ""
+        default = false
+        created_at = 2026-04-29T10:00:00+00:00
+        """,
+    )
+    cfg = load_config(user_config=user)
+    assert len(cfg.presets) == 1
+    assert cfg.presets[0].name == "x" * 60

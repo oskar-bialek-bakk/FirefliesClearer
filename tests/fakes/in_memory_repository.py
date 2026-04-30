@@ -13,12 +13,19 @@ class InMemoryMeetingRepository:
         self,
         meetings: list[Meeting] | None = None,
         artifacts: dict[str, ArtifactBundle] | None = None,
+        api_key: str | None = None,
     ) -> None:
         self._meetings: dict[str, Meeting] = {m.meeting_id: m for m in (meetings or [])}
         self._artifacts: dict[str, ArtifactBundle] = artifacts or {}
         self.deleted: list[str] = []
         self.fail_fetch_for: set[str] = set()
         self.fail_delete_for: set[str] = set()
+        self._api_key: str | None = api_key
+        self._key_to_email: dict[str, str] = {}
+
+    def set_user_email_for_key(self, api_key: str, email: str) -> None:
+        """Register a (key → email) pair so ping_user() can verify it."""
+        self._key_to_email[api_key] = email
 
     async def list_meetings(self, filter: MeetingFilter) -> AsyncIterator[Meeting]:
         for m in self._meetings.values():
@@ -38,3 +45,9 @@ class InMemoryMeetingRepository:
             return
         self.deleted.append(meeting_id)
         del self._meetings[meeting_id]
+
+    async def ping_user(self) -> str:
+        """Return the email for the registered API key, or raise PermissionError."""
+        if self._api_key is None or self._api_key not in self._key_to_email:
+            raise PermissionError("Unknown API key")
+        return self._key_to_email[self._api_key]

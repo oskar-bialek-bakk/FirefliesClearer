@@ -1,0 +1,35 @@
+{# Needs attention: failed meetings with title + last_error.
+
+   Each row carries a Retry button that POSTs to /retry/{meeting_id} via HTMX.
+   The server determines the retry kind (RETRY_ARCHIVE / RETRY_PURGE) from the
+   meeting's current state and returns an inline progress fragment that
+   replaces this row (hx-target="closest .needs-attention-row",
+   hx-swap="outerHTML"). The fragment then opens an SSE stream and reloads
+   the page on terminal state, so the dashboard re-renders with the updated
+   manifest state. #}
+<section class="needs-attention">
+  <h2>Needs attention</h2>
+  {% if needs_attention %}
+    <ul class="needs-attention__list">
+      {% for rec in needs_attention %}
+        <li class="needs-attention-row" data-meeting-id="{{ rec.meeting_id }}">
+          <div class="needs-attention-row__title">
+            {{ rec.title }} ({{ rec.meeting_date.date().isoformat() }}) &mdash; {{ rec.state.value }}
+          </div>
+          {% if rec.last_error %}
+            <div class="needs-attention-row__error">{{ rec.last_error }}</div>
+          {% endif %}
+          <form class="needs-attention-row__retry" method="post"
+                hx-post="/retry/{{ rec.meeting_id }}"
+                hx-target="closest .needs-attention-row"
+                hx-swap="outerHTML">
+            <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+            <button type="submit" class="retry-btn">Retry</button>
+          </form>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="needs-attention-empty">All clear &mdash; nothing needs your attention.</p>
+  {% endif %}
+</section>

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tomllib
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -25,6 +26,29 @@ class ArchiveConfig(BaseModel):
     summary_format: Literal["pdf"] = "pdf"
 
 
+class ScanFiltersModel(BaseModel):
+    """Pydantic mirror of ScanFilters dataclass — TOML/JSON-serializable."""
+
+    older_than_days: int | None = None
+    duration_below_minutes: float | None = None
+    no_transcript: bool = False
+    title_contains: list[str] = Field(default_factory=list)
+    title_regex: str | None = None
+    host_email: list[str] = Field(default_factory=list)
+    participants_below: int | None = None
+    has_tag: list[str] = Field(default_factory=list)
+
+
+class Preset(BaseModel):
+    """A named, reusable filter configuration stored in user config TOML."""
+
+    name: str = Field(..., min_length=1, max_length=60)
+    description: str = Field(default="", max_length=200)
+    default: bool = False
+    created_at: datetime
+    filters: ScanFiltersModel = Field(default_factory=ScanFiltersModel)
+
+
 class AutoRulesConfig(BaseModel):
     older_than_days: int = 180
     delete_failed_transcripts: bool = True
@@ -33,6 +57,8 @@ class AutoRulesConfig(BaseModel):
 class RunConfig(BaseModel):
     concurrency: int = Field(default=3, ge=1, le=20)
     delete_confirmation_threshold: int = Field(default=10, ge=0)
+    default_age_days: int = Field(default=180, ge=1, le=3650)
+    log_retention_days: int = Field(default=30, ge=1, le=3650)
 
 
 class AppConfig(BaseModel):
@@ -40,6 +66,7 @@ class AppConfig(BaseModel):
     archive: ArchiveConfig
     rules: dict[str, Any] = Field(default_factory=dict)
     run: RunConfig = Field(default_factory=RunConfig)
+    presets: list[Preset] = Field(default_factory=list)
 
     @field_validator("rules")
     @classmethod
@@ -114,6 +141,8 @@ def write_config(cfg: AppConfig, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = cfg.model_dump(mode="json")
     payload["archive"]["root_dir"] = str(payload["archive"]["root_dir"])
+    if payload.get("presets"):
+        payload["presets"] = [p.model_dump(mode="json", exclude_none=True) for p in cfg.presets]
     with open(path, "wb") as f:
         tomli_w.dump(payload, f)
 

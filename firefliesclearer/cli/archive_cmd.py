@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import json
-from datetime import datetime
 from pathlib import Path
 
 import typer
 
+from firefliesclearer.application.archive_service import ArchiveOutcome, ArchiveService
 from firefliesclearer.cli import _common
 from firefliesclearer.cli.app import app
 from firefliesclearer.core.models import Meeting
-from firefliesclearer.core.pipeline import PipelineMode, RunReport
+from firefliesclearer.core.pipeline import PipelineMode
 
 
 @app.command()
@@ -25,41 +24,70 @@ def archive(
 ) -> None:
     """Archive every `selected:true` meeting in the selection file."""
     deps = _common.build_deps(config_override=config)
-    meetings = _load_selected(selection)
-    if not meetings:
+
+    if dry_run:
+        # Preserve v1 dry-run behaviour exactly (no manifest/archive mutations).
+        meetings = ArchiveService._meetings_from_selection(selection)
+        if not meetings:
+            _common.console.print("[yellow]No selected meetings; nothing to do.[/yellow]")
+            return
+        report = asyncio.run(deps.pipeline.run(meetings, mode=PipelineMode.DRY_RUN))
+        _print_report_summary(report.archived, report.failed, report.skipped, report.deleted, [])
+        return
+
+    svc = ArchiveService(pipeline=deps.pipeline, manifest=deps.manifest)
+    outcomes = asyncio.run(_collect(svc, selection))
+    if not outcomes:
         _common.console.print("[yellow]No selected meetings; nothing to do.[/yellow]")
         return
-    mode = PipelineMode.DRY_RUN if dry_run else PipelineMode.ARCHIVE_ONLY
-    report = asyncio.run(deps.pipeline.run(meetings, mode=mode))
-    _print_report(report)
+    _print_outcomes(outcomes)
+
+
+async def _collect(svc: ArchiveService, selection: Path) -> list[ArchiveOutcome]:
+    return [o async for o in svc.archive_selection(selection)]
+
+
+def _print_outcomes(outcomes: list[ArchiveOutcome]) -> None:
+    archived = sum(1 for o in outcomes if o.state.value == "archived")
+    failed = sum(1 for o in outcomes if o.state.value.startswith("failed_"))
+    skipped = 0
+    deleted = 0
+    failures = [(o.meeting_id, o.error or o.state.value) for o in outcomes if o.error]
+    _print_report_summary(archived, failed, skipped, deleted, failures)
+
+
+def _print_report_summary(
+    archived: int,
+    failed: int,
+    skipped: int,
+    deleted: int,
+    failures: list[tuple[str, str]],
+) -> None:
+    _common.console.print(
+        f"[green]archived={archived}[/green] "
+        f"[red]failed={failed}[/red] "
+        f"skipped={skipped} deleted={deleted}"
+    )
+    for mid, err in failures[:20]:
+        _common.console.print(f"  [red]{mid}[/red]: {err}")
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat helpers (used by purge_cmd and kept for other callers)
+# ---------------------------------------------------------------------------
 
 
 def _load_selected(selection: Path) -> list[Meeting]:
-    payload = json.loads(selection.read_text(encoding="utf-8"))
-    out: list[Meeting] = []
-    for entry in payload["meetings"]:
-        if not entry.get("selected", True):
-            continue
-        out.append(
-            Meeting(
-                meeting_id=entry["id"],
-                title=entry["title"],
-                meeting_date=datetime.fromisoformat(entry["date"]),
-                duration_minutes=float(entry.get("duration_min", 0.0)),
-                host_email=entry.get("host", ""),
-                participant_count=int(entry.get("participants", 0)),
-                tags=tuple(entry.get("tags", [])),
-                has_transcript=True,
-            )
-        )
-    return out
+    """Load selected meetings from *selection* JSON file (delegates to ArchiveService)."""
+    return ArchiveService._meetings_from_selection(selection)
 
 
-def _print_report(report: RunReport) -> None:
-    _common.console.print(
-        f"[green]archived={report.archived}[/green] "
-        f"[red]failed={report.failed}[/red] "
-        f"skipped={report.skipped} deleted={report.deleted}"
+def _print_report(report: object) -> None:
+    """Print a RunReport in the standard summary format."""
+    _print_report_summary(
+        archived=getattr(report, "archived", 0),
+        failed=getattr(report, "failed", 0),
+        skipped=getattr(report, "skipped", 0),
+        deleted=getattr(report, "deleted", 0),
+        failures=getattr(report, "failures", []),
     )
-    for mid, err in report.failures[:20]:
-        _common.console.print(f"  [red]{mid}[/red]: {err}")

@@ -1,0 +1,7 @@
+<div id="preview-count" class="preview-count">
+{% if count is not none %}
+  <strong>{{ count }}</strong> meetings would match.
+{% else %}
+  {{ message }}
+{% endif %}
+</div>

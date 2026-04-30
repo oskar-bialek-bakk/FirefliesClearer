@@ -1,0 +1,16 @@
+{# Sidebar status fragment — tiny health summary, polled every 30s by base.html. #}
+<div class="sidebar-status">
+  <div class="sidebar-status__line">
+    <span class="sidebar-status__label">Failed</span>
+    <span class="sidebar-status__value" data-state="failed">{{ summary.failed_count }}</span>
+  </div>
+  {% if summary.last_run_at %}
+    <div class="sidebar-status__line sidebar-status__last-run">
+      Last run: {{ summary.last_run_at.isoformat() }}
+    </div>
+  {% else %}
+    <div class="sidebar-status__line sidebar-status__last-run">
+      No runs yet
+    </div>
+  {% endif %}
+</div>

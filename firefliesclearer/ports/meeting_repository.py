@@ -24,3 +24,11 @@ class MeetingRepository(Protocol):
     async def fetch_artifacts(self, meeting_id: str) -> ArtifactBundle: ...
 
     async def delete_meeting(self, meeting_id: str) -> None: ...
+
+    async def ping_user(self) -> str:
+        """Verify the API key and return the authenticated user's email address.
+
+        Raises:
+            PermissionError: if the API key is invalid or unauthorised.
+        """
+        ...

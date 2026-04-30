@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Cleanup Step 4 — Purge — FirefliesClearer{% endblock %}
+{% block page %}
+{% include "cleanup/_stepper.html" %}
+
+<section class="cleanup-step cleanup-step-purge cleanup-step-purge-preflight">
+  <h1>Step 4 — Purge</h1>
+
+  {% if error %}
+    <p class="error-banner" role="alert" style="color: #b91c1c;">{{ error }}</p>
+  {% endif %}
+
+  <p class="purge-preflight-summary">
+    About to <strong>permanently delete {{ count }} meetings</strong> from Fireflies.
+  </p>
+
+  {# Numbered list of titles. Collapsed inside <details> when N > 10. #}
+  {% if count > 10 %}
+    <details class="purge-meeting-list-collapse">
+      <summary>Show {{ count }} meeting titles</summary>
+      <ol class="purge-meeting-list">
+        {% for m in meetings %}
+          <li>{{ m.title }}</li>
+        {% endfor %}
+      </ol>
+    </details>
+  {% else %}
+    <ol class="purge-meeting-list">
+      {% for m in meetings %}
+        <li>{{ m.title }}</li>
+      {% endfor %}
+    </ol>
+  {% endif %}
+
+  <p class="destructive-notice" role="alert"
+     style="background: #fef3c7; border-left: 4px solid #d97706; padding: 0.75em 1em;">
+    <strong>This cannot be undone.</strong>
+    Archived files on disk are kept; only Fireflies' copies are removed.
+  </p>
+
+  <form method="post" action="/cleanup/purge/start" class="purge-start-form">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+    <p>
+      <label for="confirm-count">
+        Type <strong>{{ count }}</strong> to confirm:
+      </label>
+      <input type="text" id="confirm-count" name="confirmed_count"
+             inputmode="numeric" pattern="[0-9]+" autocomplete="off" required>
+    </p>
+    <div class="form-actions">
+      <a href="/cleanup/archive/done" class="cancel-link">&larr; Back</a>
+      <button type="submit" id="purge-btn" class="purge-btn"
+              style="background: #b91c1c; color: white;" disabled>
+        Purge {{ count }} meetings
+      </button>
+    </div>
+  </form>
+
+  <script>
+    (function () {
+      var input = document.getElementById("confirm-count");
+      var btn = document.getElementById("purge-btn");
+      input.addEventListener("input", function () {
+        btn.disabled = input.value.trim() !== "{{ count }}";
+      });
+    })();
+  </script>
+</section>
+{% endblock %}

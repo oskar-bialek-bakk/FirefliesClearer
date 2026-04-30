@@ -1,0 +1,31 @@
+{# Inline progress fragment for a single-meeting retry started from the
+   Dashboard's needs-attention list.
+
+   Replaces the ``.needs-attention-row`` via HTMX outerHTML swap. Includes
+   the existing SSE wiring from cleanup/_progress_sse.html which keys off
+   ``[data-operation-id]`` on this card root and ``[data-meeting-id]`` on
+   the row. On the terminal ``operation_state`` event the script reloads
+   the page so the dashboard re-renders with the manifest's updated state.
+
+   Limitation: ``_progress_sse.html`` runs ``document.querySelector(
+   "[data-operation-id]")`` which matches the FIRST such element on the
+   page. Multiple concurrent retry cards on the dashboard at the same time
+   would therefore all forward updates to the first card only. This is
+   acceptable for personal-scale single-user usage; a future iteration
+   could parameterize the script to scope its query to its own root.
+
+   Required context: ``op`` (Operation), ``kind`` ("archive" | "purge"),
+   ``meeting`` (object with ``meeting_id`` and ``title``). #}
+<li class="needs-attention-row retry-progress"
+    data-operation-id="{{ op.id }}"
+    data-kind="{{ kind }}"
+    data-meeting-id="{{ meeting.meeting_id }}">
+  <div class="needs-attention-row__title">
+    Retrying: {{ meeting.title }}
+  </div>
+  <div class="retry-progress__row" data-meeting-id="{{ meeting.meeting_id }}" data-sub-state="queued">
+    <span class="row-sub-state">queued</span>
+    <span class="row-error"></span>
+  </div>
+  {% include "cleanup/_progress_sse.html" %}
+</li>

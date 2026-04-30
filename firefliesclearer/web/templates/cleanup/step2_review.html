@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Cleanup Step 2 — Review — FirefliesClearer{% endblock %}
+{% block page %}
+{% include "cleanup/_stepper.html" %}
+
+{# TODO(phase-9): client-side search box, sort dropdown (Date / Duration / Title),
+   and shift-click range selection. Deferred from Task 5.3 to keep scope tight. #}
+
+<section class="cleanup-step cleanup-step-review">
+  <h1>Step 2 — Review</h1>
+  <p class="muted">
+    Review the matched meetings below. Use the checkboxes to deselect individual rows,
+    then continue to archive the selection.
+  </p>
+
+  {% if error %}
+    <p class="error-banner" role="alert" style="color: #b91c1c;">{{ error }}</p>
+  {% endif %}
+
+  {# Toolbar partial — selected count + bulk actions + Gmail-style banner. #}
+  {% include "cleanup/_review_toolbar.html" %}
+
+  {# Table fragment — HTMX swap target for pagination + bulk-action re-renders. #}
+  {% include "cleanup/_review_table.html" %}
+
+  {# Continue form — submits the saved selection, advances wizard to "archive".
+     Hidden ``page`` field preserves the user's current page on the 422 error
+     re-render so they don't get bounced back to page 1. #}
+  <form method="post" action="/cleanup/review" class="continue-form">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+    <input type="hidden" name="page" value="{{ page }}">
+    <div class="form-actions">
+      <button type="submit" class="continue-btn"
+        {% if not selected_count %}disabled{% endif %}>
+        Continue &rarr;
+      </button>
+    </div>
+  </form>
+
+  {# Side panel — HTMX target for GET /cleanup/meeting/{id}/panel. #}
+  <aside class="side-panel" aria-label="Meeting details" hidden></aside>
+</section>
+{% endblock %}

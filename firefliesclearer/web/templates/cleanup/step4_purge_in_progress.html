@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Cleanup Step 4 — Purging — FirefliesClearer{% endblock %}
+{% block page %}
+{% include "cleanup/_stepper.html" %}
+
+<section class="cleanup-step cleanup-step-purge cleanup-step-purge-in-progress"
+         data-operation-id="{{ op_id }}"
+         data-kind="purge">
+  <h1>Step 4 — Purging</h1>
+
+  {# Progress bar mirroring Step 3 — completed includes both successes and
+     failures so the bar advances through every meeting. #}
+  <div class="progress-bar" id="purge-progress-bar"
+       data-completed="{{ completed }}" data-total="{{ total }}">
+    <div class="progress-bar-fill" style="width: {{ progress_pct }}%"></div>
+    <p class="progress-label">
+      <strong>{{ completed }}</strong> of <strong>{{ total }}</strong> processed
+    </p>
+  </div>
+
+  <ul class="purge-meeting-list" id="purge-meeting-list">
+    {% for meeting in meetings %}
+      {% include "cleanup/_purge_meeting_row.html" %}
+    {% endfor %}
+  </ul>
+
+  {# Cancel button — POSTs to /cleanup/operations/{op_id}/cancel via HTMX.
+     The cancel route handles ARCHIVE and PURGE alike (kind-agnostic). #}
+  <form method="post" action="/cleanup/operations/{{ op_id }}/cancel"
+        hx-post="/cleanup/operations/{{ op_id }}/cancel"
+        hx-swap="none"
+        class="cancel-purge-form">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+    <button type="submit" class="cancel-purge-btn">Cancel</button>
+    <small class="muted">Stops gracefully after the current meeting finishes.</small>
+  </form>
+
+  {# Live progress via SSE — same client-side wiring as Step 3. #}
+  {% include "cleanup/_progress_sse.html" %}
+</section>
+{% endblock %}

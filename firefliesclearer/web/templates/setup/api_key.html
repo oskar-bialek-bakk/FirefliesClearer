@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}API key — FirefliesClearer setup{% endblock %}
+{% block layout %}
+<main style="max-width: 640px; margin: 64px auto; padding: 32px;">
+  <h1>Step 1 of 3: Fireflies API key</h1>
+  <p>Find your key at <a href="https://app.fireflies.ai/settings" target="_blank">fireflies.ai/settings</a>.</p>
+  {% if error %}<p style="color: #b91c1c;">{{ error }}</p>{% endif %}
+  <form method="post" action="/setup/api-key">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+    <label>API key
+      <input type="password" name="api_key" required autocomplete="off">
+    </label>
+    <button type="submit">Verify and continue</button>
+  </form>
+</main>
+{% endblock %}

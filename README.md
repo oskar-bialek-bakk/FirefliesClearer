@@ -11,6 +11,37 @@ For each meeting matched by configurable rules, FirefliesClearer:
 
 State is tracked in a local SQLite manifest for safe re-runs and audit.
 
+See [CHANGELOG.md](CHANGELOG.md) for what changed in v2.
+
+## v2 Web UI
+
+v2 adds a local web UI — no cloud, no account beyond your existing Fireflies API key.
+
+**30-second quickstart:**
+
+```bash
+python -m venv .venv
+.venv\Scripts\pip install -e ".[dev]"   # Windows
+# .venv/bin/pip install -e ".[dev]"     # macOS / Linux
+firefliesclearer serve
+```
+
+Your browser opens automatically to `http://127.0.0.1:<port>/?token=<...>`. A 4-step setup wizard walks you through API key, archive root, and defaults on first run.
+
+[screenshot placeholder]
+
+**Web UI features:**
+
+- **Dashboard** — state-count cards, last-activity rows, needs-attention list (auto-refreshes every 30s).
+- **Cleanup wizard** — 4 steps: filter meetings with a live count, review + select, archive to disk, then purge from Fireflies. SSE progress streaming; retry failed meetings from the dashboard.
+- **Presets** — save filter combinations as named presets; star one as default. Replaces the v1 `[rules.auto]` config block.
+- **History** (`/history`) — paginated view of all archived/deleted meetings with date-range, state, and title filters. Shareable URLs; click any row to see the full state-log timeline.
+- **Settings** (`/settings`) — API key, archive root, concurrency defaults, log viewer, and a danger-zone RESET.
+
+> **Note:** `firefliesclearer init` is removed in v2. Use `firefliesclearer serve` — the setup wizard handles first-run configuration.
+
+See [docs/superpowers/specs/v2-release-smoke.md](docs/superpowers/specs/v2-release-smoke.md) for the manual pre-release smoke checklist.
+
 ## Setup
 
 Requires Python 3.12+. PDFs are rendered via `reportlab` (pure Python, no native dependencies).
@@ -18,10 +49,12 @@ Requires Python 3.12+. PDFs are rendered via `reportlab` (pure Python, no native
 ```bash
 python -m venv .venv
 .venv\Scripts\pip install -e ".[dev]"
-firefliesclearer init
+firefliesclearer serve    # web UI — recommended for first-run setup
 ```
 
-`init` writes a config file at `%APPDATA%\firefliesclearer\config.toml` (Windows) or `~/.config/firefliesclearer/config.toml` (Linux/Mac) with your Fireflies API key, archive root, and auto-rule defaults.
+On first run, `serve` opens a 4-step setup wizard in your browser and writes a config file at `%APPDATA%\firefliesclearer\config.toml` (Windows) or `~/.config/firefliesclearer/config.toml` (Linux/macOS).
+
+> **v1 users:** `firefliesclearer init` is replaced by `serve`. Running `init` now prints a redirect message. Your existing `[rules.auto]` config is automatically migrated to a default preset on the first `serve` startup, and a `<config>.v1.bak` backup is written.
 
 ## Curated cleanup (review and confirm)
 
@@ -35,11 +68,14 @@ firefliesclearer purge   --selection selections/scan_20260428T1145.json
 ## Auto cleanup (cron / Task Scheduler)
 
 ```bash
-firefliesclearer run                # dry-run
-firefliesclearer run --apply --yes  # actually mutate; suitable for cron
+firefliesclearer run                         # dry-run using the default preset
+firefliesclearer run --apply --yes           # actually mutate; suitable for cron
+firefliesclearer run --preset "Old meetings" # use a named preset
 ```
 
-The auto path applies hard rules from config: `older_than_days` and (optionally) `delete_failed_transcripts`.
+`run` loads the **default preset** (configured via `/presets` in the web UI) and applies its filters. Pass `--preset NAME` to use a specific preset. If no default is set and `--preset` is omitted, the command exits with a clear error.
+
+> **v1:** the hard-coded `[rules.auto]` block is no longer read by `run`. Create equivalent presets via `firefliesclearer serve` → `/presets`. See [CHANGELOG.md](CHANGELOG.md) for the OR → AND filter-semantics change.
 
 ## Audit
 
@@ -57,7 +93,7 @@ Override precedence (highest wins):
 3. `./firefliesclearer.toml` (project-local)
 4. User config (see paths above)
 
-Sample config:
+Sample config (v2 — presets replace the old `[rules.auto]` block):
 
 ```toml
 [fireflies]
@@ -67,14 +103,14 @@ api_key = "ff_xxx"
 root_dir = "D:/firefliesclearer-archive"
 summary_format = "pdf"
 
-[rules.auto]
-older_than_days = 180
-delete_failed_transcripts = true
-
 [run]
 concurrency = 3
 delete_confirmation_threshold = 10
+default_age_days = 180
+log_retention_days = 30
 ```
+
+Presets (saved filter combinations) are managed via `firefliesclearer serve` → `/presets`, not in the TOML file.
 
 ## Safety guarantees
 

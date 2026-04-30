@@ -1,0 +1,45 @@
+{# Review row — single <tr>. Lives in `match` (ScanMatch) within the loop scope.
+   Source URL hardcoded to https://app.fireflies.ai/view/{id} (matches
+   firefliesclearer/infra/fireflies_client.py).
+#}
+<tr class="row" data-meeting-id="{{ match.meeting.meeting_id }}">
+  <td class="col-check">
+    <form hx-post="/cleanup/review/toggle/{{ match.meeting.meeting_id }}"
+          hx-trigger="change from:find input"
+          hx-target=".review-table"
+          hx-swap="outerHTML"
+          hx-include="this"
+          style="display:inline">
+      <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+      <input type="checkbox" name="selected"
+        aria-label="Select meeting {{ match.meeting.title }}"
+        {% if match.meeting.meeting_id in selected_ids %}checked{% endif %}>
+    </form>
+  </td>
+  <td class="col-title">
+    <a href="#"
+       hx-get="/cleanup/meeting/{{ match.meeting.meeting_id }}/panel"
+       hx-target=".side-panel"
+       hx-swap="innerHTML"
+       hx-on::after-request="document.querySelector('.side-panel').removeAttribute('hidden')">
+      {{ match.meeting.title }}
+    </a>
+  </td>
+  <td class="col-date" title="{{ match.meeting.meeting_date.isoformat() }}">
+    {{ match.meeting.meeting_date.strftime("%Y-%m-%d") }}
+  </td>
+  <td class="col-duration">{{ "%.0f" | format(match.meeting.duration_minutes) }} min</td>
+  <td class="col-host">{{ match.meeting.host_email }}</td>
+  <td class="col-participants">{{ match.meeting.participant_count }}</td>
+  <td class="col-rules">
+    {% for rule in match.matched_rules %}
+      <span class="rule-chip">{{ rule }}</span>
+    {% endfor %}
+  </td>
+  <td class="col-link">
+    <a href="https://app.fireflies.ai/view/{{ match.meeting.meeting_id }}"
+       target="_blank"
+       rel="noopener noreferrer"
+       aria-label="Open meeting in Fireflies">&#x1F517;</a>
+  </td>
+</tr>

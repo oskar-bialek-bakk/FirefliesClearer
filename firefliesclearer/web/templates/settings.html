@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}Settings &mdash; FirefliesClearer{% endblock %}
+{% block page %}
+<section class="settings-page">
+  <h1>Settings</h1>
+
+  {% if flash %}
+  <div class="settings-flash settings-flash--ok" role="alert">{{ flash }}</div>
+  {% endif %}
+
+  {% if move_warning %}
+  <div class="settings-flash settings-flash--warn" role="alert">{{ move_warning }}</div>
+  {% endif %}
+
+  {# ------------------------------------------------------------------ #}
+  {# 1. Connection #}
+  {# ------------------------------------------------------------------ #}
+  <details class="settings-section" id="section-connection">
+    <summary><h2>Connection</h2></summary>
+    <div class="settings-section__body">
+      {% if errors.connection %}
+      <p class="settings-error">{{ errors.connection }}</p>
+      {% endif %}
+
+      <form method="post" action="/settings/connection">
+        <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+        <fieldset>
+          <legend>Replace API key</legend>
+          <p class="settings-hint">
+            Paste a new key below. The current key is never displayed.
+          </p>
+          <label for="api_key">New API key</label>
+          <input id="api_key" type="password" name="api_key" value=""
+                 placeholder="ff_…" autocomplete="new-password">
+          <div id="connection-test-result"
+               hx-swap-oob="true"></div>
+          <button type="button"
+                  hx-post="/settings/connection/test"
+                  hx-include="[name='api_key']"
+                  hx-target="#connection-test-result"
+                  hx-vals='{"_csrf": "{{ request.cookies.get("ffc_csrf", "") }}"}'>
+            Test connection
+          </button>
+          <button type="submit">Save key</button>
+        </fieldset>
+      </form>
+    </div>
+  </details>
+
+  {# ------------------------------------------------------------------ #}
+  {# 2. Archive #}
+  {# ------------------------------------------------------------------ #}
+  <details class="settings-section" id="section-archive">
+    <summary><h2>Archive</h2></summary>
+    <div class="settings-section__body">
+      {% if errors.archive %}
+      <p class="settings-error">{{ errors.archive }}</p>
+      {% endif %}
+
+      <form method="post" action="/settings/archive">
+        <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+        <fieldset>
+          <legend>Archive root directory</legend>
+          <label for="root_dir">Path</label>
+          <input id="root_dir" type="text" name="root_dir"
+                 value="{{ archive_root }}">
+          <label>
+            <input type="checkbox" name="create" value="yes">
+            Create this folder if it does not exist
+          </label>
+          <button type="submit">Save</button>
+        </fieldset>
+      </form>
+    </div>
+  </details>
+
+  {# ------------------------------------------------------------------ #}
+  {# 3. Defaults #}
+  {# ------------------------------------------------------------------ #}
+  <details class="settings-section" id="section-defaults">
+    <summary><h2>Defaults</h2></summary>
+    <div class="settings-section__body">
+      {% if errors.defaults %}
+      <p class="settings-error">{{ errors.defaults }}</p>
+      {% endif %}
+
+      <form method="post" action="/settings/defaults">
+        <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+        <fieldset>
+          <legend>Run defaults</legend>
+
+          <label for="concurrency">
+            Concurrency (1&ndash;10)
+          </label>
+          <input id="concurrency" type="range" name="concurrency"
+                 min="1" max="10" value="{{ concurrency }}">
+          <output for="concurrency">{{ concurrency }}</output>
+
+          <label for="default_age_days">
+            Default age threshold (days)
+          </label>
+          <input id="default_age_days" type="number" name="default_age_days"
+                 min="1" max="3650" value="{{ default_age_days }}">
+
+          <label for="delete_confirmation_threshold">
+            Delete-confirmation threshold (count)
+          </label>
+          <input id="delete_confirmation_threshold" type="number"
+                 name="delete_confirmation_threshold" min="0"
+                 value="{{ delete_confirmation_threshold }}">
+
+          <button type="submit">Save</button>
+        </fieldset>
+      </form>
+    </div>
+  </details>
+
+  {# ------------------------------------------------------------------ #}
+  {# 4. Presets (link only) #}
+  {# ------------------------------------------------------------------ #}
+  <details class="settings-section" id="section-presets">
+    <summary><h2>Presets</h2></summary>
+    <div class="settings-section__body">
+      <p>Presets are managed on their own page.</p>
+      <p><a href="/presets">&#9733; Manage presets &rarr;</a></p>
+    </div>
+  </details>
+
+  {# ------------------------------------------------------------------ #}
+  {# 5. Logs & Data #}
+  {# ------------------------------------------------------------------ #}
+  <details class="settings-section" id="section-logs">
+    <summary><h2>Logs &amp; data</h2></summary>
+    <div class="settings-section__body">
+      {% if errors.logs %}
+      <p class="settings-error">{{ errors.logs }}</p>
+      {% endif %}
+
+      <form method="post" action="/settings/logs/retention">
+        <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+        <fieldset>
+          <legend>Log retention</legend>
+          <label for="log_retention_days">
+            Delete log files older than (days)
+          </label>
+          <input id="log_retention_days" type="number" name="log_retention_days"
+                 min="1" max="3650" value="{{ log_retention_days }}">
+          <button type="submit">Save</button>
+        </fieldset>
+      </form>
+
+      <hr>
+
+      <p>
+        <button
+          hx-get="/settings/logs/today"
+          hx-target="#log-viewer-target"
+          hx-swap="innerHTML">View today&#39;s log</button>
+      </p>
+      <div id="log-viewer-target"></div>
+
+      <p>
+        <form method="post" action="/settings/open-archive-folder"
+              style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+          <button type="submit">Open archive folder</button>
+        </form>
+      </p>
+    </div>
+  </details>
+
+  {# ------------------------------------------------------------------ #}
+  {# 6. Danger zone #}
+  {# ------------------------------------------------------------------ #}
+  <details class="settings-section settings-section--danger" id="section-danger">
+    <summary><h2>Danger zone</h2></summary>
+    <div class="settings-section__body">
+      {% if errors.danger %}
+      <p class="settings-error">{{ errors.danger }}</p>
+      {% endif %}
+
+      <form method="post" action="/settings/reset">
+        <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+        <fieldset>
+          <legend>Reset configuration</legend>
+          <p class="settings-hint">
+            This deletes <code>config.toml</code> and redirects you to the
+            setup wizard. Your archive folder and manifest are <strong>not</strong>
+            affected.
+          </p>
+          <label for="confirmation_text">
+            Type <strong>RESET</strong> to confirm
+          </label>
+          <input id="confirmation_text" type="text" name="confirmation_text"
+                 placeholder="RESET" autocomplete="off">
+          <button type="submit" class="btn-danger">Reset configuration</button>
+        </fieldset>
+      </form>
+    </div>
+  </details>
+
+</section>
+{% endblock %}

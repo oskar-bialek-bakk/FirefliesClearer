@@ -287,6 +287,35 @@ async def test_fetch_artifacts_handles_missing_action_items(
     assert bundle.summary_payload["action_items"] == []
 
 
+@respx.mock
+async def test_ping_user_returns_email(client: FirefliesClient) -> None:
+    """ping_user() returns the authenticated user's email on success."""
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": {"user": {"email": "alice@example.com"}}},
+        )
+    )
+    email = await client.ping_user()
+    assert email == "alice@example.com"
+
+
+@respx.mock
+async def test_ping_user_raises_permission_error_on_401(client: FirefliesClient) -> None:
+    """ping_user() converts a 401 HTTP response to PermissionError."""
+    respx.post(API_URL).mock(return_value=httpx.Response(401, text="Unauthorized"))
+    with pytest.raises(PermissionError):
+        await client.ping_user()
+
+
+@respx.mock
+async def test_ping_user_raises_permission_error_on_403(client: FirefliesClient) -> None:
+    """ping_user() converts a 403 HTTP response to PermissionError."""
+    respx.post(API_URL).mock(return_value=httpx.Response(403, text="Forbidden"))
+    with pytest.raises(PermissionError):
+        await client.ping_user()
+
+
 @pytest.mark.contract
 @pytest.mark.skipif(
     not os.environ.get("FIREFLIES_TEST_API_KEY"),

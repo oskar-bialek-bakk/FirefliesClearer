@@ -1,0 +1,40 @@
+{# Review toolbar — selected count, bulk-action buttons, "select all N" banner.
+   Rendered both on full page load and as an HTMX out-of-band swap when the
+   selection changes server-side. The cleanup route renders this partial after
+   every selection mutation and concatenates it with the table fragment so the
+   ``hx-swap-oob`` directive lands a fresh copy in the response.
+#}
+<div class="review-toolbar" id="review-toolbar" hx-swap-oob="true">
+  <span class="selected-count">
+    <strong>{{ selected_count }}</strong> of <strong>{{ total }}</strong> selected
+  </span>
+
+  <form class="toolbar-actions" method="post" hx-include="this"
+        hx-target=".review-table" hx-swap="outerHTML">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+    <input type="hidden" name="page" value="{{ page }}">
+
+    <button type="submit" class="btn-select-all"
+      hx-post="/cleanup/review/select-all">Select all on page</button>
+    <button type="submit" class="btn-deselect-all"
+      hx-post="/cleanup/review/deselect-all">Deselect all on page</button>
+    <button type="submit" class="btn-invert"
+      hx-post="/cleanup/review/invert">Invert page</button>
+  </form>
+
+  {% if total > page_size %}
+    <div class="banner-select-all" role="status">
+      <strong>{{ selected_on_page }}</strong> of <strong>{{ total }}</strong>
+      selected on this page.
+      <form method="post" hx-post="/cleanup/review/select-all"
+            hx-target=".review-table" hx-swap="outerHTML"
+            style="display:inline">
+        <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+        <input type="hidden" name="all" value="true">
+        <button type="submit" class="btn-select-all-matches">
+          Select all {{ total }}?
+        </button>
+      </form>
+    </div>
+  {% endif %}
+</div>

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Dashboard &mdash; FirefliesClearer{% endblock %}
+
+{% block sidebar_status %}
+  {% include "partials/sidebar_status.html" %}
+{% endblock %}
+
+{% block page %}
+<header class="dashboard__header">
+  <h1>Dashboard</h1>
+</header>
+{% include "partials/state_counts.html" %}
+{% include "partials/last_activity.html" %}
+{% include "partials/needs_attention.html" %}
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}New Preset — FirefliesClearer{% endblock %}
+{% block page %}
+<section class="presets-page">
+  <h1>New Preset</h1>
+
+  {% if error %}
+    <p class="error-banner" role="alert">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="/presets">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+
+    <fieldset class="filter-row">
+      <legend>Preset details</legend>
+      <label for="preset_name">Name <span class="required">*</span></label>
+      <input type="text" id="preset_name" name="preset_name" maxlength="60" required
+        value="{{ form_values.get('preset_name', '') }}">
+
+      <label for="preset_description">Description</label>
+      <input type="text" id="preset_description" name="preset_description" maxlength="200"
+        value="{{ form_values.get('preset_description', '') }}">
+
+      <label class="enable-toggle">
+        <input type="checkbox" name="preset_default" value="on"
+          {% if form_values.get('preset_default') in ('on', 'true', '1', 'yes') %}checked{% endif %}>
+        Set as default preset
+      </label>
+    </fieldset>
+
+    <h2>Filters</h2>
+    {% set preset = none %}
+    {% include "presets/_filter_fieldsets.html" %}
+
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Create preset</button>
+      <a href="/presets">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

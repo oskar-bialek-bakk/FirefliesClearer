@@ -1,0 +1,26 @@
+{# Per-meeting row partial — SSE swap target for purge in-progress + done.
+   Required context: meeting (dict-like with id, title, sub_state, error?).
+   Sub-states: queued / verifying / deleting / done / failed. #}
+<li class="purge-meeting-row{% if meeting.sub_state == 'failed' %} purge-failed-row{% endif %}"
+    id="purge-row-{{ meeting.id }}"
+    data-meeting-id="{{ meeting.id }}"
+    data-sub-state="{{ meeting.sub_state }}">
+  <span class="row-title">{{ meeting.title }}</span>
+  <span class="row-sub-state">
+    {# Pipeline.purge_one does not re-verify the archive before deleting
+       (spec § 5.4 mandates verify-before-delete; tracked as phase-1 work),
+       so the runner emits "deleting" then "done"/"failed". The "verifying"
+       branch is forward compatibility for when Pipeline starts streaming
+       both sub-states. #}
+    {% if meeting.sub_state == 'queued' %}queued
+    {% elif meeting.sub_state == 'verifying' %}verifying
+    {% elif meeting.sub_state == 'deleting' %}deleting
+    {% elif meeting.sub_state == 'done' %}deleted &#10003;
+    {% elif meeting.sub_state == 'failed' %}failed &#10007;
+    {% else %}{{ meeting.sub_state }}
+    {% endif %}
+  </span>
+  {% if meeting.sub_state == 'failed' and meeting.error %}
+    <span class="row-error">{{ meeting.error }}</span>
+  {% endif %}
+</li>

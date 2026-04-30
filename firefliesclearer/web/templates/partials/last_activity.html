@@ -1,0 +1,11 @@
+{# Last activity placeholder — fuller "runs" digest comes in Task 4.x. #}
+<section class="last-activity">
+  <h2>Last activity</h2>
+  {% if summary.last_run_at %}
+    <p class="last-activity__line">
+      Last state change at {{ summary.last_run_at.isoformat() }}
+    </p>
+  {% else %}
+    <p class="last-activity__empty">No activity yet.</p>
+  {% endif %}
+</section>

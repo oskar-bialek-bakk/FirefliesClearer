@@ -1,0 +1,36 @@
+{# firefliesclearer/web/templates/base.html #}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}FirefliesClearer{% endblock %}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  {% block layout %}
+  <div style="display: flex">
+    <aside class="sidebar">
+      <div><strong>FirefliesClearer</strong> <small>v{{ version }}</small></div>
+      <nav>
+        <a href="/" hx-get="/" hx-target="#page" hx-push-url="true">Dashboard</a><br>
+        <a href="/cleanup" hx-get="/cleanup" hx-target="#page" hx-push-url="true">Cleanup</a><br>
+        <a href="/presets" hx-get="/presets" hx-target="#page" hx-push-url="true">Presets</a><br>
+        <a href="/history" hx-get="/history" hx-target="#page" hx-push-url="true">History</a><br>
+        <a href="/settings" hx-get="/settings" hx-target="#page" hx-push-url="true">Settings</a>
+      </nav>
+      <hr>
+      <div hx-get="/sidebar/status" hx-trigger="every 30s" hx-swap="innerHTML">{% block sidebar_status %}{% endblock %}</div>
+      <button data-action="quit">Quit app</button>
+    </aside>
+    <main class="main">
+      <div id="page">
+        {% block page %}{% endblock %}
+      </div>
+    </main>
+  </div>
+  {% endblock %}
+</body>
+</html>
