@@ -118,6 +118,34 @@ def test_post_save_as_preset_creates_preset(configured_app) -> None:
     assert preset.filters.older_than_days == 60
 
 
+def test_post_save_as_preset_empty_name_shows_error(configured_app) -> None:
+    """POST /cleanup/save-as-preset with empty name returns 200 + error banner."""
+    c = _make_client(configured_app)
+    csrf = c.cookies["ffc_csrf"]
+
+    # Set up session filters via POST /cleanup
+    c.post(
+        "/cleanup",
+        data={
+            "_csrf": csrf,
+            "older_than_days": "30",
+            "older_than_days_enabled": "on",
+        },
+        follow_redirects=False,
+    )
+
+    r = c.post(
+        "/cleanup/save-as-preset",
+        data={
+            "_csrf": csrf,
+            "preset_name": "",
+            "preset_description": "",
+        },
+    )
+    assert r.status_code == 200
+    assert "preset name is required" in r.text.lower()
+
+
 def test_post_save_as_preset_duplicate_name_shows_error(configured_app) -> None:
     """Save-as-preset with duplicate name → error banner, no redirect."""
     cfg_path: Path = configured_app.state.config_path

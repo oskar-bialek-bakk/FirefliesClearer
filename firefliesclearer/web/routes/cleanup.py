@@ -42,6 +42,7 @@ from starlette.responses import Response
 
 from firefliesclearer.application.archive_service import ArchiveService
 from firefliesclearer.application.preset_service import (
+    PresetAlreadyExistsError,
     PresetNotFoundError,
     PresetService,
 )
@@ -273,7 +274,6 @@ def _redirect(location: str) -> RedirectResponse:
 @router.post("/cleanup/save-as-preset")
 async def save_as_preset(
     request: Request,
-    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
     """Save the current wizard session filters as a named preset.
 
@@ -305,7 +305,7 @@ async def save_as_preset(
                 preset_name, preset_description, filters_model, default=preset_default
             )
             save_preset_success = f"Saved preset: {preset_name}"
-        except Exception as exc:  # surface errors as banners
+        except PresetAlreadyExistsError as exc:  # surface errors as banners
             save_preset_error = str(exc)
     elif not preset_name:
         save_preset_error = "Preset name is required."
