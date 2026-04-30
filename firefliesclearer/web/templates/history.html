@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}History &mdash; FirefliesClearer{% endblock %}
+
+{% block page %}
+<header>
+  <h1>History</h1>
+</header>
+
+{# Filter form — GET so the URL round-trips #}
+<form method="get" action="/history" class="history-filters">
+  <div class="filter-row">
+    <label for="range">Date range</label>
+    <select id="range" name="range" onchange="this.form.submit()">
+      <option value="last-7d" {% if range == "last-7d" %}selected{% endif %}>Last 7 days</option>
+      <option value="last-30d" {% if range == "last-30d" %}selected{% endif %}>Last 30 days</option>
+      <option value="last-90d" {% if range == "last-90d" %}selected{% endif %}>Last 90 days</option>
+      <option value="all-time" {% if range == "all-time" %}selected{% endif %}>All time</option>
+      <option value="custom" {% if range == "custom" %}selected{% endif %}>Custom&hellip;</option>
+    </select>
+  </div>
+
+  {% if range == "custom" %}
+  <div class="filter-row filter-custom-dates">
+    <label for="from">From</label>
+    <input id="from" type="date" name="from" value="{{ date_from or '' }}">
+    <label for="to">To</label>
+    <input id="to" type="date" name="to" value="{{ date_to or '' }}">
+  </div>
+  {% endif %}
+
+  <div class="filter-row">
+    <fieldset class="state-multiselect">
+      <legend>State</legend>
+      {% for s in all_states %}
+      <label>
+        <input type="checkbox" name="state" value="{{ s.value }}"
+          {% if s.value in state %}checked{% endif %}>
+        {{ s.value }}
+      </label>
+      {% endfor %}
+    </fieldset>
+  </div>
+
+  <div class="filter-row">
+    <label for="q">Title search</label>
+    <input id="q" type="search" name="q" value="{{ q }}" placeholder="Substring&hellip;">
+  </div>
+
+  <div class="filter-row">
+    <button type="submit">Apply filters</button>
+  </div>
+</form>
+
+{# Results #}
+<p class="history-total">{{ total }} meeting{{ 's' if total != 1 else '' }} found</p>
+
+{% if rows %}
+<table class="history-table">
+  <thead>
+    <tr>
+      <th>Title</th>
+      <th>Meeting date</th>
+      <th>State</th>
+      <th>Archived at</th>
+      <th>Deleted at</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td><a href="/history/{{ row.meeting_id }}/panel">{{ row.title }}</a></td>
+      <td>{{ row.meeting_date.strftime("%Y-%m-%d") }}</td>
+      <td>{{ row.state.value }}</td>
+      <td>{{ row.archived_at.strftime("%Y-%m-%d %H:%M") if row.archived_at else "-" }}</td>
+      <td>{{ row.deleted_at.strftime("%Y-%m-%d %H:%M") if row.deleted_at else "-" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="history-empty">No meetings found for the selected filters.</p>
+{% endif %}
+
+{# Pagination #}
+{% if total_pages > 1 %}
+<nav class="pagination" aria-label="Pagination">
+  {%- set base_parts = ["/history?range=" ~ range] -%}
+  {%- if date_from -%}{%- set base_parts = base_parts + ["&from=" ~ date_from] -%}{%- endif -%}
+  {%- if date_to -%}{%- set base_parts = base_parts + ["&to=" ~ date_to] -%}{%- endif -%}
+  {%- if q -%}{%- set base_parts = base_parts + ["&q=" ~ q] -%}{%- endif -%}
+  {%- for s in state -%}{%- set base_parts = base_parts + ["&state=" ~ s] -%}{%- endfor -%}
+  {%- set base = base_parts | join("") -%}
+  {% if page > 1 %}
+  <a href="{{ base }}&page={{ page - 1 }}">&larr; Prev</a>
+  {% else %}
+  <span class="pagination-disabled">&larr; Prev</span>
+  {% endif %}
+
+  <span>Page {{ page }} of {{ total_pages }}</span>
+
+  {% if page < total_pages %}
+  <a href="{{ base }}&page={{ page + 1 }}">Next &rarr;</a>
+  {% else %}
+  <span class="pagination-disabled">Next &rarr;</span>
+  {% endif %}
+</nav>
+{% endif %}
+{% endblock %}
