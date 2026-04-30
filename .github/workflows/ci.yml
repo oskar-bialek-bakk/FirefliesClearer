@@ -23,7 +23,11 @@ jobs:
         run: ruff check .
       - name: Format check
         run: ruff format --check .
-      - name: Type check
+      - name: Type check (strict on core/application/web)
+        run: mypy --strict firefliesclearer/core firefliesclearer/application firefliesclearer/web
+      - name: Type check (full)
         run: mypy firefliesclearer
-      - name: Tests
-        run: pytest -q
+      - name: Import boundary check
+        run: lint-imports
+      - name: Tests with coverage gate
+        run: pytest -q --cov=firefliesclearer --cov-report=term --cov-fail-under=85

@@ -34,6 +34,7 @@ dev = [
     "pre-commit>=3.7",
     "selectolax>=0.3",  # CSS-selector-based HTML assertions in route tests
     "trio>=0.25",       # optional async backend for some web tests
+    "import-linter>=2.1",  # enforces layered architecture contracts
 ]
 
 [project.scripts]
@@ -86,4 +87,129 @@ include = [
   "firefliesclearer/**",
   "firefliesclearer/web/templates/**",
   "firefliesclearer/web/static/**",
+]
+
+# ---------------------------------------------------------------------------
+# Import-linter — layered architecture contracts (spec § 2.6)
+#
+# Target dependency graph:
+#   web/  →  application/  →  ports/  ←  infra/
+#   cli/  →  application/  →  ports/  ←  infra/
+#                   ↓
+#                 core/  (pure domain, no I/O)
+#
+# The codebase has several known violations where infra adapters leak into
+# application/, web/, and cli/ layers.  Each is documented with a TODO.
+# They are suppressed here so CI passes today and can be fixed incrementally.
+#
+# Use `lint-imports` to verify contracts after making changes.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "firefliesclearer"
+
+# ---- Contract 1: web does not import cli ------------------------------------
+[[tool.importlinter.contracts]]
+name = "Web does not import CLI"
+type = "forbidden"
+source_modules = ["firefliesclearer.web"]
+forbidden_modules = ["firefliesclearer.cli"]
+
+# ---- Contract 2: core stays free of upper layers ----------------------------
+[[tool.importlinter.contracts]]
+name = "Core is pure (no application, web, cli)"
+type = "forbidden"
+source_modules = ["firefliesclearer.core"]
+forbidden_modules = [
+    "firefliesclearer.application",
+    "firefliesclearer.web",
+    "firefliesclearer.cli",
+]
+# core/archiver.py uses canonical_meeting_dir and sha256_file from infra/fs.py.
+# These are pure utility functions (no I/O side effects) that happen to live in
+# infra for historical reasons.
+# TODO: move them to core/fs_utils.py so core is fully free of infra references.
+ignore_imports = [
+    "firefliesclearer.core.archiver -> firefliesclearer.infra.fs",
+]
+
+# ---- Contract 3: ports stay free of upper layers ----------------------------
+[[tool.importlinter.contracts]]
+name = "Ports are pure (no application, web, cli, infra)"
+type = "forbidden"
+source_modules = ["firefliesclearer.ports"]
+forbidden_modules = [
+    "firefliesclearer.application",
+    "firefliesclearer.web",
+    "firefliesclearer.cli",
+    "firefliesclearer.infra",
+]
+
+# ---- Contract 4: infra does not import application, web, or cli -------------
+[[tool.importlinter.contracts]]
+name = "Infra does not import application, web, or cli"
+type = "forbidden"
+source_modules = ["firefliesclearer.infra"]
+forbidden_modules = [
+    "firefliesclearer.application",
+    "firefliesclearer.web",
+    "firefliesclearer.cli",
+]
+
+# ---- Contract 5: application does not import web or cli ---------------------
+[[tool.importlinter.contracts]]
+name = "Application does not import web or cli"
+type = "forbidden"
+source_modules = ["firefliesclearer.application"]
+forbidden_modules = [
+    "firefliesclearer.web",
+    "firefliesclearer.cli",
+]
+# application/preset_service.py and setup_service.py import concrete infra
+# adapters directly (write_atomic_toml, SystemClock, config DTOs).
+# TODO: introduce PresetRepository and ConfigWriter ports so application
+#       services depend only on abstract interfaces, not infra implementations.
+ignore_imports = [
+    "firefliesclearer.application.preset_service -> firefliesclearer.infra.atomic_toml",
+    "firefliesclearer.application.preset_service -> firefliesclearer.infra.config",
+    "firefliesclearer.application.preset_service -> firefliesclearer.infra.system_clock",
+    "firefliesclearer.application.setup_service -> firefliesclearer.infra.atomic_toml",
+    "firefliesclearer.application.setup_service -> firefliesclearer.infra.config",
+    "firefliesclearer.application.setup_service -> firefliesclearer.infra.system_clock",
+]
+
+# ---- Contract 6: cli non-wiring modules do not import web ------------------
+# serve_cmd and run_cmd are permitted to import web (serve_cmd boots the web
+# server; run_cmd uses a filter helper that lives in web/wizard_session.py).
+# All other CLI modules must remain free of web/ via DIRECT imports.
+#
+# NOTE: cli.app performs side-effect imports of ALL subcommands including
+# serve_cmd and run_cmd (l.37-46) so that Typer registers every command.
+# This means any module that imports cli.app will transitively reach web/
+# through the serve_cmd → web.app and run_cmd → web.wizard_session chains.
+# This is a fundamental coupling introduced by Typer's eager-registration
+# pattern; the violation is transitive, not direct.
+#
+# The ignore_imports list below suppresses these transitive paths so that
+# the contract focuses on preventing direct web imports in non-wiring modules.
+# TODO: investigate lazy/deferred command registration so cli.app no longer
+#       imports all commands at module load time.
+[[tool.importlinter.contracts]]
+name = "CLI non-wiring modules do not import web"
+type = "forbidden"
+source_modules = [
+    "firefliesclearer.cli.archive_cmd",
+    "firefliesclearer.cli.history_cmd",
+    "firefliesclearer.cli.init_cmd",
+    "firefliesclearer.cli.purge_cmd",
+    "firefliesclearer.cli.scan_cmd",
+    "firefliesclearer.cli.status_cmd",
+    "firefliesclearer.cli._common",
+]
+forbidden_modules = ["firefliesclearer.web"]
+ignore_imports = [
+    # Transitive path: any_cmd → cli.app → serve_cmd → web.* (Typer registration)
+    "firefliesclearer.cli.serve_cmd -> firefliesclearer.web.app",
+    "firefliesclearer.cli.serve_cmd -> firefliesclearer.web.lockfile",
+    # Transitive path: any_cmd → cli.app → run_cmd → web.wizard_session
+    "firefliesclearer.cli.run_cmd -> firefliesclearer.web.wizard_session",
 ]
