@@ -135,21 +135,12 @@ def load_config(
         raise ConfigError(str(e)) from e
 
 
-def _strip_none(obj: Any) -> Any:
-    """Recursively remove None values from dicts/lists so tomli_w can serialise."""
-    if isinstance(obj, dict):
-        return {k: _strip_none(v) for k, v in obj.items() if v is not None}
-    if isinstance(obj, list):
-        return [_strip_none(item) for item in obj]
-    return obj
-
-
 def write_config(cfg: AppConfig, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = cfg.model_dump(mode="json")
     payload["archive"]["root_dir"] = str(payload["archive"]["root_dir"])
     if payload.get("presets"):
-        payload["presets"] = _strip_none(payload["presets"])
+        payload["presets"] = [p.model_dump(mode="json", exclude_none=True) for p in cfg.presets]
     with open(path, "wb") as f:
         tomli_w.dump(payload, f)
 

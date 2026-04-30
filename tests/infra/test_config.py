@@ -272,3 +272,28 @@ def test_preset_filters_title_contains_round_trips(tmp_path: Path) -> None:
 
     assert len(loaded.presets) == 1
     assert loaded.presets[0].filters.title_contains == ["a", "b"]
+
+
+def test_preset_name_at_max_length_accepted(tmp_path: Path) -> None:
+    """A 60-char name (the max) is valid; ensures we test the boundary, not just past it."""
+    # Round-trip a TOML with a 60-char name through load_config to confirm acceptance.
+    name_60 = "x" * 60
+    user = _write_user(
+        tmp_path,
+        f"""
+        [fireflies]
+        api_key = "k"
+        [archive]
+        root_dir = "C:/tmp/arch"
+        summary_format = "pdf"
+
+        [[presets]]
+        name = "{name_60}"
+        description = ""
+        default = false
+        created_at = 2026-04-29T10:00:00+00:00
+        """,
+    )
+    cfg = load_config(user_config=user)
+    assert len(cfg.presets) == 1
+    assert cfg.presets[0].name == "x" * 60
