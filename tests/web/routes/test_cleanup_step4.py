@@ -586,3 +586,45 @@ def test_step3_continue_filters_selection_to_archive_successes(
     assert sorted(state["selected_ids"]) == ["m0", "m2"]
     assert state["step"] == "purge"
     assert state["operation_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Regression: purge preflight/start with no resolvable meetings → redirect
+# ---------------------------------------------------------------------------
+
+
+def test_purge_preflight_with_no_archived_redirects(
+    configured_client: TestClient, configured_app
+) -> None:
+    """GET /cleanup/purge when selected_ids is non-empty but all those meetings
+    have since been removed from the repository (archive produced 0 effective
+    successes visible to the repo).  Must not render a confusing '0 meetings'
+    confirmation page — should redirect to review with the error hint instead.
+    """
+    # Seed repo with NO meetings; wizard has stale IDs from a prior archive run.
+    _seed_repo(configured_app, 0)
+    sid = _sid(configured_client)
+    # selected_ids is non-empty (as set by step3_continue after a successful run),
+    # but the meetings are no longer present in the repository.
+    _set_wizard(configured_app, sid, step="purge", selected=["gone1", "gone2"])
+    r = configured_client.get("/cleanup/purge", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/review?error=empty-selection"
+
+
+def test_purge_start_with_no_archived_redirects(
+    configured_client: TestClient, configured_app
+) -> None:
+    """POST /cleanup/purge/start when selected_ids is non-empty but all meetings
+    have vanished → redirect to review rather than launching a no-op purge.
+    """
+    _seed_repo(configured_app, 0)
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="purge", selected=["gone1", "gone2"])
+    r = configured_client.post(
+        "/cleanup/purge/start",
+        data={"_csrf": _csrf(configured_client), "confirmed_count": "0"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/review?error=empty-selection"

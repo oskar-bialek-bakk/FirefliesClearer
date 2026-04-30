@@ -107,7 +107,7 @@ def test_get_archive_redirects_to_review_when_no_selection(
     _set_wizard(configured_app, sid, step="archive", selected=[])
     r = configured_client.get("/cleanup/archive", follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] == "/cleanup/review"
+    assert r.headers["location"] == "/cleanup/review?error=empty-selection"
 
 
 def test_get_archive_renders_preflight_with_count_and_size(
@@ -154,7 +154,7 @@ def test_post_archive_start_redirects_to_review_when_empty_selection(
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert r.headers["location"] == "/cleanup/review"
+    assert r.headers["location"] == "/cleanup/review?error=empty-selection"
 
 
 def test_post_archive_start_kicks_off_op_and_redirects(
@@ -518,3 +518,53 @@ def test_continue_to_purge_on_success(configured_client: TestClient, configured_
     state = _wizard(configured_app, sid)
     assert state["step"] == "purge"
     assert state["operation_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Regression: empty-selection redirects carry ?error= and review surfaces it
+# ---------------------------------------------------------------------------
+
+
+def test_archive_preflight_with_empty_selection_redirects_to_review(
+    configured_client: TestClient, configured_app
+) -> None:
+    """GET /cleanup/archive with empty wizard selection → 303 to /cleanup/review
+    with the ?error=empty-selection hint so the user sees why they were bounced.
+    """
+    _seed_repo(configured_app, 2)
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="archive", selected=[])
+    r = configured_client.get("/cleanup/archive", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/review?error=empty-selection"
+
+
+def test_archive_start_with_empty_selection_redirects_to_review(
+    configured_client: TestClient, configured_app
+) -> None:
+    """POST /cleanup/archive/start with empty wizard selection → 303 to review."""
+    _seed_repo(configured_app, 2)
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="archive", selected=[])
+    r = configured_client.post(
+        "/cleanup/archive/start",
+        data={"_csrf": _csrf(configured_client)},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/review?error=empty-selection"
+
+
+def test_review_renders_error_banner_for_empty_selection(
+    configured_client: TestClient, configured_app
+) -> None:
+    """GET /cleanup/review?error=empty-selection → 200 with the inline error banner."""
+    _seed_repo(configured_app, 2)
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="review", selected=[])
+    r = configured_client.get("/cleanup/review?error=empty-selection")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    banner = doc.css_first(".error-banner")
+    assert banner is not None
+    assert "select" in banner.text().lower() or "meeting" in banner.text().lower()

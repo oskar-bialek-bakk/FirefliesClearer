@@ -400,7 +400,13 @@ async def step2_review(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
-    """Render the Step 2 review table (or just the table fragment for HTMX)."""
+    """Render the Step 2 review table (or just the table fragment for HTMX).
+
+    Accepts an optional ``?error=empty-selection`` query param emitted by the
+    archive / purge guards when they bounce the user back here.  The param is
+    forwarded to the template so the error banner is visible without requiring a
+    server-side flash mechanism.
+    """
     filters = _filters_from_session(request)
     if filters is None:
         return _redirect("/cleanup")
@@ -412,6 +418,11 @@ async def step2_review(
 
     selected_ids = wizard_session.get_selected(_store(request), _sid(request))
 
+    # Surface the error param forwarded by the empty-selection guards.
+    inline_error: str | None = None
+    if request.query_params.get("error") == "empty-selection":
+        inline_error = "Select at least one meeting before continuing."
+
     ctx = _review_context(
         request,
         matches_page=page_matches,
@@ -419,6 +430,7 @@ async def step2_review(
         page=page,
         pages=pages,
         selected_ids=selected_ids,
+        error=inline_error,
     )
     template = (
         "cleanup/_review_table.html"
@@ -837,7 +849,7 @@ async def step3_preflight(
     state = wizard_session.get_state(_store(request), _sid(request))
     selected_ids = list(state.get("selected_ids") or [])
     if not selected_ids:
-        return _redirect("/cleanup/review")
+        return _redirect("/cleanup/review?error=empty-selection")
 
     meetings = await _selected_meetings(deps, selected_ids)
     return _templates(request).TemplateResponse(
@@ -861,7 +873,7 @@ async def step3_start(
     state = wizard_session.get_state(_store(request), _sid(request))
     selected_ids = list(state.get("selected_ids") or [])
     if not selected_ids:
-        return _redirect("/cleanup/review")
+        return _redirect("/cleanup/review?error=empty-selection")
 
     meetings = await _selected_meetings(deps, selected_ids)
     runner = _make_archive_runner(deps=deps, meetings=meetings)
@@ -1106,6 +1118,12 @@ async def step4_preflight(
         return _redirect("/cleanup/archive/done")
 
     meetings = await _selected_meetings(deps, selected_ids)
+    if not meetings:
+        # All previously-selected meetings have vanished (e.g. deleted directly
+        # in Fireflies between the archive step and now).  Bounce back to review
+        # so the user can re-filter rather than being shown a "0 meetings" purge
+        # confirmation that would be a no-op.
+        return _redirect("/cleanup/review?error=empty-selection")
     return _templates(request).TemplateResponse(
         request,
         "cleanup/step4_purge_preflight.html",
@@ -1135,6 +1153,10 @@ async def step4_start(
         return _redirect("/cleanup/archive/done")
 
     meetings = await _selected_meetings(deps, selected_ids)
+    if not meetings:
+        # All previously-selected meetings have vanished between the archive step
+        # and now.  Bounce back to review rather than launching a no-op purge.
+        return _redirect("/cleanup/review?error=empty-selection")
     count = len(meetings)
 
     form = await request.form()
