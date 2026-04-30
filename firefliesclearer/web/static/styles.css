@@ -823,7 +823,7 @@ button:disabled,
   background-color: #ffffff;
 }
 
-.filter-row legend {
+.filter-row legend.visually-hidden {
   font-size: 0;   /* visually-hidden legends have font-size 0 effectively, keep accessible */
 }
 
