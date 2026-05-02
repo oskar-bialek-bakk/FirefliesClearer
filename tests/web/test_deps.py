@@ -109,6 +109,71 @@ async def test_get_deps_raises_500_when_config_path_does_not_exist(tmp_path: Pat
     assert exc_info.value.status_code == 500
 
 
+async def test_get_deps_starts_scheduler_when_sync_enabled(tmp_path: Path) -> None:
+    """Lazy deps build with [sync] enabled creates a scheduler task."""
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[fireflies]
+api_key = "ff_test"
+[archive]
+root_dir = "{archive_root.as_posix()}"
+[sync]
+enabled = true
+""",
+        encoding="utf-8",
+    )
+    repo = InMemoryMeetingRepository(api_key="ff_test")
+    app = create_app(
+        session_token="T",
+        csrf_secret="S",
+        config_path=config_path,
+        repo_factory=lambda _key: repo,
+    )
+    app.state.deps = None
+
+    request = _make_request(app)
+    await get_deps(request)
+
+    # After lazy build, the scheduler task is on app.state and not done
+    assert hasattr(app.state, "sync_scheduler_task")
+    assert app.state.sync_scheduler_task is not None
+    # Cleanup: signal shutdown so the task ends
+    app.state.sync_shutdown_event.set()
+    await app.state.sync_scheduler_task
+
+
+async def test_get_deps_does_not_start_scheduler_when_sync_disabled(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[fireflies]
+api_key = "ff_test"
+[archive]
+root_dir = "{archive_root.as_posix()}"
+""",
+        encoding="utf-8",
+    )
+    repo = InMemoryMeetingRepository(api_key="ff_test")
+    app = create_app(
+        session_token="T",
+        csrf_secret="S",
+        config_path=config_path,
+        repo_factory=lambda _key: repo,
+    )
+    app.state.deps = None
+
+    request = _make_request(app)
+    await get_deps(request)
+
+    # Scheduler not started when flag is off
+    assert getattr(app.state, "sync_scheduler_task", None) is None
+
+
 async def test_get_deps_raises_500_when_repo_factory_is_none(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     archive_root.mkdir()

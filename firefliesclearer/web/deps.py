@@ -85,4 +85,28 @@ async def get_deps(request: Request) -> SimpleNamespace:
         scan_repo=scan_repo,
     )
     request.app.state.deps = deps
+
+    # Post-setup-wizard scenario: when [sync] enabled = true and the
+    # scheduler hasn't been kicked off yet (eager-deps path in serve_cmd
+    # already starts it), start it now. The scheduler detects the empty
+    # cache and triggers a bootstrap full sync on its first tick.
+    if config.sync.enabled and getattr(request.app.state, "sync_scheduler_task", None) is None:
+        import asyncio
+
+        from firefliesclearer.application.sync_service import SyncService
+        from firefliesclearer.infra.sync_scheduler import run_scheduler
+
+        sync_service = SyncService(repo=client, manifest=manifest, clock=clock)
+        request.app.state.sync_service = sync_service
+        request.app.state.sync_shutdown_event = asyncio.Event()
+        # Park task on app.state to keep it alive (avoid GC + RUF006).
+        request.app.state.sync_scheduler_task = asyncio.create_task(
+            run_scheduler(
+                sync_service=sync_service,
+                manifest=manifest,
+                config=config.sync,
+                clock=clock,
+                shutdown_event=request.app.state.sync_shutdown_event,
+            )
+        )
     return deps
