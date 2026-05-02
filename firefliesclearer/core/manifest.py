@@ -338,6 +338,69 @@ class Manifest:
         )
         return changed
 
+    def list_known(
+        self,
+        *,
+        older_than: datetime | None = None,
+        include_archived: bool = False,
+        include_gone: bool = False,
+    ) -> Iterable[Meeting]:
+        """Yield Meeting objects for cached rows matching the predicates.
+
+        Default scope: live (source_state='live'), not-yet-archived rows. This
+        is what the cleanup wizard wants — meetings still in Fireflies that
+        we haven't already operated on.
+
+        Predicates:
+          - older_than: yield only rows with meeting_date < this datetime.
+          - include_archived: also yield rows in op_state ARCHIVED / DELETED /
+            DELETED_FAILED / FAILED_*.
+          - include_gone: also yield rows with source_state='gone'.
+
+        Rows lacking snapshot columns (legacy register() entries) are skipped:
+        Meeting requires non-None duration_minutes, host_email, participant_count,
+        has_transcript. Phase 3 deployments rely on a full sync to backfill
+        snapshot fields for any such rows.
+        """
+        sql = (
+            "SELECT meeting_id, title, meeting_date, duration_minutes, host_email, "
+            "       participant_count, has_transcript, tags_json, state, source_state "
+            "FROM meetings "
+            "WHERE duration_minutes IS NOT NULL "
+            "  AND host_email IS NOT NULL "
+            "  AND participant_count IS NOT NULL "
+            "  AND has_transcript IS NOT NULL"
+        )
+        params: list[Any] = []
+        if older_than is not None:
+            sql += " AND meeting_date < ?"
+            params.append(_iso(older_than))
+        if not include_archived:
+            sql += (
+                " AND state NOT IN ('archived', 'deleted', 'deleted_failed', "
+                "'failed_fetch', 'failed_download', 'failed_render', 'failed_verify')"
+            )
+        if not include_gone:
+            sql += " AND source_state = 'live'"
+        sql += " ORDER BY meeting_date DESC"
+
+        rows = self._conn.execute(sql, params).fetchall()
+        for row in rows:
+            meeting_date = _parse_iso(row[2])
+            assert meeting_date is not None
+            tags_raw = row[7]
+            tags = tuple(json.loads(tags_raw)) if tags_raw else ()
+            yield Meeting(
+                meeting_id=row[0],
+                title=row[1],
+                meeting_date=meeting_date,
+                duration_minutes=float(row[3]),
+                host_email=row[4],
+                participant_count=int(row[5]),
+                tags=tags,
+                has_transcript=bool(row[6]),
+            )
+
     def get(self, meeting_id: str) -> MeetingRecord | None:
         cur = self._conn.execute(
             "SELECT meeting_id, title, meeting_date, state, archive_path, "

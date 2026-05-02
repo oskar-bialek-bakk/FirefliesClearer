@@ -726,3 +726,96 @@ def test_update_cache_fields_does_not_touch_op_state(manifest):
 def test_update_cache_fields_unknown_id_returns_false(manifest):
     edited = _meeting_with_full_snapshot("not-in-db")
     assert manifest.update_cache_fields(edited, at=NOW) is False
+
+
+def test_list_known_yields_known_rows(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    manifest.upsert_known(_meeting_with_full_snapshot("b"), at=NOW)
+
+    ids = sorted(m.meeting_id for m in manifest.list_known())
+    assert ids == ["a", "b"]
+
+
+def test_list_known_skips_archived_by_default(manifest):
+    """Archived meetings are excluded unless explicitly requested."""
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    manifest.upsert_known(_meeting_with_full_snapshot("b"), at=NOW)
+    manifest.transition("b", to=MeetingState.PENDING, at=NOW)
+    manifest.transition("b", to=MeetingState.ARCHIVED, at=NOW)
+
+    ids = sorted(m.meeting_id for m in manifest.list_known())
+    assert ids == ["a"]
+
+
+def test_list_known_includes_archived_when_flag_true(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    manifest.upsert_known(_meeting_with_full_snapshot("b"), at=NOW)
+    manifest.transition("b", to=MeetingState.PENDING, at=NOW)
+    manifest.transition("b", to=MeetingState.ARCHIVED, at=NOW)
+
+    ids = sorted(m.meeting_id for m in manifest.list_known(include_archived=True))
+    assert ids == ["a", "b"]
+
+
+def test_list_known_skips_gone_by_default(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    manifest.upsert_known(_meeting_with_full_snapshot("b"), at=NOW)
+    manifest.set_source_state("b", "gone")
+
+    ids = sorted(m.meeting_id for m in manifest.list_known())
+    assert ids == ["a"]
+
+
+def test_list_known_includes_gone_when_flag_true(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    manifest.upsert_known(_meeting_with_full_snapshot("b"), at=NOW)
+    manifest.set_source_state("b", "gone")
+
+    ids = sorted(m.meeting_id for m in manifest.list_known(include_gone=True))
+    assert ids == ["a", "b"]
+
+
+def test_list_known_filters_older_than(manifest):
+    """older_than=cutoff yields rows whose meeting_date < cutoff."""
+    older_dt = datetime(2025, 1, 1, tzinfo=UTC)
+    newer_dt = datetime(2026, 6, 1, tzinfo=UTC)
+    manifest.upsert_known(
+        Meeting("old", "old", older_dt, 30.0, "a@x", 2, (), True), at=NOW
+    )
+    manifest.upsert_known(
+        Meeting("new", "new", newer_dt, 30.0, "a@x", 2, (), True), at=NOW
+    )
+
+    cutoff = datetime(2026, 1, 1, tzinfo=UTC)
+    ids = sorted(m.meeting_id for m in manifest.list_known(older_than=cutoff))
+    assert ids == ["old"]
+
+
+def test_list_known_returns_meeting_with_all_fields(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    meetings = list(manifest.list_known())
+    assert len(meetings) == 1
+    m = meetings[0]
+    assert m.meeting_id == "a"
+    assert m.title == "Q4 Planning"
+    assert m.duration_minutes == 45.5
+    assert m.host_email == "alice@example.com"
+    assert m.participant_count == 6
+    assert m.has_transcript is True
+    assert m.tags == ("planning", "q4")
+
+
+def test_list_known_skips_legacy_rows_without_snapshot(manifest):
+    """Rows from the legacy register() path lack snapshot columns.
+    list_known cannot reconstruct a valid Meeting, so it skips them.
+    Phase 3 deployment will rely on a full sync to populate these.
+    """
+    manifest.register(_meeting(), at=NOW)              # legacy entry
+    manifest.upsert_known(_meeting_with_full_snapshot("synced"), at=NOW)
+
+    ids = sorted(m.meeting_id for m in manifest.list_known())
+    assert ids == ["synced"]
+
+
+def test_list_known_empty_manifest_yields_nothing(manifest):
+    assert list(manifest.list_known()) == []
