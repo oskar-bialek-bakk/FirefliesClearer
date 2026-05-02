@@ -9,9 +9,12 @@ import pytest
 from firefliesclearer.application.sync_service import (
     SyncMode,
     SyncOutcome,
+    SyncService,
     SyncTrigger,
 )
+from firefliesclearer.core.manifest import Manifest
 from firefliesclearer.core.models import Meeting
+from firefliesclearer.infra.system_clock import SystemClock
 from tests.fakes.controllable_repository import ControllableMeetingRepository
 
 
@@ -92,3 +95,60 @@ async def test_controllable_repo_raises_rate_limit_at_configured_skip():
     with pytest.raises(RateLimitedError):
         async for _ in repo.list_meetings_page(skip=5, limit=5):
             pass
+
+
+@pytest.fixture
+def manifest_db(tmp_path):
+    return Manifest.open(tmp_path / "manifest.db")
+
+
+async def test_incremental_sync_inserts_all_meetings_when_cache_empty(manifest_db):
+    repo = ControllableMeetingRepository(
+        meetings=[_meeting(f"m{i}") for i in range(3)],
+        page_size=2,
+    )
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    outcome = await svc.run(mode=SyncMode.INCREMENTAL, trigger=SyncTrigger.SCHEDULED)
+
+    assert outcome.outcome == "success"
+    assert outcome.meetings_added == 3
+    assert outcome.meetings_seen == 3
+    # All three rows are now in the cache
+    assert {m.meeting_id for m in manifest_db.list_known()} == {"m0", "m1", "m2"}
+
+
+async def test_incremental_sync_halts_at_first_known_live_meeting(manifest_db):
+    """If m0 is already cached, sync stops after seeing it (page boundary)."""
+    # Pre-populate cache with m0
+    manifest_db.upsert_known(_meeting("m0"), at=datetime(2026, 4, 1, tzinfo=UTC))
+
+    # Repo has m99 (newest), m0 (already cached), m1, m2
+    repo = ControllableMeetingRepository(
+        meetings=[_meeting("m99"), _meeting("m0"), _meeting("m1"), _meeting("m2")],
+        page_size=2,
+    )
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    outcome = await svc.run(mode=SyncMode.INCREMENTAL, trigger=SyncTrigger.SCHEDULED)
+
+    # m99 was added; m0 stops the loop; m1 and m2 not seen (older than m0)
+    assert outcome.meetings_added == 1
+    cached = {m.meeting_id for m in manifest_db.list_known()}
+    assert cached == {"m0", "m99"}
+    # Repo was called twice: skip=0 (got m99, m0; m0 stops) — actually only once
+    assert len(repo.list_calls) == 1
+
+
+async def test_incremental_sync_records_run_in_sync_runs_table(manifest_db):
+    repo = ControllableMeetingRepository(meetings=[_meeting("m0")], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    outcome = await svc.run(mode=SyncMode.INCREMENTAL, trigger=SyncTrigger.MANUAL_REVIEW)
+
+    rec = manifest_db.get_sync_run(outcome.run_id)
+    assert rec is not None
+    assert rec.mode == "incremental"
+    assert rec.trigger_source == "manual_review"
+    assert rec.outcome == "success"
+    assert rec.meetings_added == 1

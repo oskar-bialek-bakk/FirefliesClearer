@@ -20,6 +20,12 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Self
 
+from firefliesclearer.core.manifest import Manifest
+from firefliesclearer.core.models import Meeting
+from firefliesclearer.ports.clock import Clock
+
+PAGE_SIZE = 50
+
 
 class SyncMode(StrEnum):
     INCREMENTAL = "incremental"
@@ -92,4 +98,78 @@ class SyncOutcome:
             run_id=run_id,
             outcome="failed",
             error_message=error_message,
+        )
+
+
+class SyncService:
+    def __init__(
+        self,
+        *,
+        repo: object,  # ControllableMeetingRepository or FirefliesClient
+        manifest: Manifest,
+        clock: Clock,
+    ) -> None:
+        self._repo = repo
+        self._manifest = manifest
+        self._clock = clock
+
+    async def run(
+        self,
+        *,
+        mode: SyncMode,
+        trigger: SyncTrigger,
+        resume_run_id: int | None = None,
+    ) -> SyncOutcome:
+        now = self._clock.now()
+        run_id = self._manifest.start_sync_run(mode=mode.value, trigger=trigger.value, at=now)
+
+        if mode == SyncMode.INCREMENTAL:
+            return await self._run_incremental(run_id=run_id, started_at=now)
+        # FULL mode added in a later task
+        raise NotImplementedError("Full sync added in Task 7")
+
+    async def _run_incremental(self, *, run_id: int, started_at: datetime) -> SyncOutcome:
+        skip = 0
+        seen = added = 0
+        seen_known = False
+
+        while not seen_known:
+            page: list[Meeting] = []
+            async for m in self._repo.list_meetings_page(  # type: ignore[attr-defined]
+                skip=skip, limit=PAGE_SIZE, to_date=None
+            ):
+                page.append(m)
+            if not page:
+                break
+
+            for raw in page:
+                seen += 1
+                existing = self._manifest.get(raw.meeting_id)
+                if existing is None:
+                    self._manifest.upsert_known(raw, at=started_at)
+                    added += 1
+                else:
+                    seen_known = True
+                    break  # stop processing this page
+
+            self._manifest.record_sync_progress(
+                run_id,
+                seen=seen,
+                added=added,
+                updated=0,
+                gone=0,
+                cursor_skip=skip + len(page),
+            )
+
+            if seen_known:
+                break
+            skip += len(page)
+
+        self._manifest.finalize_sync_run(run_id, outcome="success", at=self._clock.now())
+        return SyncOutcome.success(
+            run_id=run_id,
+            meetings_seen=seen,
+            meetings_added=added,
+            meetings_updated=0,
+            meetings_gone=0,
         )
