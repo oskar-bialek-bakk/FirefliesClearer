@@ -115,7 +115,8 @@ def _templates(request: Request) -> Jinja2Templates:
 
 
 def _service(deps: SimpleNamespace) -> ScanService:
-    return ScanService(repo=deps.client, clock=deps.clock)
+    repo = getattr(deps, "scan_repo", deps.client)
+    return ScanService(repo=repo, clock=deps.clock)
 
 
 def _validate_regex(filters: ScanFilters) -> str | None:

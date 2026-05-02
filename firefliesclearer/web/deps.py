@@ -70,12 +70,19 @@ async def get_deps(request: Request) -> SimpleNamespace:
         renderer=renderer,
         clock=clock,
     )
+    if config.sync.enabled:
+        from firefliesclearer.infra.manifest_backed_repo import ManifestBackedRepository
+
+        scan_repo: object = ManifestBackedRepository(manifest)
+    else:
+        scan_repo = client
     deps = SimpleNamespace(
         config=config,
         manifest=manifest,
         client=client,
         clock=clock,
         pipeline=pipeline,
+        scan_repo=scan_repo,
     )
     request.app.state.deps = deps
     return deps
