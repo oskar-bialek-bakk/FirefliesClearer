@@ -530,3 +530,81 @@ def test_sync_runs_table_created_on_existing_manifest(tmp_path):
     ).fetchone()
     conn.close()
     assert row is not None
+
+
+def _meeting_with_full_snapshot(meeting_id: str = "01HW") -> Meeting:
+    return Meeting(
+        meeting_id=meeting_id,
+        title="Q4 Planning",
+        meeting_date=NOW,
+        duration_minutes=45.5,
+        host_email="alice@example.com",
+        participant_count=6,
+        tags=("planning", "q4"),
+        has_transcript=True,
+    )
+
+
+def test_upsert_known_inserts_new_row_in_known_state(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.state is MeetingState.KNOWN
+    assert rec.title == "Q4 Planning"
+    assert rec.duration_minutes == 45.5
+    assert rec.host_email == "alice@example.com"
+    assert rec.participant_count == 6
+    assert rec.has_transcript is True
+    assert rec.tags == ("planning", "q4")
+    assert rec.source_state == "live"
+    assert rec.cached_at == NOW
+
+
+def test_upsert_known_writes_state_log_entry_for_new_row(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    log = manifest.state_log("01HW")
+    assert len(log) == 1
+    assert log[0].from_state is None
+    assert log[0].to_state is MeetingState.KNOWN
+
+
+def test_upsert_known_refreshes_snapshot_on_existing_row_without_touching_state(manifest):
+    """If the row already exists in any state, snapshot fields update; state does not."""
+    # Initial insert as KNOWN
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    # User then archives — moves to PENDING then ARCHIVED
+    manifest.transition("01HW", to=MeetingState.PENDING, at=NOW)
+    manifest.transition("01HW", to=MeetingState.ARCHIVED, at=NOW, archive_path="/tmp/x")
+
+    # Sync runs again, title was edited in Fireflies
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    edited = Meeting(
+        meeting_id="01HW",
+        title="Q4 Planning (rescheduled)",
+        meeting_date=NOW,
+        duration_minutes=60.0,
+        host_email="alice@example.com",
+        participant_count=8,
+        tags=("planning", "q4", "rescheduled"),
+        has_transcript=True,
+    )
+    manifest.upsert_known(edited, at=later)
+
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.state is MeetingState.ARCHIVED          # state preserved
+    assert rec.title == "Q4 Planning (rescheduled)"    # snapshot updated
+    assert rec.duration_minutes == 60.0
+    assert rec.participant_count == 8
+    assert rec.tags == ("planning", "q4", "rescheduled")
+    assert rec.cached_at == later                      # cached_at refreshed
+
+
+def test_upsert_known_does_not_log_for_existing_row(manifest):
+    """No state transition happens when refreshing an existing row."""
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=later)
+
+    log = manifest.state_log("01HW")
+    assert len(log) == 1                                # still just the initial KNOWN log

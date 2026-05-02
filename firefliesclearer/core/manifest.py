@@ -214,6 +214,64 @@ class Manifest:
         )
         self._log(meeting.meeting_id, None, MeetingState.PENDING, at, None)
 
+    def upsert_known(self, meeting: Meeting, *, at: datetime) -> None:
+        """Cache a meeting from the live API.
+
+        If the row does not exist, INSERT with state=KNOWN and a state_log
+        entry. If it exists, refresh snapshot fields and ``cached_at`` but
+        leave ``state`` untouched (so an already-archived meeting whose title
+        was edited in Fireflies retains state=ARCHIVED while the cached title
+        updates).
+        """
+        tags_json = json.dumps(list(meeting.tags))
+        has_transcript = 1 if meeting.has_transcript else 0
+        cached_at_iso = _iso(at)
+
+        existing = self.get(meeting.meeting_id)
+        if existing is None:
+            self._conn.execute(
+                "INSERT INTO meetings ("
+                "  meeting_id, title, meeting_date, state, "
+                "  duration_minutes, host_email, participant_count, has_transcript, "
+                "  tags_json, source_state, cached_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    meeting.meeting_id,
+                    meeting.title,
+                    meeting.meeting_date.isoformat(),
+                    MeetingState.KNOWN.value,
+                    meeting.duration_minutes,
+                    meeting.host_email,
+                    meeting.participant_count,
+                    has_transcript,
+                    tags_json,
+                    "live",
+                    cached_at_iso,
+                ),
+            )
+            self._log(meeting.meeting_id, None, MeetingState.KNOWN, at, None)
+            return
+
+        # Existing row — refresh snapshot fields, do NOT touch state.
+        self._conn.execute(
+            "UPDATE meetings SET "
+            "  title = ?, meeting_date = ?, "
+            "  duration_minutes = ?, host_email = ?, participant_count = ?, "
+            "  has_transcript = ?, tags_json = ?, cached_at = ? "
+            "WHERE meeting_id = ?",
+            (
+                meeting.title,
+                meeting.meeting_date.isoformat(),
+                meeting.duration_minutes,
+                meeting.host_email,
+                meeting.participant_count,
+                has_transcript,
+                tags_json,
+                cached_at_iso,
+                meeting.meeting_id,
+            ),
+        )
+
     def get(self, meeting_id: str) -> MeetingRecord | None:
         cur = self._conn.execute(
             "SELECT meeting_id, title, meeting_date, state, archive_path, "
