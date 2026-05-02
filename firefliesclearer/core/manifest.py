@@ -49,7 +49,14 @@ CREATE TABLE IF NOT EXISTS meetings (
   archived_at       TEXT,
   verified_at       TEXT,
   deleted_at        TEXT,
-  last_error        TEXT
+  last_error        TEXT,
+  duration_minutes  REAL,
+  host_email        TEXT,
+  participant_count INTEGER,
+  has_transcript    INTEGER,
+  tags_json         TEXT,
+  source_state      TEXT NOT NULL DEFAULT 'live',
+  cached_at         TEXT
 );
 CREATE TABLE IF NOT EXISTS state_log (
   id            INTEGER PRIMARY KEY,
@@ -60,8 +67,11 @@ CREATE TABLE IF NOT EXISTS state_log (
   details       TEXT,
   FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
 );
-CREATE INDEX IF NOT EXISTS idx_meetings_state ON meetings(state);
-CREATE INDEX IF NOT EXISTS idx_state_log_meeting ON state_log(meeting_id);
+CREATE INDEX IF NOT EXISTS idx_meetings_state         ON meetings(state);
+CREATE INDEX IF NOT EXISTS idx_meetings_source_state  ON meetings(source_state);
+CREATE INDEX IF NOT EXISTS idx_meetings_meeting_date  ON meetings(meeting_date);
+CREATE INDEX IF NOT EXISTS idx_meetings_host_email    ON meetings(host_email);
+CREATE INDEX IF NOT EXISTS idx_state_log_meeting      ON state_log(meeting_id);
 """
 
 

@@ -303,3 +303,61 @@ def test_query_history_filters_by_title_contains(manifest):
     assert len(result) == 2
     result_ids = {r.meeting_id for r in result}
     assert result_ids == {"a", "c"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Local cache schema (snapshot columns + indexes)
+# ---------------------------------------------------------------------------
+
+
+def test_fresh_manifest_has_snapshot_columns(tmp_path):
+    """A newly-opened DB has all Phase 1 snapshot columns + source_state."""
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(meetings)")}
+    conn.close()
+
+    expected_new = {
+        "duration_minutes",
+        "host_email",
+        "participant_count",
+        "has_transcript",
+        "tags_json",
+        "source_state",
+        "cached_at",
+    }
+    assert expected_new <= cols, f"missing: {expected_new - cols}"
+
+
+def test_fresh_manifest_source_state_defaults_to_live(tmp_path):
+    """source_state column defaults to 'live' so existing-row migration is one-step."""
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    row = conn.execute(
+        "SELECT dflt_value FROM pragma_table_info('meetings') WHERE name = 'source_state'"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    # SQLite returns the literal default expression; quoted string in our case.
+    assert row[0] in ("'live'", "live")
+
+
+def test_fresh_manifest_has_new_indexes(tmp_path):
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    indexes = {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+    conn.close()
+    expected = {
+        "idx_meetings_source_state",
+        "idx_meetings_meeting_date",
+        "idx_meetings_host_email",
+    }
+    assert expected <= indexes, f"missing: {expected - indexes}"
