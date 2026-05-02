@@ -215,7 +215,9 @@ def test_write_config_stores_rules_auto_block(tmp_path: Path) -> None:
         data = tomllib.load(f)
     auto = data["rules"]["auto"]
     assert auto["older_than_days"] == 90
-    assert auto["delete_failed_transcripts"] is True
+    # Fresh setup writes False so the migrated default preset does NOT
+    # pre-select no_transcript (which would silently narrow archive scope).
+    assert auto["delete_failed_transcripts"] is False
 
 
 def test_write_config_stores_run_and_defaults_blocks(tmp_path: Path) -> None:
