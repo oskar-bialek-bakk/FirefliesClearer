@@ -245,3 +245,69 @@ async def test_full_sync_to_date_pinned_to_run_start(manifest_db):
     assert repo.list_calls
     for _skip, _limit, to_date in repo.list_calls:
         assert to_date is not None
+
+
+async def test_incremental_sync_returns_partial_when_rate_limited(manifest_db):
+    repo = ControllableMeetingRepository(
+        meetings=[_meeting(f"m{i}") for i in range(10)],
+        page_size=5,
+        raise_rate_limit_after_skip=5,
+        raise_rate_limit_retry_after_seconds=120.0,
+    )
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    outcome = await svc.run(mode=SyncMode.INCREMENTAL, trigger=SyncTrigger.SCHEDULED)
+
+    assert outcome.outcome == "partial"
+    assert outcome.meetings_added == 5  # first page made it
+    assert outcome.next_resume_at is not None
+
+    rec = manifest_db.get_sync_run(outcome.run_id)
+    assert rec.outcome == "partial"
+    assert rec.cursor_skip == 5
+    assert rec.next_resume_at is not None
+
+
+async def test_full_sync_returns_partial_when_rate_limited(manifest_db):
+    repo = ControllableMeetingRepository(
+        meetings=[_meeting(f"m{i}") for i in range(10)],
+        page_size=5,
+        raise_rate_limit_after_skip=5,
+    )
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    outcome = await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    assert outcome.outcome == "partial"
+    rec = manifest_db.get_sync_run(outcome.run_id)
+    assert rec.cursor_skip == 5
+    assert rec.seen_ids_json is not None  # so resume can rebuild seen_ids
+
+
+async def test_full_sync_resume_continues_from_cursor(manifest_db):
+    """Calling run() with resume_run_id resumes from the saved cursor."""
+    # First run: rate-limited at skip=5
+    repo1 = ControllableMeetingRepository(
+        meetings=[_meeting(f"m{i}") for i in range(10)],
+        page_size=5,
+        raise_rate_limit_after_skip=5,
+    )
+    svc1 = SyncService(repo=repo1, manifest=manifest_db, clock=SystemClock())
+    out1 = await svc1.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+    assert out1.outcome == "partial"
+
+    # Second run: rate limit no longer applies; resume from cursor_skip=5
+    repo2 = ControllableMeetingRepository(
+        meetings=[_meeting(f"m{i}") for i in range(10)],
+        page_size=5,
+    )
+    svc2 = SyncService(repo=repo2, manifest=manifest_db, clock=SystemClock())
+    out2 = await svc2.run(
+        mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED, resume_run_id=out1.run_id
+    )
+
+    assert out2.outcome == "success"
+    # Repo2 must have been called starting at skip=5
+    assert any(skip == 5 for skip, _, _ in repo2.list_calls)
+    # All 10 meetings now in cache
+    assert {m.meeting_id for m in manifest_db.list_known()} == {f"m{i}" for i in range(10)}

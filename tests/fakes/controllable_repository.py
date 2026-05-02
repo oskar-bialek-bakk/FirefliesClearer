@@ -50,7 +50,9 @@ class ControllableMeetingRepository:
             if to_date is not None
             else list(self._meetings)
         )
-        # Pagination
-        page = candidates[skip : skip + limit]
+        # Pagination — cap by configured page_size so tests can control
+        # how many rows the caller sees regardless of its requested limit.
+        effective_limit = min(limit, self._page_size)
+        page = candidates[skip : skip + effective_limit]
         for m in page:
             yield m

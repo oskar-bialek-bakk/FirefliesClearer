@@ -15,13 +15,15 @@ The scheduler resumes from the cursor when the retry window expires.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Self
 
 from firefliesclearer.core.manifest import Manifest
 from firefliesclearer.core.models import Meeting
+from firefliesclearer.infra.fireflies_client import RateLimitedError
 from firefliesclearer.ports.clock import Clock
 
 PAGE_SIZE = 50
@@ -121,12 +123,15 @@ class SyncService:
         resume_run_id: int | None = None,
     ) -> SyncOutcome:
         now = self._clock.now()
-        run_id = self._manifest.start_sync_run(mode=mode.value, trigger=trigger.value, at=now)
+        if resume_run_id is not None:
+            run_id = resume_run_id  # reuse the prior partial row
+        else:
+            run_id = self._manifest.start_sync_run(mode=mode.value, trigger=trigger.value, at=now)
 
         if mode == SyncMode.INCREMENTAL:
             return await self._run_incremental(run_id=run_id, started_at=now)
         if mode == SyncMode.FULL:
-            return await self._run_full(run_id=run_id, started_at=now)
+            return await self._run_full(run_id=run_id, started_at=now, resume_run_id=resume_run_id)
         raise ValueError(f"Unsupported mode: {mode}")
 
     async def _run_incremental(self, *, run_id: int, started_at: datetime) -> SyncOutcome:
@@ -134,42 +139,51 @@ class SyncService:
         seen = added = 0
         seen_known = False
 
-        while not seen_known:
-            page: list[Meeting] = []
-            async for m in self._repo.list_meetings_page(  # type: ignore[attr-defined]
-                skip=skip, limit=PAGE_SIZE, to_date=None
-            ):
-                page.append(m)
-            if not page:
-                break
+        try:
+            while not seen_known:
+                page: list[Meeting] = []
+                async for m in self._repo.list_meetings_page(  # type: ignore[attr-defined]
+                    skip=skip, limit=PAGE_SIZE, to_date=None
+                ):
+                    page.append(m)
+                if not page:
+                    break
 
-            for raw in page:
-                seen += 1
-                existing = self._manifest.get(raw.meeting_id)
-                if existing is None:
-                    self._manifest.upsert_known(raw, at=started_at)
-                    added += 1
-                elif existing.source_state == "gone":
-                    # Resurrected: refresh snapshot + flip back to live.
-                    self._manifest.upsert_known(raw, at=started_at)
-                    self._manifest.set_source_state(raw.meeting_id, "live")
-                    added += 1
-                else:
-                    seen_known = True
-                    break  # stop processing this page
+                for raw in page:
+                    seen += 1
+                    existing = self._manifest.get(raw.meeting_id)
+                    if existing is None:
+                        self._manifest.upsert_known(raw, at=started_at)
+                        added += 1
+                    elif existing.source_state == "gone":
+                        self._manifest.upsert_known(raw, at=started_at)
+                        self._manifest.set_source_state(raw.meeting_id, "live")
+                        added += 1
+                    else:
+                        seen_known = True
+                        break
 
-            self._manifest.record_sync_progress(
-                run_id,
+                self._manifest.record_sync_progress(
+                    run_id,
+                    seen=seen,
+                    added=added,
+                    updated=0,
+                    gone=0,
+                    cursor_skip=skip + len(page),
+                )
+
+                if seen_known:
+                    break
+                skip += len(page)
+        except RateLimitedError as e:
+            return self._record_rate_limited(
+                run_id=run_id,
+                cursor_skip=skip,
+                retry_after=e.retry_after_seconds,
                 seen=seen,
                 added=added,
-                updated=0,
-                gone=0,
-                cursor_skip=skip + len(page),
+                error=str(e),
             )
-
-            if seen_known:
-                break
-            skip += len(page)
 
         self._manifest.finalize_sync_run(run_id, outcome="success", at=self._clock.now())
         return SyncOutcome.success(
@@ -180,49 +194,80 @@ class SyncService:
             meetings_gone=0,
         )
 
-    async def _run_full(self, *, run_id: int, started_at: datetime) -> SyncOutcome:
-        # Pin pagination to started_at so meetings created during the run
-        # don't shift the window.
-        to_date = started_at
-        skip = 0
-        seen = added = updated = 0
-        seen_ids: list[str] = []
+    async def _run_full(
+        self,
+        *,
+        run_id: int,
+        started_at: datetime,
+        resume_run_id: int | None = None,
+    ) -> SyncOutcome:
+        # Resume support: if resume_run_id given, recover cursor + seen_ids
+        # from the prior partial run.
+        if resume_run_id is not None:
+            prior = self._manifest.get_sync_run(resume_run_id)
+            if prior is None or prior.outcome != "partial":
+                raise ValueError(f"resume_run_id={resume_run_id} not found or not partial")
+            to_date = prior.started_at
+            skip = prior.cursor_skip or 0
+            seen_ids: list[str] = (
+                list(json.loads(prior.seen_ids_json)) if prior.seen_ids_json else []
+            )
+            seen = prior.meetings_seen
+            added = prior.meetings_added
+            updated = prior.meetings_updated
+        else:
+            to_date = started_at
+            skip = 0
+            seen_ids = []
+            seen = added = updated = 0
 
-        while True:
-            page: list[Meeting] = []
-            async for m in self._repo.list_meetings_page(  # type: ignore[attr-defined]
-                skip=skip, limit=PAGE_SIZE, to_date=to_date
-            ):
-                page.append(m)
-            if not page:
-                break
+        try:
+            while True:
+                page: list[Meeting] = []
+                async for m in self._repo.list_meetings_page(  # type: ignore[attr-defined]
+                    skip=skip, limit=PAGE_SIZE, to_date=to_date
+                ):
+                    page.append(m)
+                if not page:
+                    break
 
-            for raw in page:
-                seen += 1
-                seen_ids.append(raw.meeting_id)
-                existing = self._manifest.get(raw.meeting_id)
-                if existing is None:
-                    self._manifest.upsert_known(raw, at=started_at)
-                    added += 1
-                else:
-                    if self._manifest.update_cache_fields(raw, at=started_at):
-                        updated += 1
-                    if existing.source_state == "gone":
-                        self._manifest.set_source_state(raw.meeting_id, "live")
+                for raw in page:
+                    seen += 1
+                    seen_ids.append(raw.meeting_id)
+                    existing = self._manifest.get(raw.meeting_id)
+                    if existing is None:
+                        self._manifest.upsert_known(raw, at=started_at)
                         added += 1
+                    else:
+                        if self._manifest.update_cache_fields(raw, at=started_at):
+                            updated += 1
+                        if existing.source_state == "gone":
+                            self._manifest.set_source_state(raw.meeting_id, "live")
+                            added += 1
 
-            self._manifest.record_sync_progress(
-                run_id,
+                self._manifest.record_sync_progress(
+                    run_id,
+                    seen=seen,
+                    added=added,
+                    updated=updated,
+                    gone=0,
+                    cursor_skip=skip + len(page),
+                    seen_ids=seen_ids,
+                )
+                skip += len(page)
+        except RateLimitedError as e:
+            return self._record_rate_limited(
+                run_id=run_id,
+                cursor_skip=skip,
+                retry_after=e.retry_after_seconds,
                 seen=seen,
                 added=added,
                 updated=updated,
-                gone=0,
-                cursor_skip=skip + len(page),
                 seen_ids=seen_ids,
+                error=str(e),
             )
-            skip += len(page)
 
-        # Reconciliation: mark cached live rows missing from API as gone.
+        # Reconciliation
         gone = 0
         seen_set = set(seen_ids)
         for cached in self._manifest.list_known(include_archived=True, include_gone=False):
@@ -246,4 +291,42 @@ class SyncService:
             meetings_added=added,
             meetings_updated=updated,
             meetings_gone=gone,
+        )
+
+    def _record_rate_limited(
+        self,
+        *,
+        run_id: int,
+        cursor_skip: int,
+        retry_after: float | None,
+        seen: int,
+        added: int,
+        updated: int = 0,
+        seen_ids: list[str] | None = None,
+        error: str,
+    ) -> SyncOutcome:
+        retry_seconds = retry_after if retry_after is not None else 60.0
+        next_resume_at = self._clock.now() + timedelta(seconds=retry_seconds)
+        # record final progress before flagging partial
+        self._manifest.record_sync_progress(
+            run_id,
+            seen=seen,
+            added=added,
+            updated=updated,
+            gone=0,
+            cursor_skip=cursor_skip,
+            seen_ids=seen_ids,
+        )
+        self._manifest.mark_sync_run_partial(
+            run_id,
+            at=self._clock.now(),
+            next_resume_at=next_resume_at,
+            error_message=error,
+        )
+        return SyncOutcome.partial(
+            run_id=run_id,
+            meetings_seen=seen,
+            meetings_added=added,
+            meetings_updated=updated,
+            next_resume_at=next_resume_at,
         )
