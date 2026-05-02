@@ -20,13 +20,27 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from enum import StrEnum
 from typing import Self
 
 from firefliesclearer.core.manifest import Manifest
 from firefliesclearer.core.models import Meeting
+from firefliesclearer.core.sync_types import SyncMode, SyncTrigger
 from firefliesclearer.infra.fireflies_client import RateLimitedError
 from firefliesclearer.ports.clock import Clock
+
+# Re-exported so existing callers can keep importing SyncMode/SyncTrigger
+# from this module. The canonical home is now ``core.sync_types`` so the
+# scheduler in ``infra/`` can use them without crossing the architecture
+# contract (see pyproject.toml).
+__all__ = [
+    "PAGE_SIZE",
+    "SnapshotCallback",
+    "SyncMode",
+    "SyncOutcome",
+    "SyncService",
+    "SyncTrigger",
+    "estimate_total",
+]
 
 PAGE_SIZE = 50
 
@@ -47,18 +61,6 @@ def estimate_total(*, seen: int, last_page_size: int) -> int:
     if 0 < last_page_size < PAGE_SIZE:
         return seen
     return seen + PAGE_SIZE
-
-
-class SyncMode(StrEnum):
-    INCREMENTAL = "incremental"
-    FULL = "full"
-
-
-class SyncTrigger(StrEnum):
-    SCHEDULED = "scheduled"
-    MANUAL_REVIEW = "manual_review"
-    MANUAL_SETTINGS = "manual_settings"
-    BOOTSTRAP = "bootstrap"
 
 
 @dataclass(frozen=True, slots=True)

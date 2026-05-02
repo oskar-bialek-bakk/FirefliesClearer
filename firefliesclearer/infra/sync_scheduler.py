@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from firefliesclearer.core.manifest import SyncRunRecord
+from firefliesclearer.core.sync_types import SyncMode, SyncTrigger
 from firefliesclearer.infra.config import SyncConfig
 
 logger = logging.getLogger(__name__)
@@ -121,8 +122,6 @@ async def run_scheduler(
          marks the run failed but does not stop the scheduler.
       8. Always fire ``on_run_finished`` and release ``sync_lock``.
     """
-    from firefliesclearer.application.sync_service import SyncMode, SyncTrigger
-
     while not shutdown_event.is_set():
         try:
             last_run = manifest.get_last_sync_run()
