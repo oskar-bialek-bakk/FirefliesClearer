@@ -5,7 +5,21 @@ All notable changes to FirefliesClearer will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - Unreleased
+## [2.1.0] - Unreleased
+
+### Added
+- **Local cache** (`[sync]` config section). FirefliesClearer keeps a SQLite mirror of your Fireflies meetings in `manifest.db` so the cleanup wizard works offline and during rate-limit windows. Periodic background sync every 6 h, weekly full reconciliation at 03:00 local; archive downloads and deletes still go to the live API.
+- `firefliesclearer sync [--full]` — run a one-shot sync from the CLI. Useful for cron jobs that don't keep `serve` running. `--dry-run` prints the plan without making API calls.
+- Sync controls UI: **Sync now** button on the cleanup wizard's review toolbar, persistent banner on dashboard + review page (idle / running / partial / failed), **Full re-sync** button on the settings page.
+- Bootstrap UX — first-run sync shows a progress banner with `seen/estimate` counters; the wizard soft-blocks until the cache is populated.
+- One-time opt-in banner on the dashboard for v2.0 users; persists `sync.opt_in_dismissed = true` if dismissed.
+
+### Changed
+- Fresh installs: `[sync] enabled = true` by default. The setup wizard writes the section automatically.
+- The cleanup wizard's read path is **always** served by the local cache (`ManifestBackedRepository`). The `[sync] enabled` flag now only controls whether the background scheduler runs.
+- Pipeline now treats `MeetingState.KNOWN` rows the same as failed-state rows: transition to `PENDING`, then archive. Required after the read flip so cached-but-not-archived meetings can move through the apply flow.
+
+## [2.0.0] - 2026-04-30
 
 ### Added
 - Local web UI via `firefliesclearer serve` (FastAPI + HTMX, no JavaScript framework).

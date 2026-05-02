@@ -2,7 +2,7 @@
 
 Project-specific guidance for Claude Code sessions in this repo.
 
-## Architecture overview (v2)
+## Architecture overview (v2.1)
 
 Layered, ports-and-adapters style:
 
@@ -17,6 +17,7 @@ Layered, ports-and-adapters style:
 │ application/                                       │
 │  setup_service · scan_service · archive_service    │
 │  purge_service · audit_service · preset_service    │
+│  sync_service                                      │
 ├────────────────────────────────────────────────────┤
 │ core/  (domain — pure)                             │
 │  models · pipeline · rules · manifest · archiver   │
@@ -25,12 +26,18 @@ Layered, ports-and-adapters style:
 │  clock                      system_clock           │
 │  meeting_repository         fireflies_client       │
 │  summary_renderer           pdf_renderer           │
+│                             manifest_backed_repo   │
+│                             sync_scheduler         │
 │                             config · logging       │
 │                             atomic_toml · fs       │
 │                             log_retention          │
 │                             open_folder            │
 └────────────────────────────────────────────────────┘
 ```
+
+## Local cache (v2.1)
+
+Cleanup wizard reads come from a local SQLite mirror (`manifest.db`), not the live Fireflies API. `ScanService` always wires through `ManifestBackedRepository(manifest)`; mutations (`fetch_artifacts`, `delete_meeting`) still go to `FirefliesClient`. A background `SyncScheduler` runs incremental sync every 6 h and a weekly full reconciliation at 03:00 local; `[sync] enabled = false` only disables the scheduler — the read path is unconditional. The flip happened in the local-cache phases 1-6 (specs in `docs/superpowers/specs/2026-05-02-local-cache-design.md`).
 
 ## Boundaries
 
@@ -64,6 +71,9 @@ These boundaries are enforced by an `import-linter` contract in CI (Phase 9.8).
 - Ruff selects `["E","F","W","I","N","UP","B","SIM","RUF"]` but NOT `SLF001`/`BLE001`. Don't add those noqa directives — they trip RUF100.
 - Mypy class-scope name resolution gotcha: `class Foo: def list(self) -> list[Bar]: ...` fails mypy strict even with `from __future__ import annotations`. Workaround: alias `_List = builtins.list` (see `application/preset_service.py`).
 - `tomli_w` cannot serialize Python `None`; use `model_dump(mode="json", exclude_none=True)` per Pydantic model before passing to `tomli_w.dump`.
+- Pipeline._process_one / archive_one handle `MeetingState.KNOWN` rows by transitioning them to `PENDING` before archiving — the cache adapter pre-seeds rows in KNOWN state, and Pipeline used to silently skip them. If you add a new entry-state to the FSM, audit both branches.
+- `asyncio.create_task(...)` results MUST be parked on `app.state.<name>` (e.g. `app.state.sync_scheduler_task`, `app.state.current_sync_task`) — otherwise GC kills the task and ruff RUF006 fires.
+- For tests that need to seed `app.state.sync_lock` from outside the loop, use `client.portal.call(lock.acquire)` — `asyncio.get_event_loop().run_until_complete` deadlocks against TestClient's portal-based loop.
 
 ## Phase 5 deferrals (not yet done as of v2 release)
 
