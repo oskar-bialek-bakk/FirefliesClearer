@@ -608,3 +608,45 @@ def test_upsert_known_does_not_log_for_existing_row(manifest):
 
     log = manifest.state_log("01HW")
     assert len(log) == 1                                # still just the initial KNOWN log
+
+
+def test_set_source_state_flips_live_to_gone(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    manifest.set_source_state("01HW", "gone")
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.source_state == "gone"
+
+
+def test_set_source_state_flips_gone_to_live(manifest):
+    """Resurrection edge case: a 'gone' meeting reappears in Fireflies."""
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    manifest.set_source_state("01HW", "gone")
+    manifest.set_source_state("01HW", "live")
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.source_state == "live"
+
+
+def test_set_source_state_leaves_op_state_unchanged(manifest):
+    """source_state and op_state are independent axes."""
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    manifest.transition("01HW", to=MeetingState.PENDING, at=NOW)
+    manifest.transition("01HW", to=MeetingState.ARCHIVED, at=NOW, archive_path="/tmp/x")
+    manifest.set_source_state("01HW", "gone")
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.state is MeetingState.ARCHIVED
+    assert rec.source_state == "gone"
+
+
+def test_set_source_state_unknown_id_is_noop(manifest):
+    """Setting source_state on a non-existent row is silently ignored."""
+    manifest.set_source_state("does-not-exist", "gone")
+    assert manifest.get("does-not-exist") is None
+
+
+def test_set_source_state_rejects_invalid_value(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    with pytest.raises(ValueError, match="source_state"):
+        manifest.set_source_state("01HW", "bogus")

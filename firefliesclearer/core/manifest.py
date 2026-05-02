@@ -12,6 +12,8 @@ from typing import Any
 
 from firefliesclearer.core.models import Meeting, MeetingState
 
+_VALID_SOURCE_STATES: frozenset[str] = frozenset({"live", "gone"})
+
 LEGAL_TRANSITIONS: Mapping[MeetingState | None, frozenset[MeetingState]] = {
     # None → KNOWN is the new sync-driven first-touch path.
     # None → PENDING is preserved for Manifest.register() backward compat;
@@ -270,6 +272,21 @@ class Manifest:
                 cached_at_iso,
                 meeting.meeting_id,
             ),
+        )
+
+    def set_source_state(self, meeting_id: str, source_state: str) -> None:
+        """Flip a row's source_state. No-op for unknown meeting_ids.
+
+        source_state must be 'live' or 'gone' (the two values reachable from
+        the sync engine's reconciliation pass and the purge pipeline).
+        """
+        if source_state not in _VALID_SOURCE_STATES:
+            raise ValueError(
+                f"source_state must be one of {sorted(_VALID_SOURCE_STATES)}; got {source_state!r}"
+            )
+        self._conn.execute(
+            "UPDATE meetings SET source_state = ? WHERE meeting_id = ?",
+            (source_state, meeting_id),
         )
 
     def get(self, meeting_id: str) -> MeetingRecord | None:
