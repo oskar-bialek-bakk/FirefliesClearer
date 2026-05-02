@@ -29,6 +29,24 @@ from firefliesclearer.ports.clock import Clock
 PAGE_SIZE = 50
 
 
+def estimate_total(*, seen: int, last_page_size: int) -> int:
+    """Estimate the total number of meetings in the source.
+
+    seen: number of meetings yielded so far.
+    last_page_size: number of items in the most recent page.
+
+    Heuristic:
+    - If last_page_size < PAGE_SIZE → that was the final page → total == seen.
+    - If last_page_size == PAGE_SIZE → at least one more page exists → total >= seen + PAGE_SIZE.
+    - If seen == 0 → default to PAGE_SIZE (just a placeholder).
+    """
+    if seen == 0:
+        return PAGE_SIZE
+    if 0 < last_page_size < PAGE_SIZE:
+        return seen
+    return seen + PAGE_SIZE
+
+
 class SyncMode(StrEnum):
     INCREMENTAL = "incremental"
     FULL = "full"

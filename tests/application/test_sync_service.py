@@ -11,6 +11,7 @@ from firefliesclearer.application.sync_service import (
     SyncOutcome,
     SyncService,
     SyncTrigger,
+    estimate_total,
 )
 from firefliesclearer.core.manifest import Manifest
 from firefliesclearer.core.models import Meeting
@@ -66,6 +67,22 @@ def test_sync_outcome_failed_factory():
     out = SyncOutcome.failed(run_id=3, error_message="API key invalid")
     assert out.outcome == "failed"
     assert out.error_message == "API key invalid"
+
+
+def test_estimate_total_with_full_pages_only():
+    """While every page is full, return seen + 50 (one more page assumed)."""
+    assert estimate_total(seen=50, last_page_size=50) == 100
+    assert estimate_total(seen=200, last_page_size=50) == 250
+
+
+def test_estimate_total_with_short_last_page():
+    """A partial last page is the end. Return exactly seen."""
+    assert estimate_total(seen=237, last_page_size=37) == 237
+
+
+def test_estimate_total_with_zero_seen():
+    """Before any page lands, fall back to a default."""
+    assert estimate_total(seen=0, last_page_size=0) == 50
 
 
 async def test_controllable_repo_paginates_by_skip():
