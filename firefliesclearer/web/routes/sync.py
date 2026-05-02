@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from firefliesclearer.application.sync_service import SyncMode, SyncService, SyncTrigger
 from firefliesclearer.web.deps import get_deps
+
+# Manual triggers permitted from the public POST /sync/now endpoint.
+# 'scheduled' / 'bootstrap' are reserved for the scheduler / first-run flow.
+_ALLOWED_MANUAL_TRIGGERS: frozenset[str] = frozenset({"manual_review", "manual_settings"})
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -80,3 +86,81 @@ def _build_status_dict(request: Request, deps: SimpleNamespace) -> dict[str, Any
             "last_run": last_run_dict,
         }
     return {"state": "idle", "last_run": last_run_dict}
+
+
+@router.post("/sync/now")
+async def trigger_sync(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> JSONResponse:
+    """Acquire ``sync_lock`` and spawn a background SyncService run.
+
+    Returns:
+        202 + status payload on success.
+        409 + ``current_run_id`` when a sync is already in flight.
+        422 on invalid ``mode`` or ``trigger``.
+    """
+    form = await request.form()
+    mode = str(form.get("mode", "incremental"))
+    trigger = str(form.get("trigger", "manual_review"))
+
+    try:
+        sync_mode = SyncMode(mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid mode: {mode!r}") from exc
+
+    if trigger not in _ALLOWED_MANUAL_TRIGGERS:
+        raise HTTPException(status_code=422, detail=f"Invalid trigger: {trigger!r}")
+    sync_trigger = SyncTrigger(trigger)
+
+    sync_lock: asyncio.Lock = request.app.state.sync_lock
+    if sync_lock.locked():
+        current = getattr(request.app.state, "current_sync", None)
+        return JSONResponse(
+            {"current_run_id": current.run_id if current else None},
+            status_code=409,
+        )
+
+    # Prefer a SyncService already on app.state (set by the scheduler), fall
+    # back to building one ad-hoc from deps.
+    service: SyncService | None = getattr(request.app.state, "sync_service", None)
+    if service is None:
+        service = SyncService(repo=deps.client, manifest=deps.manifest, clock=deps.clock)
+
+    await sync_lock.acquire()
+    snapshot = CurrentSyncSnapshot(
+        run_id=0,  # filled in by the runner once start_sync_run returns
+        mode=mode,
+        trigger_source=trigger,
+        started_at=deps.clock.now(),
+    )
+    request.app.state.current_sync = snapshot
+
+    async def _runner() -> None:
+        try:
+            outcome = await service.run(mode=sync_mode, trigger=sync_trigger)
+            snapshot.run_id = outcome.run_id
+            snapshot.meetings_seen = outcome.meetings_seen
+            snapshot.meetings_added = outcome.meetings_added
+            snapshot.meetings_updated = outcome.meetings_updated
+            snapshot.meetings_gone = outcome.meetings_gone
+        except Exception:
+            # Log + release; the scheduler / next manual trigger will retry.
+            logger.exception("Sync task failed")
+        finally:
+            request.app.state.current_sync = None
+            sync_lock.release()
+
+    # Park the task on app.state so it isn't GC'd mid-flight.
+    task = asyncio.create_task(_runner())
+    request.app.state.current_sync_task = task
+
+    return JSONResponse(
+        {
+            "state": "running",
+            "mode": mode,
+            "trigger_source": trigger,
+            "started_at": snapshot.started_at.isoformat(),
+        },
+        status_code=202,
+    )
