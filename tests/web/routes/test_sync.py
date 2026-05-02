@@ -42,6 +42,26 @@ def test_status_endpoint_returns_running_state_when_in_flight(configured_app_syn
         assert body["meetings_added"] == 5
 
 
+def test_status_includes_estimated_total_during_running(configured_app_sync_on) -> None:
+    """Bootstrap-aware status surfaces estimated_total + is_bootstrap flag."""
+    from firefliesclearer.web.routes.sync import CurrentSyncSnapshot
+
+    configured_app_sync_on.state.current_sync = CurrentSyncSnapshot(
+        run_id=1,
+        mode="full",
+        trigger_source="bootstrap",
+        started_at=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+        meetings_seen=100,
+        meetings_added=100,
+        last_page_size=50,
+    )
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        body = client.get("/sync/status").json()
+        assert body["estimated_total"] == 150
+        assert body["is_bootstrap"] is True
+
+
 def test_status_endpoint_returns_last_completed_when_idle(configured_app_sync_on) -> None:
     manifest = configured_app_sync_on.state.deps.manifest
     rid = manifest.start_sync_run(

@@ -15,7 +15,9 @@ The scheduler resumes from the cursor when the retry window expires.
 
 from __future__ import annotations
 
+import contextlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -121,6 +123,10 @@ class SyncOutcome:
         )
 
 
+SnapshotCallback = Callable[[int, int, int, int, int], None]
+"""Signature: (seen, added, updated, gone, last_page_size) -> None."""
+
+
 class SyncService:
     def __init__(
         self,
@@ -128,10 +134,12 @@ class SyncService:
         repo: object,  # ControllableMeetingRepository or FirefliesClient
         manifest: Manifest,
         clock: Clock,
+        snapshot_callback: SnapshotCallback | None = None,
     ) -> None:
         self._repo = repo
         self._manifest = manifest
         self._clock = clock
+        self._snapshot_callback = snapshot_callback
 
     async def run(
         self,
@@ -188,6 +196,13 @@ class SyncService:
                     updated=0,
                     gone=0,
                     cursor_skip=skip + len(page),
+                )
+                self._publish_snapshot(
+                    seen=seen,
+                    added=added,
+                    updated=0,
+                    gone=0,
+                    last_page_size=len(page),
                 )
 
                 if seen_known:
@@ -272,6 +287,13 @@ class SyncService:
                     cursor_skip=skip + len(page),
                     seen_ids=seen_ids,
                 )
+                self._publish_snapshot(
+                    seen=seen,
+                    added=added,
+                    updated=updated,
+                    gone=0,
+                    last_page_size=len(page),
+                )
                 skip += len(page)
         except RateLimitedError as e:
             return self._record_rate_limited(
@@ -310,6 +332,28 @@ class SyncService:
             meetings_updated=updated,
             meetings_gone=gone,
         )
+
+    def _publish_snapshot(
+        self,
+        *,
+        seen: int,
+        added: int,
+        updated: int,
+        gone: int,
+        last_page_size: int,
+    ) -> None:
+        """Notify the optional snapshot callback after each progress tick.
+
+        The web layer wires this to update ``app.state.current_sync`` so the
+        live banner reflects ``meetings_seen`` / ``last_page_size`` without
+        coupling the pure algorithm to FastAPI internals.
+        """
+        if self._snapshot_callback is None:
+            return
+        # Defensive: snapshot publish is purely cosmetic for the progress
+        # banner; a callback raising must never abort an in-flight sync.
+        with contextlib.suppress(Exception):
+            self._snapshot_callback(seen, added, updated, gone, last_page_size)
 
     def _record_rate_limited(
         self,

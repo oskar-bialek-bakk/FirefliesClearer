@@ -33,6 +33,10 @@ class CurrentSyncSnapshot:
     running. It is intentionally mutable: the runner overwrites the live
     counters once :class:`SyncOutcome` is returned. Tests may construct one
     directly to simulate an in-flight run.
+
+    ``last_page_size`` carries the size of the most recently fetched page so
+    :func:`estimate_total` can derive an "approximately N" upper bound for
+    the bootstrap progress banner.
     """
 
     run_id: int
@@ -43,6 +47,7 @@ class CurrentSyncSnapshot:
     meetings_added: int = 0
     meetings_updated: int = 0
     meetings_gone: int = 0
+    last_page_size: int = 0
 
 
 @router.get("/sync/status")
@@ -103,6 +108,12 @@ def _build_status_dict(request: Request, deps: SimpleNamespace) -> dict[str, Any
             "error_message": last_run.error_message,
         }
     if current is not None:
+        from firefliesclearer.application.sync_service import estimate_total
+
+        estimated_total = estimate_total(
+            seen=current.meetings_seen,
+            last_page_size=current.last_page_size,
+        )
         return {
             "state": "running",
             "run_id": current.run_id,
@@ -113,6 +124,8 @@ def _build_status_dict(request: Request, deps: SimpleNamespace) -> dict[str, Any
             "meetings_added": current.meetings_added,
             "meetings_updated": current.meetings_updated,
             "meetings_gone": current.meetings_gone,
+            "estimated_total": estimated_total,
+            "is_bootstrap": current.trigger_source == "bootstrap",
             "last_run": last_run_dict,
         }
     return {"state": "idle", "last_run": last_run_dict}
@@ -151,12 +164,6 @@ async def trigger_sync(
             status_code=409,
         )
 
-    # Prefer a SyncService already on app.state (set by the scheduler), fall
-    # back to building one ad-hoc from deps.
-    service: SyncService | None = getattr(request.app.state, "sync_service", None)
-    if service is None:
-        service = SyncService(repo=deps.client, manifest=deps.manifest, clock=deps.clock)
-
     await sync_lock.acquire()
     snapshot = CurrentSyncSnapshot(
         run_id=0,  # filled in by the runner once start_sync_run returns
@@ -165,6 +172,30 @@ async def trigger_sync(
         started_at=deps.clock.now(),
     )
     request.app.state.current_sync = snapshot
+
+    def _update_snapshot(
+        seen: int, added: int, updated: int, gone: int, last_page_size: int
+    ) -> None:
+        snap = getattr(request.app.state, "current_sync", None)
+        if snap is None:
+            return
+        snap.meetings_seen = seen
+        snap.meetings_added = added
+        snap.meetings_updated = updated
+        snap.meetings_gone = gone
+        snap.last_page_size = last_page_size
+
+    # Prefer a SyncService already on app.state (set by the scheduler), fall
+    # back to building one ad-hoc from deps. The ad-hoc service gets a
+    # snapshot callback so the live banner reflects per-page progress.
+    service: SyncService | None = getattr(request.app.state, "sync_service", None)
+    if service is None:
+        service = SyncService(
+            repo=deps.client,
+            manifest=deps.manifest,
+            clock=deps.clock,
+            snapshot_callback=_update_snapshot,
+        )
 
     async def _runner() -> None:
         try:
