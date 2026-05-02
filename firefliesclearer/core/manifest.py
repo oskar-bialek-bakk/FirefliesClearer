@@ -163,12 +163,51 @@ class StateLogEntry:
     details: dict[str, Any] | None
 
 
+@dataclass(frozen=True, slots=True)
+class SyncRunRecord:
+    id: int
+    mode: str
+    trigger_source: str
+    started_at: datetime
+    finished_at: datetime | None
+    outcome: str
+    meetings_seen: int
+    meetings_added: int
+    meetings_updated: int
+    meetings_gone: int
+    cursor_skip: int | None
+    seen_ids_json: str | None
+    next_resume_at: datetime | None
+    error_message: str | None
+
+
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt is not None else None
 
 
 def _parse_iso(text: str | None) -> datetime | None:
     return datetime.fromisoformat(text) if text else None
+
+
+def _row_to_sync_run_record(row: tuple[Any, ...]) -> SyncRunRecord:
+    started_at = _parse_iso(row[3])
+    assert started_at is not None
+    return SyncRunRecord(
+        id=int(row[0]),
+        mode=row[1],
+        trigger_source=row[2],
+        started_at=started_at,
+        finished_at=_parse_iso(row[4]),
+        outcome=row[5],
+        meetings_seen=int(row[6]),
+        meetings_added=int(row[7]),
+        meetings_updated=int(row[8]),
+        meetings_gone=int(row[9]),
+        cursor_skip=row[10],
+        seen_ids_json=row[11],
+        next_resume_at=_parse_iso(row[12]),
+        error_message=row[13],
+    )
 
 
 class Manifest:
@@ -400,6 +439,86 @@ class Manifest:
                 tags=tags,
                 has_transcript=bool(row[6]),
             )
+
+    def start_sync_run(self, *, mode: str, trigger: str, at: datetime) -> int:
+        self._conn.execute(
+            "INSERT INTO sync_runs (mode, trigger_source, started_at, outcome) "
+            "VALUES (?, ?, ?, 'running')",
+            (mode, trigger, _iso(at)),
+        )
+        row = self._conn.execute("SELECT last_insert_rowid()").fetchone()
+        return int(row[0])
+
+    def record_sync_progress(
+        self,
+        run_id: int,
+        *,
+        seen: int,
+        added: int,
+        updated: int,
+        gone: int,
+        cursor_skip: int | None,
+        seen_ids: list[str] | None = None,
+    ) -> None:
+        seen_ids_json = json.dumps(seen_ids) if seen_ids is not None else None
+        self._conn.execute(
+            "UPDATE sync_runs SET "
+            "  meetings_seen = ?, meetings_added = ?, meetings_updated = ?, "
+            "  meetings_gone = ?, cursor_skip = ?, seen_ids_json = ? "
+            "WHERE id = ?",
+            (seen, added, updated, gone, cursor_skip, seen_ids_json, run_id),
+        )
+
+    def finalize_sync_run(
+        self,
+        run_id: int,
+        *,
+        outcome: str,
+        at: datetime,
+        error_message: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE sync_runs SET outcome = ?, finished_at = ?, error_message = ? WHERE id = ?",
+            (outcome, _iso(at), error_message, run_id),
+        )
+
+    def mark_sync_run_partial(
+        self,
+        run_id: int,
+        *,
+        at: datetime,
+        next_resume_at: datetime,
+        error_message: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE sync_runs SET outcome = 'partial', finished_at = ?, "
+            "  next_resume_at = ?, error_message = ? "
+            "WHERE id = ?",
+            (_iso(at), _iso(next_resume_at), error_message, run_id),
+        )
+
+    def get_sync_run(self, run_id: int) -> SyncRunRecord | None:
+        row = self._conn.execute(
+            "SELECT id, mode, trigger_source, started_at, finished_at, outcome, "
+            "  meetings_seen, meetings_added, meetings_updated, meetings_gone, "
+            "  cursor_skip, seen_ids_json, next_resume_at, error_message "
+            "FROM sync_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_sync_run_record(row)
+
+    def get_last_sync_run(self) -> SyncRunRecord | None:
+        row = self._conn.execute(
+            "SELECT id, mode, trigger_source, started_at, finished_at, outcome, "
+            "  meetings_seen, meetings_added, meetings_updated, meetings_gone, "
+            "  cursor_skip, seen_ids_json, next_resume_at, error_message "
+            "FROM sync_runs ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_sync_run_record(row)
 
     def get(self, meeting_id: str) -> MeetingRecord | None:
         cur = self._conn.execute(

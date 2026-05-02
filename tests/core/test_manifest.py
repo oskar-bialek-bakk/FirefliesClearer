@@ -824,3 +824,79 @@ def test_list_known_skips_legacy_rows_without_snapshot(manifest):
 
 def test_list_known_empty_manifest_yields_nothing(manifest):
     assert list(manifest.list_known()) == []
+
+
+def test_start_sync_run_inserts_running_row(manifest):
+    run_id = manifest.start_sync_run(mode="incremental", trigger="manual_review", at=NOW)
+    assert isinstance(run_id, int)
+    rec = manifest.get_sync_run(run_id)
+    assert rec is not None
+    assert rec.mode == "incremental"
+    assert rec.trigger_source == "manual_review"
+    assert rec.outcome == "running"
+    assert rec.started_at == NOW
+    assert rec.finished_at is None
+
+
+def test_record_sync_progress_updates_counters(manifest):
+    run_id = manifest.start_sync_run(mode="full", trigger="bootstrap", at=NOW)
+    manifest.record_sync_progress(
+        run_id, seen=50, added=45, updated=3, gone=0, cursor_skip=50, seen_ids=["a", "b"]
+    )
+    rec = manifest.get_sync_run(run_id)
+    assert rec.meetings_seen == 50
+    assert rec.meetings_added == 45
+    assert rec.meetings_updated == 3
+    assert rec.meetings_gone == 0
+    assert rec.cursor_skip == 50
+    assert rec.seen_ids_json is not None  # JSON array
+
+
+def test_finalize_sync_run_success(manifest):
+    later = datetime(2026, 5, 2, 13, 0, tzinfo=UTC)
+    run_id = manifest.start_sync_run(mode="incremental", trigger="scheduled", at=NOW)
+    manifest.finalize_sync_run(run_id, outcome="success", at=later)
+    rec = manifest.get_sync_run(run_id)
+    assert rec.outcome == "success"
+    assert rec.finished_at == later
+    assert rec.error_message is None
+
+
+def test_finalize_sync_run_failed_with_error(manifest):
+    run_id = manifest.start_sync_run(mode="full", trigger="scheduled", at=NOW)
+    manifest.finalize_sync_run(run_id, outcome="failed", at=NOW, error_message="API key invalid")
+    rec = manifest.get_sync_run(run_id)
+    assert rec.outcome == "failed"
+    assert rec.error_message == "API key invalid"
+
+
+def test_mark_sync_run_partial(manifest):
+    later = datetime(2026, 5, 2, 13, 0, tzinfo=UTC)
+    resume = datetime(2026, 5, 2, 14, 0, tzinfo=UTC)
+    run_id = manifest.start_sync_run(mode="full", trigger="scheduled", at=NOW)
+    manifest.mark_sync_run_partial(
+        run_id, at=later, next_resume_at=resume, error_message="rate-limited"
+    )
+    rec = manifest.get_sync_run(run_id)
+    assert rec.outcome == "partial"
+    assert rec.finished_at == later
+    assert rec.next_resume_at == resume
+    assert rec.error_message == "rate-limited"
+
+
+def test_get_last_sync_run_returns_most_recent(manifest):
+    earlier = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    later = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    manifest.start_sync_run(mode="incremental", trigger="scheduled", at=earlier)
+    rid2 = manifest.start_sync_run(mode="full", trigger="scheduled", at=later)
+    last = manifest.get_last_sync_run()
+    assert last is not None
+    assert last.id == rid2
+
+
+def test_get_last_sync_run_none_when_empty(manifest):
+    assert manifest.get_last_sync_run() is None
+
+
+def test_get_sync_run_unknown_id_returns_none(manifest):
+    assert manifest.get_sync_run(999_999) is None
