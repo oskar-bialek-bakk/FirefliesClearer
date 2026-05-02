@@ -473,3 +473,60 @@ def test_meeting_record_legacy_register_has_null_snapshot(manifest):
     # source_state defaults to 'live' via the column DEFAULT clause
     assert rec.source_state == "live"
     assert rec.cached_at is None
+
+
+def test_sync_runs_table_exists(tmp_path):
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_runs'"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+
+
+def test_sync_runs_columns(tmp_path):
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(sync_runs)")}
+    conn.close()
+    expected = {
+        "id", "mode", "trigger_source", "started_at", "finished_at", "outcome",
+        "meetings_seen", "meetings_added", "meetings_updated", "meetings_gone",
+        "cursor_skip", "seen_ids_json", "next_resume_at", "error_message",
+    }
+    assert expected <= cols, f"missing: {expected - cols}"
+
+
+def test_sync_runs_started_at_index_exists(tmp_path):
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    conn.close()
+    assert "idx_sync_runs_started_at" in indexes
+
+
+def test_sync_runs_table_created_on_existing_manifest(tmp_path):
+    """Migration creates sync_runs even when meetings table predates Phase 1."""
+    import sqlite3
+
+    db_path = tmp_path / "manifest.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(_legacy_v2_schema())
+    conn.commit()
+    conn.close()
+
+    Manifest.open(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_runs'"
+    ).fetchone()
+    conn.close()
+    assert row is not None

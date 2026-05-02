@@ -67,11 +67,28 @@ CREATE TABLE IF NOT EXISTS state_log (
   details       TEXT,
   FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
 );
+CREATE TABLE IF NOT EXISTS sync_runs (
+  id                INTEGER PRIMARY KEY,
+  mode              TEXT    NOT NULL,
+  trigger_source    TEXT    NOT NULL,
+  started_at        TEXT    NOT NULL,
+  finished_at       TEXT,
+  outcome           TEXT    NOT NULL,
+  meetings_seen     INTEGER NOT NULL DEFAULT 0,
+  meetings_added    INTEGER NOT NULL DEFAULT 0,
+  meetings_updated  INTEGER NOT NULL DEFAULT 0,
+  meetings_gone     INTEGER NOT NULL DEFAULT 0,
+  cursor_skip       INTEGER,
+  seen_ids_json     TEXT,
+  next_resume_at    TEXT,
+  error_message     TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_meetings_state         ON meetings(state);
 CREATE INDEX IF NOT EXISTS idx_meetings_source_state  ON meetings(source_state);
 CREATE INDEX IF NOT EXISTS idx_meetings_meeting_date  ON meetings(meeting_date);
 CREATE INDEX IF NOT EXISTS idx_meetings_host_email    ON meetings(host_email);
 CREATE INDEX IF NOT EXISTS idx_state_log_meeting      ON state_log(meeting_id);
+CREATE INDEX IF NOT EXISTS idx_sync_runs_started_at   ON sync_runs(started_at DESC);
 """
 
 
