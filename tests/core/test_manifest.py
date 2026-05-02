@@ -650,3 +650,79 @@ def test_set_source_state_rejects_invalid_value(manifest):
     manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
     with pytest.raises(ValueError, match="source_state"):
         manifest.set_source_state("01HW", "bogus")
+
+
+def test_update_cache_fields_returns_false_when_nothing_changed(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    changed = manifest.update_cache_fields(_meeting_with_full_snapshot(), at=later)
+    assert changed is False
+
+
+def test_update_cache_fields_refreshes_cached_at_even_when_no_change(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    manifest.update_cache_fields(_meeting_with_full_snapshot(), at=later)
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.cached_at == later
+
+
+def test_update_cache_fields_returns_true_when_title_changed(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    edited = Meeting(
+        meeting_id="01HW",
+        title="Q4 Planning (rescheduled)",
+        meeting_date=NOW,
+        duration_minutes=45.5,
+        host_email="alice@example.com",
+        participant_count=6,
+        tags=("planning", "q4"),
+        has_transcript=True,
+    )
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    changed = manifest.update_cache_fields(edited, at=later)
+    assert changed is True
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.title == "Q4 Planning (rescheduled)"
+
+
+def test_update_cache_fields_returns_true_when_tags_changed(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    edited = Meeting(
+        meeting_id="01HW",
+        title="Q4 Planning",
+        meeting_date=NOW,
+        duration_minutes=45.5,
+        host_email="alice@example.com",
+        participant_count=6,
+        tags=("planning", "q4", "added-tag"),
+        has_transcript=True,
+    )
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    assert manifest.update_cache_fields(edited, at=later) is True
+
+
+def test_update_cache_fields_does_not_touch_op_state(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    manifest.transition("01HW", to=MeetingState.PENDING, at=NOW)
+    edited = Meeting(
+        meeting_id="01HW",
+        title="renamed",
+        meeting_date=NOW,
+        duration_minutes=45.5,
+        host_email="alice@example.com",
+        participant_count=6,
+        tags=("planning", "q4"),
+        has_transcript=True,
+    )
+    manifest.update_cache_fields(edited, at=NOW)
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.state is MeetingState.PENDING
+
+
+def test_update_cache_fields_unknown_id_returns_false(manifest):
+    edited = _meeting_with_full_snapshot("not-in-db")
+    assert manifest.update_cache_fields(edited, at=NOW) is False

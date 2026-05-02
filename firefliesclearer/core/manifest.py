@@ -289,6 +289,55 @@ class Manifest:
             (source_state, meeting_id),
         )
 
+    def update_cache_fields(self, meeting: Meeting, *, at: datetime) -> bool:
+        """Refresh a row's snapshot columns. Returns True if any field changed.
+
+        Always updates ``cached_at`` to *at*, even when no other field changed,
+        so the freshness timestamp reflects the most recent sync touch. The
+        returned bool tells full-reconciliation callers whether the row counts
+        as ``meetings_updated`` (real change observed) or just ``meetings_seen``.
+
+        Returns False if the meeting_id does not exist in the manifest.
+        """
+        existing = self.get(meeting.meeting_id)
+        if existing is None:
+            return False
+
+        new_tags_json = json.dumps(list(meeting.tags))
+        new_has_transcript = 1 if meeting.has_transcript else 0
+        existing_tags_tuple = existing.tags or ()
+
+        changed = (
+            existing.title != meeting.title
+            or existing.meeting_date != meeting.meeting_date
+            or existing.duration_minutes != meeting.duration_minutes
+            or existing.host_email != meeting.host_email
+            or existing.participant_count != meeting.participant_count
+            or (existing.has_transcript if existing.has_transcript is not None else None)
+                != meeting.has_transcript
+            or tuple(existing_tags_tuple) != tuple(meeting.tags)
+        )
+
+        self._conn.execute(
+            "UPDATE meetings SET "
+            "  title = ?, meeting_date = ?, "
+            "  duration_minutes = ?, host_email = ?, participant_count = ?, "
+            "  has_transcript = ?, tags_json = ?, cached_at = ? "
+            "WHERE meeting_id = ?",
+            (
+                meeting.title,
+                meeting.meeting_date.isoformat(),
+                meeting.duration_minutes,
+                meeting.host_email,
+                meeting.participant_count,
+                new_has_transcript,
+                new_tags_json,
+                _iso(at),
+                meeting.meeting_id,
+            ),
+        )
+        return changed
+
     def get(self, meeting_id: str) -> MeetingRecord | None:
         cur = self._conn.execute(
             "SELECT meeting_id, title, meeting_date, state, archive_path, "
