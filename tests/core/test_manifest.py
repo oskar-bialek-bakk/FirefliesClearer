@@ -30,6 +30,29 @@ def manifest(tmp_path):
     return Manifest.open(tmp_path / "manifest.db")
 
 
+def test_meeting_state_has_known_variant():
+    assert MeetingState.KNOWN.value == "known"
+
+
+def test_legal_transitions_include_none_to_known():
+    from firefliesclearer.core.manifest import LEGAL_TRANSITIONS
+
+    assert MeetingState.KNOWN in LEGAL_TRANSITIONS[None]
+
+
+def test_legal_transitions_include_known_to_pending():
+    from firefliesclearer.core.manifest import LEGAL_TRANSITIONS
+
+    assert MeetingState.PENDING in LEGAL_TRANSITIONS[MeetingState.KNOWN]
+
+
+def test_legal_transitions_preserve_existing_none_to_pending():
+    """register() still works — Phase 1 is strictly additive."""
+    from firefliesclearer.core.manifest import LEGAL_TRANSITIONS
+
+    assert MeetingState.PENDING in LEGAL_TRANSITIONS[None]
+
+
 def test_open_creates_schema(tmp_path):
     db_path = tmp_path / "manifest.db"
     Manifest.open(db_path)

@@ -13,7 +13,11 @@ from typing import Any
 from firefliesclearer.core.models import Meeting, MeetingState
 
 LEGAL_TRANSITIONS: Mapping[MeetingState | None, frozenset[MeetingState]] = {
-    None: frozenset({MeetingState.PENDING}),
+    # None → KNOWN is the new sync-driven first-touch path.
+    # None → PENDING is preserved for Manifest.register() backward compat;
+    # both will collapse to None → KNOWN only in Phase 6.
+    None: frozenset({MeetingState.KNOWN, MeetingState.PENDING}),
+    MeetingState.KNOWN: frozenset({MeetingState.PENDING}),
     MeetingState.PENDING: frozenset(
         {
             MeetingState.ARCHIVED,
