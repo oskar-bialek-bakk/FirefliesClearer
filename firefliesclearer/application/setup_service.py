@@ -185,6 +185,12 @@ class SetupService:
                     "delete_failed_transcripts": False,
                 },
             },
+            # Phase 6: fresh installs opt in to the local-cache by default so
+            # the cleanup wizard works during rate-limit windows. Other fields
+            # use SyncConfig defaults.
+            "sync": {
+                "enabled": True,
+            },
         }
 
 

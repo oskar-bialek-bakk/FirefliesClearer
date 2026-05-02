@@ -293,6 +293,23 @@ def test_write_config_creates_parent_dirs(tmp_path: Path) -> None:
     assert cfg_path.exists()
 
 
+def test_write_config_enables_sync_for_fresh_installs(tmp_path: Path) -> None:
+    """Phase 6: fresh installs get [sync] enabled = true so the local-cache
+    benefits ship by default without users flipping a flag."""
+    svc = _make_service()
+    cfg_path = tmp_path / "config.toml"
+    values = SetupValues(
+        api_key="ff_key",
+        archive_root=tmp_path / "arch",
+        default_age_days=90,
+        concurrency=5,
+    )
+    svc.write_config(cfg_path, values)
+    with open(cfg_path, "rb") as f:
+        data = tomllib.load(f)
+    assert data["sync"]["enabled"] is True
+
+
 # ---------------------------------------------------------------------------
 # migrate_v1_rules_auto
 # ---------------------------------------------------------------------------
