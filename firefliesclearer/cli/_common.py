@@ -16,6 +16,7 @@ from firefliesclearer.infra.config import (
     user_config_path,
 )
 from firefliesclearer.infra.fireflies_client import FirefliesClient
+from firefliesclearer.infra.manifest_backed_repo import ManifestBackedRepository
 from firefliesclearer.infra.pdf_renderer import ReportlabSummaryRenderer
 from firefliesclearer.infra.system_clock import SystemClock
 from firefliesclearer.ports.clock import Clock
@@ -30,16 +31,16 @@ class Deps:
     manifest: Manifest
     client: FirefliesClient
     clock: Clock
-    # MeetingRepository — either the live ``client`` (default) or a
-    # ManifestBackedRepository when ``[sync] enabled = true``. ScanService
-    # consumes this; mutation paths always use ``client`` directly.
-    # When omitted, defaults to ``client`` so legacy constructors remain
-    # forward-compatible (the read path matches the unchanged behavior).
+    # MeetingRepository for read paths. After Phase 6 cleanup this is always
+    # ``ManifestBackedRepository(manifest)`` — the cache adapter — regardless
+    # of ``[sync] enabled``. The flag now only controls whether the scheduler
+    # runs; the read path is unconditional.  When omitted, defaults to the
+    # cache adapter so legacy callers stay forward-compatible.
     scan_repo: object = field(default=None)
 
     def __post_init__(self) -> None:
         if self.scan_repo is None:
-            self.scan_repo = self.client
+            self.scan_repo = ManifestBackedRepository(self.manifest)
 
 
 def build_deps(*, config_override: Path | None = None) -> Deps:
@@ -59,12 +60,9 @@ def build_deps(*, config_override: Path | None = None) -> Deps:
         renderer=renderer,
         clock=clock,
     )
-    if cfg.sync.enabled:
-        from firefliesclearer.infra.manifest_backed_repo import ManifestBackedRepository
-
-        scan_repo: object = ManifestBackedRepository(manifest)
-    else:
-        scan_repo = client
+    # Phase 6: cache adapter is unconditional; the [sync] flag now only
+    # controls whether the scheduler runs.
+    scan_repo = ManifestBackedRepository(manifest)
     return Deps(
         config=cfg,
         pipeline=pipeline,

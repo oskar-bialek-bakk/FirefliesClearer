@@ -70,12 +70,14 @@ async def get_deps(request: Request) -> SimpleNamespace:
         renderer=renderer,
         clock=clock,
     )
-    if config.sync.enabled:
-        from firefliesclearer.infra.manifest_backed_repo import ManifestBackedRepository
+    # Phase 6: cache adapter is unconditional. The [sync] flag now only
+    # controls whether the scheduler runs (see below). The read path is
+    # always served by ManifestBackedRepository — when sync is disabled and
+    # the cache is empty, the wizard sees an empty list, which is the user's
+    # choice from dismissing the opt-in banner.
+    from firefliesclearer.infra.manifest_backed_repo import ManifestBackedRepository
 
-        scan_repo: object = ManifestBackedRepository(manifest)
-    else:
-        scan_repo = client
+    scan_repo = ManifestBackedRepository(manifest)
     deps = SimpleNamespace(
         config=config,
         manifest=manifest,

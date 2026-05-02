@@ -76,10 +76,17 @@ delete_confirmation_threshold = 10
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
     manifest = Manifest(conn)
+    # Phase 6: scan_repo is always the cache adapter; tests that seed
+    # meetings via app.state.deps.client should also register them in the
+    # manifest (see seed_meetings_in_manifest helper) so the cleanup
+    # wizard's read path returns them.
+    from firefliesclearer.infra.manifest_backed_repo import ManifestBackedRepository
+
     deps = SimpleNamespace(
         config=load_config(user_config=config_path),
         manifest=manifest,
         client=repo,
+        scan_repo=ManifestBackedRepository(manifest),
         clock=SystemClock(),
         pipeline=FakePipeline(),
     )

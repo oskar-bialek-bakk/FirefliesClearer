@@ -23,7 +23,11 @@ def configured_client(configured_app) -> TestClient:
 
 
 def _seed_old_meetings(app, count: int, days_old: int = 90) -> None:
-    """Replace the app's repo with one pre-seeded with *count* old meetings."""
+    """Replace the app's repo with one pre-seeded with *count* old meetings.
+
+    Phase 6: also register meetings in the manifest so the cache-backed
+    scan_repo (the only read path now) returns them.
+    """
     when = NOW - timedelta(days=days_old)
     meetings = [
         Meeting(
@@ -39,6 +43,8 @@ def _seed_old_meetings(app, count: int, days_old: int = 90) -> None:
     fresh = InMemoryMeetingRepository(meetings=meetings, api_key="ff_test")
     fresh.set_user_email_for_key("ff_test", "oskar@example.com")
     app.state.deps.client = fresh
+    for m in meetings:
+        app.state.deps.manifest.upsert_known(m, at=NOW)
 
 
 # ---------------------------------------------------------------------------
@@ -157,9 +163,13 @@ def test_preview_count_zero_matches_renders_zero(configured_client: TestClient) 
 
 
 def test_preview_count_handles_repo_error(configured_client: TestClient, configured_app) -> None:
-    """When the repo blows up, the fragment renders an inline error."""
+    """When the repo blows up, the fragment renders an inline error.
 
-    repo = configured_app.state.deps.client
+    Phase 6: scan goes through ``scan_repo`` (the cache adapter), so patch
+    that — patching ``client.list_meetings`` no longer affects the read path.
+    """
+
+    repo = configured_app.state.deps.scan_repo
 
     async def _broken_list(_filter):
         raise RuntimeError("boom")

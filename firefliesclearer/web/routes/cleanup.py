@@ -115,8 +115,8 @@ def _templates(request: Request) -> Jinja2Templates:
 
 
 def _service(deps: SimpleNamespace) -> ScanService:
-    repo = getattr(deps, "scan_repo", deps.client)
-    return ScanService(repo=repo, clock=deps.clock)
+    # Phase 6: deps.scan_repo is always the cache adapter; no fallback needed.
+    return ScanService(repo=deps.scan_repo, clock=deps.clock)
 
 
 def _validate_regex(filters: ScanFilters) -> str | None:

@@ -144,7 +144,9 @@ enabled = true
     assert not isinstance(deps.client, ManifestBackedRepository)
 
 
-def test_build_deps_uses_live_repo_for_scan_when_sync_disabled(tmp_path: Path) -> None:
+def test_build_deps_always_uses_cache_adapter(tmp_path: Path) -> None:
+    """After Phase 6 cleanup, scan_repo is always the cache adapter, regardless
+    of sync.enabled. The flag now only controls scheduler startup."""
     cfg_path = tmp_path / "config.toml"
     archive = tmp_path / "archive"
     archive.mkdir()
@@ -158,7 +160,9 @@ root_dir = "{archive.as_posix()}"
         encoding="utf-8",
     )
     from firefliesclearer.cli._common import build_deps
+    from firefliesclearer.infra.manifest_backed_repo import ManifestBackedRepository
 
     deps = build_deps(config_override=cfg_path)
-    # When disabled, scan_repo equals the live client (no separate adapter)
-    assert deps.scan_repo is deps.client
+    assert isinstance(deps.scan_repo, ManifestBackedRepository)
+    # The mutation client is still the live FirefliesClient
+    assert not isinstance(deps.client, ManifestBackedRepository)

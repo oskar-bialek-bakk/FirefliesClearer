@@ -29,6 +29,8 @@ def configured_client(configured_app) -> TestClient:
 
 
 def _seed_repo_with_meetings(app, count: int) -> list[Meeting]:
+    """Phase 6: seed both the live repo (mutation paths) and the manifest
+    (read paths via the cache adapter)."""
     meetings = [
         Meeting(
             meeting_id=f"m{i}",
@@ -43,6 +45,8 @@ def _seed_repo_with_meetings(app, count: int) -> list[Meeting]:
     repo = InMemoryMeetingRepository(meetings=meetings, api_key="ff_test")
     repo.set_user_email_for_key("ff_test", "oskar@example.com")
     app.state.deps.client = repo
+    for m in meetings:
+        app.state.deps.manifest.upsert_known(m, at=NOW)
     return meetings
 
 
@@ -587,6 +591,8 @@ def _seed_repo_with_varied_meetings(app) -> list[Meeting]:
     repo = InMemoryMeetingRepository(meetings=meetings, api_key="ff_test")
     repo.set_user_email_for_key("ff_test", "oskar@example.com")
     app.state.deps.client = repo
+    for m in meetings:
+        app.state.deps.manifest.upsert_known(m, at=NOW)
     return meetings
 
 
