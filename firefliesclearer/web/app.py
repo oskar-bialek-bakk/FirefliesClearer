@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
@@ -70,6 +71,8 @@ def create_app(
     app.state.repo_factory = repo_factory
     app.state.session_store = SessionStore()
     app.state.operation_registry = OperationRegistry(clock=clock)
+    app.state.sync_lock = asyncio.Lock()
+    app.state.current_sync = None  # set to a CurrentSyncSnapshot when a run is in flight
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.include_router(_heartbeat.router)
