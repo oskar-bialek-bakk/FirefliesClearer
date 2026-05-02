@@ -2032,6 +2032,7 @@ body > main[style*="max-width:640px"] {
 }
 .sync-banner--idle    { background: #f6f8fa; color: #444; }
 .sync-banner--running { background: #fff3cd; color: #663c00; }
+.sync-banner--running.sync-banner--bootstrap { background: #cfe2ff; color: #052c65; }
 .sync-banner__msg { flex: 1; }
 .sync-banner__btn {
   padding: 2px 8px;

@@ -2,7 +2,8 @@
    passes a `sync_status` context dict matching GET /sync/status's JSON shape. #}
 {% set state = sync_status.state if sync_status else "idle" %}
 
-<div id="sync-banner" class="sync-banner sync-banner--{{ state }}"
+<div id="sync-banner"
+     class="sync-banner sync-banner--{{ state }}{% if sync_status and sync_status.is_bootstrap %} sync-banner--bootstrap{% endif %}"
      {% if state == "running" %}
      hx-get="/sync/status/banner"
      hx-trigger="every 2s"
@@ -59,6 +60,16 @@
         <button type="submit" class="sync-banner__btn">&#x21bb; Sync now</button>
       </form>
     {% endif %}
+
+  {% elif state == "running" and sync_status.is_bootstrap %}
+    <span class="sync-banner__spinner" aria-hidden="true"></span>
+    <span class="sync-banner__msg">
+      First-time sync &mdash; fetching your meetings from Fireflies.
+      <strong>{{ sync_status.meetings_seen }}</strong> of approximately
+      <strong>{{ sync_status.estimated_total }}</strong> cached so far.
+      You can use the cleanup wizard already; older meetings will appear as
+      the sync continues.
+    </span>
 
   {% elif state == "running" %}
     <span class="sync-banner__spinner" aria-hidden="true"></span>
