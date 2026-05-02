@@ -168,3 +168,80 @@ async def test_incremental_sync_resurrects_gone_meeting(manifest_db):
     assert outcome.meetings_added == 1
     rec = manifest_db.get("m0")
     assert rec.source_state == "live"
+
+
+async def test_full_sync_walks_all_pages_and_marks_missing_as_gone(manifest_db):
+    # Cache has m0, m1, m2 (all live)
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    for mid in ["m0", "m1", "m2"]:
+        manifest_db.upsert_known(_meeting(mid), at=started)
+
+    # API only returns m0 and m1 (m2 deleted in Fireflies UI)
+    repo = ControllableMeetingRepository(
+        meetings=[_meeting("m0"), _meeting("m1")],
+        page_size=10,
+    )
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    outcome = await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    assert outcome.outcome == "success"
+    assert outcome.meetings_seen == 2
+    assert outcome.meetings_gone == 1
+    assert manifest_db.get("m2").source_state == "gone"
+    assert manifest_db.get("m0").source_state == "live"
+    assert manifest_db.get("m1").source_state == "live"
+
+
+async def test_full_sync_counts_updates_separately_from_seen(manifest_db):
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    manifest_db.upsert_known(_meeting("m0"), at=started)
+
+    # API returns m0 with edited title — counts as updated
+    edited = Meeting(
+        meeting_id="m0",
+        title="Edited Title",
+        meeting_date=datetime(2026, 4, 1, tzinfo=UTC),
+        duration_minutes=30.0,
+        host_email="a@x.com",
+        participant_count=3,
+        tags=(),
+        has_transcript=True,
+    )
+    repo = ControllableMeetingRepository(meetings=[edited], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    outcome = await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    assert outcome.meetings_seen == 1
+    assert outcome.meetings_updated == 1
+    assert outcome.meetings_added == 0
+    assert manifest_db.get("m0").title == "Edited Title"
+
+
+async def test_full_sync_with_empty_repo_marks_all_cached_as_gone(manifest_db):
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    manifest_db.upsert_known(_meeting("m0"), at=started)
+    manifest_db.upsert_known(_meeting("m1"), at=started)
+
+    repo = ControllableMeetingRepository(meetings=[], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    outcome = await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    assert outcome.meetings_gone == 2
+    assert manifest_db.get("m0").source_state == "gone"
+    assert manifest_db.get("m1").source_state == "gone"
+
+
+async def test_full_sync_to_date_pinned_to_run_start(manifest_db):
+    """Full sync passes started_at as to_date so pagination is stable."""
+    repo = ControllableMeetingRepository(meetings=[_meeting("m0")], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    # Every list call should have to_date set (not None)
+    assert repo.list_calls
+    for _skip, _limit, to_date in repo.list_calls:
+        assert to_date is not None

@@ -125,8 +125,9 @@ class SyncService:
 
         if mode == SyncMode.INCREMENTAL:
             return await self._run_incremental(run_id=run_id, started_at=now)
-        # FULL mode added in a later task
-        raise NotImplementedError("Full sync added in Task 7")
+        if mode == SyncMode.FULL:
+            return await self._run_full(run_id=run_id, started_at=now)
+        raise ValueError(f"Unsupported mode: {mode}")
 
     async def _run_incremental(self, *, run_id: int, started_at: datetime) -> SyncOutcome:
         skip = 0
@@ -177,4 +178,72 @@ class SyncService:
             meetings_added=added,
             meetings_updated=0,
             meetings_gone=0,
+        )
+
+    async def _run_full(self, *, run_id: int, started_at: datetime) -> SyncOutcome:
+        # Pin pagination to started_at so meetings created during the run
+        # don't shift the window.
+        to_date = started_at
+        skip = 0
+        seen = added = updated = 0
+        seen_ids: list[str] = []
+
+        while True:
+            page: list[Meeting] = []
+            async for m in self._repo.list_meetings_page(  # type: ignore[attr-defined]
+                skip=skip, limit=PAGE_SIZE, to_date=to_date
+            ):
+                page.append(m)
+            if not page:
+                break
+
+            for raw in page:
+                seen += 1
+                seen_ids.append(raw.meeting_id)
+                existing = self._manifest.get(raw.meeting_id)
+                if existing is None:
+                    self._manifest.upsert_known(raw, at=started_at)
+                    added += 1
+                else:
+                    if self._manifest.update_cache_fields(raw, at=started_at):
+                        updated += 1
+                    if existing.source_state == "gone":
+                        self._manifest.set_source_state(raw.meeting_id, "live")
+                        added += 1
+
+            self._manifest.record_sync_progress(
+                run_id,
+                seen=seen,
+                added=added,
+                updated=updated,
+                gone=0,
+                cursor_skip=skip + len(page),
+                seen_ids=seen_ids,
+            )
+            skip += len(page)
+
+        # Reconciliation: mark cached live rows missing from API as gone.
+        gone = 0
+        seen_set = set(seen_ids)
+        for cached in self._manifest.list_known(include_archived=True, include_gone=False):
+            if cached.meeting_id not in seen_set:
+                self._manifest.set_source_state(cached.meeting_id, "gone")
+                gone += 1
+
+        self._manifest.record_sync_progress(
+            run_id,
+            seen=seen,
+            added=added,
+            updated=updated,
+            gone=gone,
+            cursor_skip=skip,
+            seen_ids=seen_ids,
+        )
+        self._manifest.finalize_sync_run(run_id, outcome="success", at=self._clock.now())
+        return SyncOutcome.success(
+            run_id=run_id,
+            meetings_seen=seen,
+            meetings_added=added,
+            meetings_updated=updated,
+            meetings_gone=gone,
         )
