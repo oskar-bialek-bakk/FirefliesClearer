@@ -105,8 +105,14 @@ class Manifest:
     @classmethod
     def open(cls, path: Path) -> Manifest:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # TODO(phase-5): accept check_same_thread flag for background workers (SSE ops).
-        conn = sqlite3.connect(str(path), isolation_level=None)
+        # check_same_thread=False: required because the connection is cached on
+        # app.state and reused across requests. Under uvicorn this is the same
+        # event-loop thread, but background tasks (SSE op runners) and the
+        # FastAPI threadpool can dispatch sync work from a different thread.
+        # Async route handlers and ops are serialized by the event loop, so
+        # there is no concurrent access to guard against; WAL mode covers any
+        # incidental reader/writer overlap.
+        conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA)

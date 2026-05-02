@@ -154,6 +154,27 @@ def test_finish_writes_config_and_redirects_home(client: TestClient, tmp_path: P
     assert (tmp_path / "config.toml").exists()
 
 
+def test_first_run_dashboard_renders_after_setup(client: TestClient, tmp_path: Path):
+    """After completing setup wizard with no prior config, GET / must render
+    the dashboard (not 500). Regression test for the SQLite thread-pinning bug
+    where lazy ``get_deps`` ran in an anyio threadpool worker and produced a
+    manifest connection that the async route handler could not use.
+    """
+    csrf = client.cookies["ffc_csrf"]
+    client.post("/setup/api-key", data={"_csrf": csrf, "api_key": "ff_good"})
+    client.post(
+        "/setup/archive-root",
+        data={"_csrf": csrf, "archive_root": str(tmp_path / "archive"), "create": "yes"},
+    )
+    client.post(
+        "/setup/defaults",
+        data={"_csrf": csrf, "age_days": "90", "concurrency": "3"},
+    )
+
+    r = client.get("/")
+    assert r.status_code == 200, r.text
+
+
 # ---------------------------------------------------------------------------
 # Coverage gap tests — error branches in setup.py
 # ---------------------------------------------------------------------------

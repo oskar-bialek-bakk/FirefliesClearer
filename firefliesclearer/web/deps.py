@@ -25,13 +25,18 @@ def get_shutdown_coordinator(request: Request) -> ShutdownCoordinator:
     return coord
 
 
-def get_deps(request: Request) -> SimpleNamespace:
+async def get_deps(request: Request) -> SimpleNamespace:
     """Return application deps, building them lazily after first-run setup.
 
     The serve command attaches deps eagerly when the config exists at boot.
     When the wizard writes config mid-process, ``app.state.deps`` starts out
     ``None``; this provider builds the deps the first time a route asks for
     them and caches them on ``app.state.deps`` for subsequent calls.
+
+    Declared ``async`` so the lazy build runs on the event-loop thread,
+    matching every async route handler that consumes the result. A sync
+    provider would dispatch to anyio's threadpool, pinning the manifest's
+    SQLite connection to a worker thread and breaking subsequent route calls.
     """
     deps = getattr(request.app.state, "deps", None)
     if deps is not None:
