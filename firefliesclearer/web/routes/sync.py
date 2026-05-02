@@ -68,6 +68,19 @@ async def status_banner(
     )
 
 
+def maybe_status_for_template(request: Request, deps: SimpleNamespace) -> dict[str, Any] | None:
+    """Return the sync-banner status dict when [sync] enabled, else None.
+
+    Used by other route modules (cleanup, dashboard) to thread ``sync_status``
+    into their template context without coupling them to the JSON endpoint.
+    """
+    config = getattr(deps, "config", None)
+    sync_cfg = getattr(config, "sync", None) if config is not None else None
+    if sync_cfg is None or not getattr(sync_cfg, "enabled", False):
+        return None
+    return _build_status_dict(request, deps)
+
+
 def _build_status_dict(request: Request, deps: SimpleNamespace) -> dict[str, Any]:
     """Build the status payload shared by JSON + HTML banner endpoints."""
     current = getattr(request.app.state, "current_sync", None)

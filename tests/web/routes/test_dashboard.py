@@ -40,6 +40,15 @@ def configured_client(configured_app) -> TestClient:
     return c
 
 
+def test_dashboard_includes_sync_banner(configured_app_sync_on) -> None:
+    """Dashboard renders the sync banner partial when sync is enabled."""
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "sync-banner" in r.text
+
+
 def test_dashboard_renders_with_zero_counts(configured_client: TestClient) -> None:
     r = configured_client.get("/")
     assert r.status_code == 200

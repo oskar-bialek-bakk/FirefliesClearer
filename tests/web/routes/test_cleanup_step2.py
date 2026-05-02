@@ -100,6 +100,21 @@ def test_get_review_renders_table_with_matches(
     assert doc.css_first(".continue-btn") is not None
 
 
+def test_review_page_includes_sync_banner(configured_app_sync_on) -> None:
+    """The review page renders the sync banner partial when sync is enabled."""
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        sid = client.cookies.get("ffc_session", "") or ""
+        _set_filters_in_session(
+            configured_app_sync_on,
+            sid,
+            ScanFilters(older_than_days=30),
+        )
+        r = client.get("/cleanup/review")
+        assert r.status_code == 200
+        assert "sync-banner" in r.text
+
+
 def test_get_review_paginates_at_100(configured_client: TestClient, configured_app) -> None:
     _seed_repo_with_meetings(configured_app, 250)
     _set_filters_in_session(

@@ -9,6 +9,9 @@
 <header class="dashboard__header">
   <h1>Dashboard</h1>
 </header>
+{% if sync_status is defined %}
+  {% include "partials/_sync_banner.html" %}
+{% endif %}
 {% include "partials/state_counts.html" %}
 {% include "partials/last_activity.html" %}
 {% include "partials/needs_attention.html" %}

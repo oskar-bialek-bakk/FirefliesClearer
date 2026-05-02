@@ -462,11 +462,12 @@ def _review_context(
     error: str | None = None,
     sort: str = DEFAULT_SORT,
     direction: str = DEFAULT_DIR,
+    sync_status: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Shared template context for full-page + table-fragment renders."""
     page_ids = {m.meeting.meeting_id for m in matches_page}
     selected_on_page = len(selected_ids & page_ids)
-    return {
+    ctx: dict[str, object] = {
         "matches": matches_page,
         "total": total,
         "page": page,
@@ -480,6 +481,9 @@ def _review_context(
         "sort": sort,
         "dir": direction,
     }
+    if sync_status is not None:
+        ctx["sync_status"] = sync_status
+    return ctx
 
 
 @router.get("/cleanup/review")
@@ -517,6 +521,8 @@ async def step2_review(
         # WHY the table is empty instead of a confusing zero-results page.
         inline_error = scan_error
 
+    from firefliesclearer.web.routes.sync import maybe_status_for_template
+
     ctx = _review_context(
         request,
         matches_page=page_matches,
@@ -527,6 +533,7 @@ async def step2_review(
         error=inline_error,
         sort=sort,
         direction=direction,
+        sync_status=maybe_status_for_template(request, deps),
     )
     template = (
         "cleanup/_review_table.html"

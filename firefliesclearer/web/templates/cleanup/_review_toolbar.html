@@ -4,6 +4,9 @@
    every selection mutation and concatenates it with the table fragment so the
    ``hx-swap-oob`` directive lands a fresh copy in the response.
 #}
+{% if sync_status is defined %}
+  {% include "partials/_sync_banner.html" %}
+{% endif %}
 <div class="review-toolbar" id="review-toolbar" hx-swap-oob="true">
   <span class="selected-count">
     <strong>{{ selected_count }}</strong> of <strong>{{ total }}</strong> selected
