@@ -106,13 +106,13 @@ def _migrate_meetings_columns(conn: sqlite3.Connection) -> None:
     via SCHEMA) or on an existing DB without the columns.
     """
     additions = [
-        ("duration_minutes",  "REAL"),
-        ("host_email",        "TEXT"),
+        ("duration_minutes", "REAL"),
+        ("host_email", "TEXT"),
         ("participant_count", "INTEGER"),
-        ("has_transcript",    "INTEGER"),
-        ("tags_json",         "TEXT"),
-        ("source_state",      "TEXT NOT NULL DEFAULT 'live'"),
-        ("cached_at",         "TEXT"),
+        ("has_transcript", "INTEGER"),
+        ("tags_json", "TEXT"),
+        ("source_state", "TEXT NOT NULL DEFAULT 'live'"),
+        ("cached_at", "TEXT"),
     ]
     for col_name, col_def in additions:
         if not _has_column(conn, "meetings", col_name):
@@ -314,7 +314,7 @@ class Manifest:
             or existing.host_email != meeting.host_email
             or existing.participant_count != meeting.participant_count
             or (existing.has_transcript if existing.has_transcript is not None else None)
-                != meeting.has_transcript
+            != meeting.has_transcript
             or tuple(existing_tags_tuple) != tuple(meeting.tags)
         )
 

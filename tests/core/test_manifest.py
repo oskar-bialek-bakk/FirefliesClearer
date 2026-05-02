@@ -351,9 +351,7 @@ def test_fresh_manifest_has_new_indexes(tmp_path):
 
     Manifest.open(tmp_path / "manifest.db")
     conn = sqlite3.connect(str(tmp_path / "manifest.db"))
-    indexes = {
-        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
-    }
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     conn.close()
     expected = {
         "idx_meetings_source_state",
@@ -415,9 +413,9 @@ def test_migration_adds_snapshot_columns_to_existing_manifest(tmp_path):
     conn.close()
 
     assert {"duration_minutes", "host_email", "source_state", "cached_at"} <= cols
-    assert row[0] == "Old Standup"        # legacy data preserved
-    assert row[1] == "live"               # source_state backfilled by DEFAULT clause
-    assert row[2] is None                 # legacy row has no duration
+    assert row[0] == "Old Standup"  # legacy data preserved
+    assert row[1] == "live"  # source_state backfilled by DEFAULT clause
+    assert row[2] is None  # legacy row has no duration
 
 
 def test_migration_is_idempotent(tmp_path):
@@ -495,9 +493,20 @@ def test_sync_runs_columns(tmp_path):
     cols = {row[1] for row in conn.execute("PRAGMA table_info(sync_runs)")}
     conn.close()
     expected = {
-        "id", "mode", "trigger_source", "started_at", "finished_at", "outcome",
-        "meetings_seen", "meetings_added", "meetings_updated", "meetings_gone",
-        "cursor_skip", "seen_ids_json", "next_resume_at", "error_message",
+        "id",
+        "mode",
+        "trigger_source",
+        "started_at",
+        "finished_at",
+        "outcome",
+        "meetings_seen",
+        "meetings_added",
+        "meetings_updated",
+        "meetings_gone",
+        "cursor_skip",
+        "seen_ids_json",
+        "next_resume_at",
+        "error_message",
     }
     assert expected <= cols, f"missing: {expected - cols}"
 
@@ -592,12 +601,12 @@ def test_upsert_known_refreshes_snapshot_on_existing_row_without_touching_state(
 
     rec = manifest.get("01HW")
     assert rec is not None
-    assert rec.state is MeetingState.ARCHIVED          # state preserved
-    assert rec.title == "Q4 Planning (rescheduled)"    # snapshot updated
+    assert rec.state is MeetingState.ARCHIVED  # state preserved
+    assert rec.title == "Q4 Planning (rescheduled)"  # snapshot updated
     assert rec.duration_minutes == 60.0
     assert rec.participant_count == 8
     assert rec.tags == ("planning", "q4", "rescheduled")
-    assert rec.cached_at == later                      # cached_at refreshed
+    assert rec.cached_at == later  # cached_at refreshed
 
 
 def test_upsert_known_does_not_log_for_existing_row(manifest):
@@ -607,7 +616,7 @@ def test_upsert_known_does_not_log_for_existing_row(manifest):
     manifest.upsert_known(_meeting_with_full_snapshot(), at=later)
 
     log = manifest.state_log("01HW")
-    assert len(log) == 1                                # still just the initial KNOWN log
+    assert len(log) == 1  # still just the initial KNOWN log
 
 
 def test_set_source_state_flips_live_to_gone(manifest):
@@ -779,12 +788,8 @@ def test_list_known_filters_older_than(manifest):
     """older_than=cutoff yields rows whose meeting_date < cutoff."""
     older_dt = datetime(2025, 1, 1, tzinfo=UTC)
     newer_dt = datetime(2026, 6, 1, tzinfo=UTC)
-    manifest.upsert_known(
-        Meeting("old", "old", older_dt, 30.0, "a@x", 2, (), True), at=NOW
-    )
-    manifest.upsert_known(
-        Meeting("new", "new", newer_dt, 30.0, "a@x", 2, (), True), at=NOW
-    )
+    manifest.upsert_known(Meeting("old", "old", older_dt, 30.0, "a@x", 2, (), True), at=NOW)
+    manifest.upsert_known(Meeting("new", "new", newer_dt, 30.0, "a@x", 2, (), True), at=NOW)
 
     cutoff = datetime(2026, 1, 1, tzinfo=UTC)
     ids = sorted(m.meeting_id for m in manifest.list_known(older_than=cutoff))
@@ -810,7 +815,7 @@ def test_list_known_skips_legacy_rows_without_snapshot(manifest):
     list_known cannot reconstruct a valid Meeting, so it skips them.
     Phase 3 deployment will rely on a full sync to populate these.
     """
-    manifest.register(_meeting(), at=NOW)              # legacy entry
+    manifest.register(_meeting(), at=NOW)  # legacy entry
     manifest.upsert_known(_meeting_with_full_snapshot("synced"), at=NOW)
 
     ids = sorted(m.meeting_id for m in manifest.list_known())
