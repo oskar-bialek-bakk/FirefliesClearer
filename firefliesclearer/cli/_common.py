@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.console import Console
@@ -33,7 +33,13 @@ class Deps:
     # MeetingRepository — either the live ``client`` (default) or a
     # ManifestBackedRepository when ``[sync] enabled = true``. ScanService
     # consumes this; mutation paths always use ``client`` directly.
-    scan_repo: object = None
+    # When omitted, defaults to ``client`` so legacy constructors remain
+    # forward-compatible (the read path matches the unchanged behavior).
+    scan_repo: object = field(default=None)
+
+    def __post_init__(self) -> None:
+        if self.scan_repo is None:
+            self.scan_repo = self.client
 
 
 def build_deps(*, config_override: Path | None = None) -> Deps:

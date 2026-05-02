@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import cast
 
 import typer
 from rich.table import Table
@@ -12,6 +13,7 @@ from firefliesclearer.application.scan_service import ScanFilters, ScanService
 from firefliesclearer.cli import _common
 from firefliesclearer.cli._common import console
 from firefliesclearer.cli.app import app
+from firefliesclearer.ports.meeting_repository import MeetingRepository
 
 
 @app.command()
@@ -57,7 +59,7 @@ def scan(
     if filters.is_empty():
         raise typer.BadParameter("Provide at least one filter.")
 
-    svc = ScanService(repo=deps.client, clock=deps.clock)
+    svc = ScanService(repo=cast(MeetingRepository, deps.scan_repo), clock=deps.clock)
 
     result = asyncio.run(svc.scan(filters))
 
