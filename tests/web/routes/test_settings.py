@@ -625,3 +625,20 @@ def test_post_archive_empty_root_dir_shows_error(configured_app: Any) -> None:
     )
     assert r.status_code == 200
     assert "must not be empty" in r.text.lower() or "error" in r.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Local cache sync section (Phase 4 — Trigger UI)
+# ---------------------------------------------------------------------------
+
+
+def test_settings_page_includes_full_resync_button(configured_app_sync_on: Any) -> None:
+    """Settings page renders a Full re-sync button + sync section."""
+    from fastapi.testclient import TestClient
+
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.get("/settings")
+        assert r.status_code == 200
+        assert "Full re-sync" in r.text
+        assert 'hx-vals=\'{"mode":"full","trigger":"manual_settings"}\'' in r.text
