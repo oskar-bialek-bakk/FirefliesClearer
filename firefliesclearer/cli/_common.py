@@ -30,6 +30,10 @@ class Deps:
     manifest: Manifest
     client: FirefliesClient
     clock: Clock
+    # MeetingRepository — either the live ``client`` (default) or a
+    # ManifestBackedRepository when ``[sync] enabled = true``. ScanService
+    # consumes this; mutation paths always use ``client`` directly.
+    scan_repo: object = None
 
 
 def build_deps(*, config_override: Path | None = None) -> Deps:
@@ -49,4 +53,17 @@ def build_deps(*, config_override: Path | None = None) -> Deps:
         renderer=renderer,
         clock=clock,
     )
-    return Deps(config=cfg, pipeline=pipeline, manifest=manifest, client=client, clock=clock)
+    if cfg.sync.enabled:
+        from firefliesclearer.infra.manifest_backed_repo import ManifestBackedRepository
+
+        scan_repo: object = ManifestBackedRepository(manifest)
+    else:
+        scan_repo = client
+    return Deps(
+        config=cfg,
+        pipeline=pipeline,
+        manifest=manifest,
+        client=client,
+        clock=clock,
+        scan_repo=scan_repo,
+    )

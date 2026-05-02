@@ -110,3 +110,55 @@ def test_migrate_v1_rules_auto_converts_v1_config(tmp_path: Path) -> None:
     assert data["presets"][0]["name"] == "Auto cleanup"
     assert data["presets"][0]["filters"]["older_than_days"] == 120
     assert "auto" not in data.get("rules", {})
+
+
+# ---------------------------------------------------------------------------
+# build_deps: scan_repo selection based on [sync] enabled
+# ---------------------------------------------------------------------------
+
+
+def test_build_deps_uses_cache_repo_for_scan_when_sync_enabled(tmp_path: Path) -> None:
+    """When [sync] enabled = true, build_deps assigns a scan_repo distinct from
+    the live client - the cache adapter."""
+    cfg_path = tmp_path / "config.toml"
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    cfg_path.write_text(
+        f"""
+[fireflies]
+api_key = "ff_test"
+[archive]
+root_dir = "{archive.as_posix()}"
+[sync]
+enabled = true
+""",
+        encoding="utf-8",
+    )
+    from firefliesclearer.cli._common import build_deps
+    from firefliesclearer.infra.manifest_backed_repo import ManifestBackedRepository
+
+    deps = build_deps(config_override=cfg_path)
+    assert hasattr(deps, "scan_repo")
+    assert isinstance(deps.scan_repo, ManifestBackedRepository)
+    # The mutation client is still the live FirefliesClient
+    assert not isinstance(deps.client, ManifestBackedRepository)
+
+
+def test_build_deps_uses_live_repo_for_scan_when_sync_disabled(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.toml"
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    cfg_path.write_text(
+        f"""
+[fireflies]
+api_key = "ff_test"
+[archive]
+root_dir = "{archive.as_posix()}"
+""",  # no [sync] section -> default disabled
+        encoding="utf-8",
+    )
+    from firefliesclearer.cli._common import build_deps
+
+    deps = build_deps(config_override=cfg_path)
+    # When disabled, scan_repo equals the live client (no separate adapter)
+    assert deps.scan_repo is deps.client
