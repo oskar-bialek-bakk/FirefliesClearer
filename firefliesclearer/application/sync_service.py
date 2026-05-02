@@ -154,11 +154,27 @@ class SyncService:
         else:
             run_id = self._manifest.start_sync_run(mode=mode.value, trigger=trigger.value, at=now)
 
-        if mode == SyncMode.INCREMENTAL:
-            return await self._run_incremental(run_id=run_id, started_at=now)
-        if mode == SyncMode.FULL:
-            return await self._run_full(run_id=run_id, started_at=now, resume_run_id=resume_run_id)
-        raise ValueError(f"Unsupported mode: {mode}")
+        try:
+            if mode == SyncMode.INCREMENTAL:
+                return await self._run_incremental(run_id=run_id, started_at=now)
+            if mode == SyncMode.FULL:
+                return await self._run_full(
+                    run_id=run_id, started_at=now, resume_run_id=resume_run_id
+                )
+            raise ValueError(f"Unsupported mode: {mode}")
+        except Exception as exc:
+            # An unexpected error must finalize the sync_runs row so /sync/status
+            # and the scheduler can distinguish a crashed run from an active one.
+            # RateLimitedError is caught inside _run_incremental / _run_full and
+            # never reaches here; this branch handles only unexpected failures.
+            with contextlib.suppress(Exception):
+                self._manifest.finalize_sync_run(
+                    run_id,
+                    outcome="failed",
+                    at=self._clock.now(),
+                    error_message=str(exc),
+                )
+            raise
 
     async def _run_incremental(self, *, run_id: int, started_at: datetime) -> SyncOutcome:
         skip = 0

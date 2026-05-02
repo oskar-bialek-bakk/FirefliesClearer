@@ -8,7 +8,9 @@ SyncService.run invocation.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -16,6 +18,12 @@ from firefliesclearer.core.manifest import SyncRunRecord
 from firefliesclearer.infra.config import SyncConfig
 
 logger = logging.getLogger(__name__)
+
+OnRunStarted = Callable[[str, str, datetime], None]
+"""(mode, trigger, started_at) -> None — fired before each scheduler tick runs."""
+
+OnRunFinished = Callable[[], None]
+"""Fired after each tick, success or failure."""
 
 
 def compute_next(
@@ -92,6 +100,9 @@ async def run_scheduler(
     config: SyncConfig,
     clock: Any,  # Clock
     shutdown_event: asyncio.Event,
+    sync_lock: asyncio.Lock | None = None,
+    on_run_started: OnRunStarted | None = None,
+    on_run_finished: OnRunFinished | None = None,
 ) -> None:
     """Drive sync_service.run() at the scheduler's chosen cadence.
 
@@ -102,16 +113,19 @@ async def run_scheduler(
       3. Decide mode (full vs incremental) based on last_full.
       4. Bootstrap detection: if no runs yet AND meetings table is empty,
          override mode to 'full' and trigger to 'bootstrap'.
-      5. Call sync_service.run(...). Catch and log exceptions; failure
+      5. Acquire ``sync_lock`` (if provided) so manual /sync/now triggers
+         see the lock as held and 409 instead of starting a concurrent run.
+      6. Fire ``on_run_started`` so the web layer can mirror the in-flight
+         run on ``app.state.current_sync`` for /sync/status.
+      7. Call sync_service.run(...). Catch and log exceptions; failure
          marks the run failed but does not stop the scheduler.
+      8. Always fire ``on_run_finished`` and release ``sync_lock``.
     """
     from firefliesclearer.application.sync_service import SyncMode, SyncTrigger
 
     while not shutdown_event.is_set():
         try:
             last_run = manifest.get_last_sync_run()
-            # last_full is the most recent finished full run; manifest doesn't
-            # have a dedicated lookup, so we filter in Python (small data).
             last_full = _find_last_completed_full(manifest)
 
             now = clock.now()
@@ -137,12 +151,26 @@ async def run_scheduler(
             resume_id = (
                 last_run.id if last_run is not None and last_run.outcome == "partial" else None
             )
+
+            if sync_lock is not None:
+                await sync_lock.acquire()
             try:
-                await sync_service.run(mode=mode, trigger=trigger, resume_run_id=resume_id)
-            except Exception as exc:
-                # Top-level loop guard: any sync error is logged but does
-                # not stop the scheduler.
-                logger.exception("Scheduler tick failed: %s", exc)
+                if on_run_started is not None:
+                    # Defensive: a buggy hook must not block the actual sync.
+                    with contextlib.suppress(Exception):
+                        on_run_started(mode.value, trigger.value, clock.now())
+                try:
+                    await sync_service.run(mode=mode, trigger=trigger, resume_run_id=resume_id)
+                except Exception as exc:
+                    # Top-level loop guard: any sync error is logged but does
+                    # not stop the scheduler.
+                    logger.exception("Scheduler tick failed: %s", exc)
+            finally:
+                if on_run_finished is not None:
+                    with contextlib.suppress(Exception):
+                        on_run_finished()
+                if sync_lock is not None:
+                    sync_lock.release()
         except Exception as exc:
             # Outer guard: never let the scheduler loop die. Sleep a minute
             # before retrying so we don't spin on persistent failures.
@@ -151,16 +179,14 @@ async def run_scheduler(
 
 
 def _find_last_completed_full(manifest: Any) -> SyncRunRecord | None:
-    """Walk recent sync_runs for the most recent full+success record."""
-    last: SyncRunRecord | None = manifest.get_last_sync_run()
-    if last is None:
-        return None
-    if last.mode == "full" and last.outcome == "success":
-        return last
-    # In Phase 2 we only have get_last_sync_run; querying by mode is a
-    # Phase 4 concern when the UI wants it. For now, accept that
-    # "no recent full" means "treat as never ran a full".
-    return None
+    """Return the most recent successful full sync run, or None.
+
+    Delegates to ``Manifest.get_last_full_sync_run`` so a full followed by
+    incrementals still finds the full — querying ``get_last_sync_run`` alone
+    promoted every tick to a full once an incremental landed.
+    """
+    last_full: SyncRunRecord | None = manifest.get_last_full_sync_run()
+    return last_full
 
 
 def _cache_is_empty(manifest: Any) -> bool:

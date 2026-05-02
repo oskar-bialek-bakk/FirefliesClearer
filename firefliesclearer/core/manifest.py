@@ -520,6 +520,25 @@ class Manifest:
             return None
         return _row_to_sync_run_record(row)
 
+    def get_last_full_sync_run(self) -> SyncRunRecord | None:
+        """Return the most recent successful full reconciliation, or None.
+
+        Used by the scheduler to honour ``full_interval_days``. Distinct from
+        ``get_last_sync_run`` because a full is typically followed by many
+        incrementals, and the scheduler needs the last *full* to gate the
+        next reconciliation tick.
+        """
+        row = self._conn.execute(
+            "SELECT id, mode, trigger_source, started_at, finished_at, outcome, "
+            "  meetings_seen, meetings_added, meetings_updated, meetings_gone, "
+            "  cursor_skip, seen_ids_json, next_resume_at, error_message "
+            "FROM sync_runs WHERE mode = 'full' AND outcome = 'success' "
+            "ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_sync_run_record(row)
+
     def get(self, meeting_id: str) -> MeetingRecord | None:
         cur = self._conn.execute(
             "SELECT meeting_id, title, meeting_date, state, archive_path, "

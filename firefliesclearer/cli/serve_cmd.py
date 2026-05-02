@@ -72,11 +72,16 @@ def serve(
 
             from firefliesclearer.application.sync_service import SyncService
             from firefliesclearer.infra.sync_scheduler import run_scheduler
+            from firefliesclearer.web.routes.sync import make_scheduler_hooks
 
+            snapshot_callback, on_run_started, on_run_finished = make_scheduler_hooks(
+                fastapi_app.state
+            )
             sync_service = SyncService(
                 repo=deps.client,
                 manifest=deps.manifest,
                 clock=deps.clock,
+                snapshot_callback=snapshot_callback,
             )
             shutdown_event = asyncio.Event()
             fastapi_app.state.sync_shutdown_event = shutdown_event
@@ -93,6 +98,9 @@ def serve(
                         config=_cfg.sync,
                         clock=deps.clock,
                         shutdown_event=shutdown_event,
+                        sync_lock=fastapi_app.state.sync_lock,
+                        on_run_started=on_run_started,
+                        on_run_finished=on_run_finished,
                     )
                 )
 

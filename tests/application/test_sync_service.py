@@ -328,3 +328,31 @@ async def test_full_sync_resume_continues_from_cursor(manifest_db):
     assert any(skip == 5 for skip, _, _ in repo2.list_calls)
     # All 10 meetings now in cache
     assert {m.meeting_id for m in manifest_db.list_known()} == {f"m{i}" for i in range(10)}
+
+
+async def test_run_finalizes_sync_run_as_failed_on_unexpected_exception(manifest_db):
+    """Regression: an unexpected exception inside run() must mark the
+    sync_runs row as outcome='failed' before re-raising. Otherwise the row
+    stays at 'running' forever and /sync/status cannot distinguish a crashed
+    sync from an active one.
+    """
+    from collections.abc import AsyncIterator
+
+    class _BoomRepo:
+        async def list_meetings_page(
+            self, *, skip: int, limit: int, to_date: object = None
+        ) -> AsyncIterator[Meeting]:
+            raise RuntimeError("boom")
+            yield  # pragma: no cover — make it a real async generator
+
+    svc = SyncService(repo=_BoomRepo(), manifest=manifest_db, clock=SystemClock())
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await svc.run(mode=SyncMode.INCREMENTAL, trigger=SyncTrigger.SCHEDULED)
+
+    last = manifest_db.get_last_sync_run()
+    assert last is not None
+    assert last.outcome == "failed"
+    assert last.finished_at is not None
+    assert last.error_message is not None
+    assert "boom" in last.error_message

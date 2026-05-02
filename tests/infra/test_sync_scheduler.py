@@ -147,3 +147,94 @@ async def test_run_scheduler_invokes_sync_service_once_then_stops(tmp_path):
     last = manifest.get_last_sync_run()
     assert last is not None
     assert last.outcome == "success"
+
+
+async def test_run_scheduler_acquires_lock_and_calls_lifecycle_hooks(tmp_path):
+    """Regression: scheduler must take ``sync_lock`` for the duration of each
+    tick and call ``on_run_started`` / ``on_run_finished`` so the manual
+    /sync/now route sees the lock as held and ``/sync/status`` reports the
+    in-flight scheduled run instead of ``idle``.
+    """
+    from firefliesclearer.infra.sync_scheduler import run_scheduler
+
+    manifest = Manifest.open(tmp_path / "manifest.db")
+    # Pre-seed cache so bootstrap path doesn't fire (which would force FULL).
+    manifest.upsert_known(_scheduler_meeting("seed"), at=datetime(2026, 4, 1, tzinfo=UTC))
+    repo = ControllableMeetingRepository(meetings=[_scheduler_meeting("a")], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest, clock=SystemClock())
+    cfg = SyncConfig(enabled=True, incremental_interval_hours=24, full_interval_days=0)
+
+    sync_lock = asyncio.Lock()
+    started: list[tuple[str, str]] = []
+    finished: list[bool] = []
+    lock_state_during_run: list[bool] = []
+
+    def on_run_started(mode: str, trigger: str, started_at: datetime) -> None:
+        started.append((mode, trigger))
+        lock_state_during_run.append(sync_lock.locked())
+
+    def on_run_finished() -> None:
+        finished.append(True)
+
+    shutdown = asyncio.Event()
+
+    async def stop_after_one_run() -> None:
+        for _ in range(50):
+            await asyncio.sleep(0.05)
+            if manifest.get_last_sync_run() is not None:
+                shutdown.set()
+                return
+        shutdown.set()
+
+    await asyncio.gather(
+        run_scheduler(
+            sync_service=svc,
+            manifest=manifest,
+            config=cfg,
+            clock=SystemClock(),
+            shutdown_event=shutdown,
+            sync_lock=sync_lock,
+            on_run_started=on_run_started,
+            on_run_finished=on_run_finished,
+        ),
+        stop_after_one_run(),
+    )
+
+    assert len(started) == 1, "on_run_started should fire once per tick"
+    assert started[0] == ("incremental", "scheduled")
+    assert lock_state_during_run == [True], "sync_lock must be held when sync runs"
+    assert finished == [True], "on_run_finished must fire even on the success path"
+    assert not sync_lock.locked(), "sync_lock must be released after the tick"
+
+
+async def test_run_scheduler_releases_lock_when_sync_raises(tmp_path):
+    """The lock + on_run_finished hook must fire even if sync_service.run raises."""
+    from firefliesclearer.infra.sync_scheduler import run_scheduler
+
+    manifest = Manifest.open(tmp_path / "manifest.db")
+    cfg = SyncConfig(enabled=True, incremental_interval_hours=24)
+
+    class _ExplodingService:
+        async def run(self, *, mode: object, trigger: object, resume_run_id: object = None) -> None:
+            raise RuntimeError("kaboom")
+
+    sync_lock = asyncio.Lock()
+    finished: list[bool] = []
+    shutdown = asyncio.Event()
+
+    def on_run_finished() -> None:
+        finished.append(True)
+        shutdown.set()
+
+    await run_scheduler(
+        sync_service=_ExplodingService(),
+        manifest=manifest,
+        config=cfg,
+        clock=SystemClock(),
+        shutdown_event=shutdown,
+        sync_lock=sync_lock,
+        on_run_finished=on_run_finished,
+    )
+
+    assert finished == [True]
+    assert not sync_lock.locked(), "sync_lock must be released after a failed tick"

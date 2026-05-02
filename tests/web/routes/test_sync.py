@@ -145,6 +145,58 @@ def test_post_sync_now_returns_409_when_already_running(configured_app_sync_on) 
             configured_app_sync_on.state.sync_lock.release()
 
 
+def test_post_sync_now_wires_snapshot_callback_even_when_service_preset(
+    configured_app_sync_on, monkeypatch
+) -> None:
+    """Regression: when ``app.state.sync_service`` is already populated (the
+    normal case once the scheduler has booted), /sync/now must still construct
+    a fresh SyncService with the route's ``_update_snapshot`` callback so the
+    banner reflects per-page progress mid-run. Previously the route reused
+    the pre-set service without the callback, leaving the banner at 0/0.
+    """
+    from firefliesclearer.application.sync_service import SyncOutcome
+    from firefliesclearer.web.routes import sync as sync_module
+
+    captured: dict[str, object] = {}
+    real_cls = sync_module.SyncService
+
+    class _Probe(real_cls):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["snapshot_callback"] = kwargs.get("snapshot_callback")
+            super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+        async def run(
+            self, *, mode: object, trigger: object, resume_run_id: int | None = None
+        ) -> SyncOutcome:
+            return SyncOutcome.success(
+                run_id=1,
+                meetings_seen=0,
+                meetings_added=0,
+                meetings_updated=0,
+                meetings_gone=0,
+            )
+
+    monkeypatch.setattr(sync_module, "SyncService", _Probe)
+    configured_app_sync_on.state.sync_service = object()
+
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.post(
+            "/sync/now",
+            data={
+                "_csrf": _csrf(client),
+                "mode": "incremental",
+                "trigger": "manual_review",
+            },
+        )
+        assert r.status_code == 202
+
+    assert "snapshot_callback" in captured, "route did not construct a fresh SyncService"
+    assert captured["snapshot_callback"] is not None, (
+        "snapshot_callback must be wired so the banner publishes mid-run progress"
+    )
+
+
 def test_post_sync_now_rejects_invalid_mode(configured_app_sync_on) -> None:
     with TestClient(configured_app_sync_on) as client:
         client.get("/?token=T", follow_redirects=False)

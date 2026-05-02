@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
@@ -73,6 +74,53 @@ async def status_banner(
         "partials/_sync_banner.html",
         {"sync_status": sync_status},
     )
+
+
+def make_scheduler_hooks(
+    app_state: Any,
+) -> tuple[
+    Callable[[int, int, int, int, int], None],
+    Callable[[str, str, datetime], None],
+    Callable[[], None],
+]:
+    """Build the SyncService + run_scheduler callbacks that coordinate with
+    ``app.state.sync_lock`` and ``app.state.current_sync``.
+
+    Returns ``(snapshot_callback, on_run_started, on_run_finished)``:
+
+    - ``snapshot_callback`` updates the live banner counters between pages.
+    - ``on_run_started`` creates a fresh :class:`CurrentSyncSnapshot` so
+      ``/sync/status`` reports the in-flight scheduled run instead of idle.
+    - ``on_run_finished`` clears the snapshot when the tick ends.
+
+    Without these, scheduler-driven runs are invisible to the UI and can
+    race with /sync/now triggers (the lock is taken inside ``run_scheduler``).
+    """
+
+    def snapshot_callback(
+        seen: int, added: int, updated: int, gone: int, last_page_size: int
+    ) -> None:
+        snap = getattr(app_state, "current_sync", None)
+        if snap is None:
+            return
+        snap.meetings_seen = seen
+        snap.meetings_added = added
+        snap.meetings_updated = updated
+        snap.meetings_gone = gone
+        snap.last_page_size = last_page_size
+
+    def on_run_started(mode: str, trigger: str, started_at: datetime) -> None:
+        app_state.current_sync = CurrentSyncSnapshot(
+            run_id=0,
+            mode=mode,
+            trigger_source=trigger,
+            started_at=started_at,
+        )
+
+    def on_run_finished() -> None:
+        app_state.current_sync = None
+
+    return snapshot_callback, on_run_started, on_run_finished
 
 
 def maybe_status_for_template(request: Request, deps: SimpleNamespace) -> dict[str, Any] | None:
@@ -187,17 +235,15 @@ async def trigger_sync(
         snap.meetings_gone = gone
         snap.last_page_size = last_page_size
 
-    # Prefer a SyncService already on app.state (set by the scheduler), fall
-    # back to building one ad-hoc from deps. The ad-hoc service gets a
-    # snapshot callback so the live banner reflects per-page progress.
-    service: SyncService | None = getattr(request.app.state, "sync_service", None)
-    if service is None:
-        service = SyncService(
-            repo=deps.client,
-            manifest=deps.manifest,
-            clock=deps.clock,
-            snapshot_callback=_update_snapshot,
-        )
+    # Always build a fresh SyncService so this route's ``_update_snapshot``
+    # callback is wired in. Reusing ``app.state.sync_service`` (set by the
+    # scheduler) skipped the callback, leaving the banner at 0/0 mid-run.
+    service = SyncService(
+        repo=deps.client,
+        manifest=deps.manifest,
+        clock=deps.clock,
+        snapshot_callback=_update_snapshot,
+    )
 
     async def _runner() -> None:
         try:

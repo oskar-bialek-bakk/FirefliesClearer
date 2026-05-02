@@ -900,3 +900,43 @@ def test_get_last_sync_run_none_when_empty(manifest):
 
 def test_get_sync_run_unknown_id_returns_none(manifest):
     assert manifest.get_sync_run(999_999) is None
+
+
+def test_get_last_full_sync_run_returns_most_recent_successful_full(manifest):
+    """Regression: scheduler needs to find the last completed *full* run, not
+    the last run overall. After a full followed by an incremental, the
+    'last run' is the incremental, but a recent full still exists."""
+    t0 = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    t1 = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    t2 = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
+
+    full_id = manifest.start_sync_run(mode="full", trigger="scheduled", at=t0)
+    manifest.finalize_sync_run(full_id, outcome="success", at=t0)
+
+    incr_id = manifest.start_sync_run(mode="incremental", trigger="scheduled", at=t1)
+    manifest.finalize_sync_run(incr_id, outcome="success", at=t1)
+
+    # A second full that *failed* must NOT be returned — only successful fulls.
+    fail_id = manifest.start_sync_run(mode="full", trigger="scheduled", at=t2)
+    manifest.finalize_sync_run(fail_id, outcome="failed", at=t2, error_message="boom")
+
+    last_full = manifest.get_last_full_sync_run()
+    assert last_full is not None
+    assert last_full.id == full_id
+    assert last_full.mode == "full"
+    assert last_full.outcome == "success"
+
+
+def test_get_last_full_sync_run_none_when_no_successful_full(manifest):
+    """A run that's still 'running' or 'partial' isn't a completed full."""
+    t0 = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    rid = manifest.start_sync_run(mode="full", trigger="scheduled", at=t0)
+    # left at outcome='running' — should not satisfy the query
+    assert manifest.get_last_full_sync_run() is None
+    manifest.mark_sync_run_partial(
+        rid,
+        at=t0,
+        next_resume_at=datetime(2026, 5, 1, 13, 0, tzinfo=UTC),
+        error_message="rate limited",
+    )
+    assert manifest.get_last_full_sync_run() is None

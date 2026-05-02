@@ -97,8 +97,15 @@ async def get_deps(request: Request) -> SimpleNamespace:
 
         from firefliesclearer.application.sync_service import SyncService
         from firefliesclearer.infra.sync_scheduler import run_scheduler
+        from firefliesclearer.web.routes.sync import make_scheduler_hooks
 
-        sync_service = SyncService(repo=client, manifest=manifest, clock=clock)
+        snapshot_callback, on_run_started, on_run_finished = make_scheduler_hooks(request.app.state)
+        sync_service = SyncService(
+            repo=client,
+            manifest=manifest,
+            clock=clock,
+            snapshot_callback=snapshot_callback,
+        )
         request.app.state.sync_service = sync_service
         request.app.state.sync_shutdown_event = asyncio.Event()
         # Park task on app.state to keep it alive (avoid GC + RUF006).
@@ -109,6 +116,9 @@ async def get_deps(request: Request) -> SimpleNamespace:
                 config=config.sync,
                 clock=clock,
                 shutdown_event=request.app.state.sync_shutdown_event,
+                sync_lock=request.app.state.sync_lock,
+                on_run_started=on_run_started,
+                on_run_finished=on_run_finished,
             )
         )
     return deps
