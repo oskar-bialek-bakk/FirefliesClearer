@@ -2019,3 +2019,38 @@ body > main[style*="max-width:640px"] {
 .history-filters button[type="submit"]:hover {
   background-color: #1d4ed8;
 }
+
+/* ----- Sync banner ------------------------------------------------- */
+.sync-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+.sync-banner--idle    { background: #f6f8fa; color: #444; }
+.sync-banner--running { background: #fff3cd; color: #663c00; }
+.sync-banner__msg { flex: 1; }
+.sync-banner__btn {
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid #888;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.sync-banner__btn:hover { background: #eef; }
+.sync-banner__spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border: 2px solid #663c00;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: sync-spin 0.8s linear infinite;
+}
+@keyframes sync-spin {
+  to { transform: rotate(360deg); }
+}

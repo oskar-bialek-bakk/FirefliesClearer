@@ -1,0 +1,71 @@
+{# Sync banner — included on review page + dashboard. The route handler
+   passes a `sync_status` context dict matching GET /sync/status's JSON shape. #}
+{% set state = sync_status.state if sync_status else "idle" %}
+
+<div id="sync-banner" class="sync-banner sync-banner--{{ state }}"
+     {% if state == "running" %}
+     hx-get="/sync/status/banner"
+     hx-trigger="every 2s"
+     hx-target="this"
+     hx-swap="outerHTML"
+     {% endif %}>
+
+  {% if state == "idle" %}
+    {% if sync_status and sync_status.last_run %}
+      {% set lr = sync_status.last_run %}
+      {% if lr.outcome == "partial" %}
+        <span class="sync-banner__msg">
+          Sync paused: rate-limited until <strong>{{ lr.next_resume_at }}</strong>.
+          {{ lr.meetings_added }} added so far.
+        </span>
+        <form method="post" hx-post="/sync/now"
+              hx-vals='{"mode":"incremental","trigger":"manual_review"}'
+              hx-target="#sync-banner" hx-swap="outerHTML"
+              style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+          <button type="submit" class="sync-banner__btn">&#x21bb; Retry</button>
+        </form>
+      {% elif lr.outcome == "failed" %}
+        <span class="sync-banner__msg">
+          Last sync failed: {{ lr.error_message or "unknown error" }}
+        </span>
+        <form method="post" hx-post="/sync/now"
+              hx-vals='{"mode":"incremental","trigger":"manual_review"}'
+              hx-target="#sync-banner" hx-swap="outerHTML"
+              style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+          <button type="submit" class="sync-banner__btn">&#x21bb; Retry</button>
+        </form>
+      {% else %}
+        <span class="sync-banner__msg">
+          Last synced: <strong>{{ lr.finished_at or "&mdash;" }}</strong>
+          ({{ lr.mode }}, {{ lr.outcome }})
+        </span>
+        <form method="post" hx-post="/sync/now"
+              hx-vals='{"mode":"incremental","trigger":"manual_review"}'
+              hx-target="#sync-banner" hx-swap="outerHTML"
+              style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+          <button type="submit" class="sync-banner__btn">&#x21bb; Sync now</button>
+        </form>
+      {% endif %}
+    {% else %}
+      <span class="sync-banner__msg">No sync run yet.</span>
+      <form method="post" hx-post="/sync/now"
+            hx-vals='{"mode":"incremental","trigger":"manual_review"}'
+            hx-target="#sync-banner" hx-swap="outerHTML"
+            style="display:inline">
+        <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+        <button type="submit" class="sync-banner__btn">&#x21bb; Sync now</button>
+      </form>
+    {% endif %}
+
+  {% elif state == "running" %}
+    <span class="sync-banner__spinner" aria-hidden="true"></span>
+    <span class="sync-banner__msg">
+      Syncing&hellip; <strong>{{ sync_status.meetings_seen }}</strong> seen,
+      <strong>{{ sync_status.meetings_added }}</strong> added,
+      <strong>{{ sync_status.meetings_updated }}</strong> updated.
+    </span>
+  {% endif %}
+</div>
