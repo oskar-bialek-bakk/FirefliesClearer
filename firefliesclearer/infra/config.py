@@ -61,12 +61,35 @@ class RunConfig(BaseModel):
     log_retention_days: int = Field(default=30, ge=1, le=3650)
 
 
+class SyncConfig(BaseModel):
+    """Configuration for the local-cache sync engine.
+
+    enabled: master flag — when False, the scheduler does not start. Phase 6
+        flipped the default to True for fresh installs; existing users see a
+        one-time opt-in banner on the dashboard.
+    incremental_interval_hours: cadence for cheap "find new meetings" passes.
+    full_interval_days: cadence for full reconciliation. 0 disables it
+        (incremental-only mode).
+    full_run_hour_local: local hour-of-day to align full reconciliations
+        to so they don't compete with daytime use.
+    opt_in_dismissed: True once the existing user has chosen "Not now" on
+        the dashboard opt-in banner; suppresses the banner thereafter.
+    """
+
+    enabled: bool = False
+    incremental_interval_hours: int = Field(default=6, ge=1, le=168)
+    full_interval_days: int = Field(default=7, ge=0, le=365)
+    full_run_hour_local: int = Field(default=3, ge=0, le=23)
+    opt_in_dismissed: bool = False
+
+
 class AppConfig(BaseModel):
     fireflies: FirefliesConfig
     archive: ArchiveConfig
     rules: dict[str, Any] = Field(default_factory=dict)
     run: RunConfig = Field(default_factory=RunConfig)
     presets: list[Preset] = Field(default_factory=list)
+    sync: SyncConfig = Field(default_factory=SyncConfig)
 
     @field_validator("rules")
     @classmethod

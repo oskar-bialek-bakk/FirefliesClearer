@@ -78,6 +78,9 @@ def patched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     archive_root = tmp_path / "arch"
     archive_root.mkdir()
     manifest = Manifest.open(archive_root / "manifest.db")
+    # Phase 6: cache adapter is the only read path; mirror live meetings.
+    for m in (old, no_t, fresh):
+        manifest.upsert_known(m, at=NOW)
 
     # Default preset: older_than_days=180
     default_preset = Preset(
@@ -118,12 +121,18 @@ def patched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def test_run_dry_run_with_default_preset(patched) -> None:
-    """Default preset (older_than_days=180): dry-run reports matches, no mutations."""
+    """Default preset (older_than_days=180): dry-run reports matches, no mutations.
+
+    Phase 6: meetings are mirrored into the cache during fixture setup, so
+    "no mutations" means the row stays in KNOWN state — not absent.
+    """
     repo, manifest, config_path = patched
     result = runner.invoke(app, ["run", "--config", str(config_path)])
     assert result.exit_code == 0, result.output
     assert "Default" in result.output
-    assert manifest.get("old") is None
+    rec = manifest.get("old")
+    assert rec is not None
+    assert rec.state is MeetingState.KNOWN
     assert repo.deleted == []
 
 
@@ -133,7 +142,10 @@ def test_run_apply_with_default_preset_deletes_matching(patched) -> None:
     result = runner.invoke(app, ["run", "--apply", "--yes", "--config", str(config_path)])
     assert result.exit_code == 0, result.output
     assert manifest.get("old").state is MeetingState.DELETED
-    assert manifest.get("fresh") is None
+    # "fresh" is mirrored into the cache as KNOWN but not archived/deleted.
+    fresh_rec = manifest.get("fresh")
+    assert fresh_rec is not None
+    assert fresh_rec.state is MeetingState.KNOWN
     assert "old" in repo.deleted
 
 
@@ -161,6 +173,9 @@ def test_run_with_named_preset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     archive_root = tmp_path / "arch"
     archive_root.mkdir()
     manifest = Manifest.open(archive_root / "manifest.db")
+    # Phase 6: mirror live meetings into the cache.
+    for m in (very_old, old, fresh):
+        manifest.upsert_known(m, at=NOW)
 
     foo_preset = Preset(
         name="Foo",
@@ -201,8 +216,10 @@ def test_run_with_named_preset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert result.exit_code == 0, result.output
     assert "Foo" in result.output
     assert "1" in result.output  # only very_old (400d) matches, not old (200d)
-    # dry-run: no mutations
-    assert manifest.get("very_old") is None
+    # Phase 6: dry-run leaves the row in KNOWN state (cached but not archived).
+    rec = manifest.get("very_old")
+    assert rec is not None
+    assert rec.state is MeetingState.KNOWN
     assert repo.deleted == []
 
 
@@ -248,6 +265,9 @@ def test_run_preset_with_no_transcript_filter(
     archive_root = tmp_path / "arch"
     archive_root.mkdir()
     manifest = Manifest.open(archive_root / "manifest.db")
+    # Phase 6: mirror live meetings into the cache.
+    for m in (no_t, fresh):
+        manifest.upsert_known(m, at=NOW)
 
     nt_preset = Preset(
         name="NoTranscript",
@@ -287,7 +307,9 @@ def test_run_preset_with_no_transcript_filter(
     result = runner.invoke(app, ["run", "--config", str(config_path)])
     assert result.exit_code == 0, result.output
     assert "NoTranscript" in result.output
-    # dry-run: no mutations but nt was matched
-    assert manifest.get("nt") is None
+    # Phase 6: dry-run leaves the row in KNOWN state (cached but not archived).
+    rec = manifest.get("nt")
+    assert rec is not None
+    assert rec.state is MeetingState.KNOWN
     assert repo.deleted == []
     assert "1" in result.output  # 1 meeting matched

@@ -43,6 +43,7 @@ from firefliesclearer.cli import (  # noqa: E402,F401
     scan_cmd,
     serve_cmd,
     status_cmd,
+    sync_cmd,
 )
 
 

@@ -176,11 +176,20 @@ class SetupService:
             },
             # Keep the v1 [rules.auto] block synthesised from default_age_days for
             # backward compatibility — Phase 6 migration converts it to a preset.
+            # delete_failed_transcripts defaults to False so the migrated default
+            # preset does not pre-select "no_transcript" (which would silently
+            # narrow archive scope to meetings that failed transcription).
             "rules": {
                 "auto": {
                     "older_than_days": values.default_age_days,
-                    "delete_failed_transcripts": True,
+                    "delete_failed_transcripts": False,
                 },
+            },
+            # Phase 6: fresh installs opt in to the local-cache by default so
+            # the cleanup wizard works during rate-limit windows. Other fields
+            # use SyncConfig defaults.
+            "sync": {
+                "enabled": True,
             },
         }
 

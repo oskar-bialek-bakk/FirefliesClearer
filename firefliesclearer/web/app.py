@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
@@ -28,6 +29,7 @@ from firefliesclearer.web.routes import (
     progress,
     settings,
     setup,
+    sync,
 )
 from firefliesclearer.web.security import SecurityConfig, install_security
 from firefliesclearer.web.sessions import SessionStore
@@ -70,6 +72,8 @@ def create_app(
     app.state.repo_factory = repo_factory
     app.state.session_store = SessionStore()
     app.state.operation_registry = OperationRegistry(clock=clock)
+    app.state.sync_lock = asyncio.Lock()
+    app.state.current_sync = None  # set to a CurrentSyncSnapshot when a run is in flight
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.include_router(_heartbeat.router)
@@ -81,6 +85,7 @@ def create_app(
     app.include_router(progress.router)
     app.include_router(history.router)
     app.include_router(settings.router)
+    app.include_router(sync.router)
 
     # CRITICAL: redirect middleware MUST be added BEFORE install_security
     # so it ends up INNERMOST in the middleware stack. Order in Starlette:

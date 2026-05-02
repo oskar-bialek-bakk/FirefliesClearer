@@ -115,19 +115,24 @@ async def dashboard(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
+    from firefliesclearer.web.routes.sync import maybe_status_for_template
+
     audit = AuditService(manifest=deps.manifest)
     summary = audit.summary()
     rows = _needs_attention_rows(deps.manifest, summary)
-    return _templates(request).TemplateResponse(
-        request,
-        "dashboard.html",
-        {
-            "summary": summary,
-            "needs_attention": rows,
-            "version": request.app.state.version,
-            "MeetingState": MeetingState,
-        },
-    )
+    ctx: dict[str, object] = {
+        "summary": summary,
+        "needs_attention": rows,
+        "version": request.app.state.version,
+        "MeetingState": MeetingState,
+        "show_sync_opt_in": (
+            deps.config.sync.enabled is False and deps.config.sync.opt_in_dismissed is False
+        ),
+    }
+    sync_status = maybe_status_for_template(request, deps)
+    if sync_status is not None:
+        ctx["sync_status"] = sync_status
+    return _templates(request).TemplateResponse(request, "dashboard.html", ctx)
 
 
 @router.get("/sidebar/status")

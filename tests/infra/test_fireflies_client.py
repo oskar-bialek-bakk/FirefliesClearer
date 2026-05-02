@@ -467,6 +467,54 @@ async def test_ping_user_raises_permission_error_on_403(client: FirefliesClient)
         await client.ping_user()
 
 
+@respx.mock
+async def test_list_meetings_page_with_skip_limit_to_date(client: FirefliesClient) -> None:
+    """list_meetings_page sends the GraphQL query with skip + limit + toDate."""
+    route = respx.post(API_URL).mock(
+        return_value=httpx.Response(200, json={"data": {"transcripts": []}})
+    )
+    to_date = datetime(2026, 5, 2, tzinfo=UTC)
+
+    page = [m async for m in client.list_meetings_page(skip=100, limit=25, to_date=to_date)]
+    assert page == []
+    assert route.call_count == 1
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["variables"]["skip"] == 100
+    assert sent["variables"]["limit"] == 25
+    assert sent["variables"]["toDate"] == "2026-05-02T00:00:00+00:00"
+
+
+@respx.mock
+async def test_list_meetings_page_with_no_to_date(client: FirefliesClient) -> None:
+    """list_meetings_page sends toDate=None when caller omits it (incremental)."""
+    route = respx.post(API_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "transcripts": [
+                        {
+                            "id": "m1",
+                            "title": "Meeting m1",
+                            "date": 1714579200000,
+                            "duration": 30,
+                            "host_email": "a@x.com",
+                            "participants": ["a@x.com", "b@y.com"],
+                            "transcript_url": "https://...",
+                        }
+                    ]
+                }
+            },
+        )
+    )
+
+    page = [m async for m in client.list_meetings_page(skip=0, limit=50)]
+    assert len(page) == 1
+    assert page[0].meeting_id == "m1"
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["variables"]["toDate"] is None
+
+
 @pytest.mark.contract
 @pytest.mark.skipif(
     not os.environ.get("FIREFLIES_TEST_API_KEY"),

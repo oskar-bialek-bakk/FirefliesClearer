@@ -297,3 +297,79 @@ def test_preset_name_at_max_length_accepted(tmp_path: Path) -> None:
     cfg = load_config(user_config=user)
     assert len(cfg.presets) == 1
     assert cfg.presets[0].name == "x" * 60
+
+
+def test_sync_config_defaults_when_section_missing(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        """
+[fireflies]
+api_key = "ff_test"
+[archive]
+root_dir = "/tmp/x"
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(user_config=cfg_path)
+    assert cfg.sync.enabled is False
+    assert cfg.sync.incremental_interval_hours == 6
+    assert cfg.sync.full_interval_days == 7
+    assert cfg.sync.full_run_hour_local == 3
+
+
+def test_sync_config_explicit_values(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        """
+[fireflies]
+api_key = "ff_test"
+[archive]
+root_dir = "/tmp/x"
+[sync]
+enabled = true
+incremental_interval_hours = 12
+full_interval_days = 30
+full_run_hour_local = 4
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(user_config=cfg_path)
+    assert cfg.sync.enabled is True
+    assert cfg.sync.incremental_interval_hours == 12
+    assert cfg.sync.full_interval_days == 30
+    assert cfg.sync.full_run_hour_local == 4
+
+
+def test_sync_config_full_interval_days_zero_disables_full(tmp_path):
+    """0 means 'never run full reconciliation' — incremental-only mode."""
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        """
+[fireflies]
+api_key = "ff_test"
+[archive]
+root_dir = "/tmp/x"
+[sync]
+full_interval_days = 0
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(user_config=cfg_path)
+    assert cfg.sync.full_interval_days == 0
+
+
+def test_sync_config_validates_hour_range(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        """
+[fireflies]
+api_key = "ff_test"
+[archive]
+root_dir = "/tmp/x"
+[sync]
+full_run_hour_local = 25
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError):
+        load_config(user_config=cfg_path)

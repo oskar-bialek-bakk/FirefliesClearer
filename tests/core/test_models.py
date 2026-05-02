@@ -66,6 +66,7 @@ def test_artifact_bundle_default_empty():
 
 def test_meeting_state_values():
     assert {s.value for s in MeetingState} == {
+        "known",
         "pending",
         "archived",
         "deleted",

@@ -70,6 +70,9 @@ def _seed_repo_one_meeting(app, *, meeting_id: str, title: str) -> Meeting:
     repo = InMemoryMeetingRepository(meetings=[meeting], api_key="ff_test")
     repo.set_user_email_for_key("ff_test", "oskar@example.com")
     app.state.deps.client = repo
+    # Phase 6: register in the manifest too — scan_repo (cache adapter) is
+    # the only read path now.
+    app.state.deps.manifest.upsert_known(meeting, at=NOW)
     return meeting
 
 
@@ -110,10 +113,15 @@ def test_full_run_archive_fails_then_retry_from_dashboard_succeeds(
         # First archive fails; second succeeds.
         if len(fake.archive_calls) == 1:
             # Walk the meeting through PENDING -> FAILED_DOWNLOAD so the
-            # dashboard sees a real failed record.
+            # dashboard sees a real failed record. After Phase 6, the meeting
+            # may already be in KNOWN state (mirrored from the cache); take
+            # that as the starting point and transition through PENDING.
             if manifest.get(m.meeting_id) is None:
                 manifest.register(m, at=NOW)
             rec = manifest.get(m.meeting_id)
+            if rec is not None and rec.state is MeetingState.KNOWN:
+                manifest.transition(m.meeting_id, to=MeetingState.PENDING, at=NOW)
+                rec = manifest.get(m.meeting_id)
             if rec is not None and rec.state is MeetingState.PENDING:
                 manifest.transition(
                     m.meeting_id,

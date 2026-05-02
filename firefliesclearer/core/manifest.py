@@ -12,8 +12,14 @@ from typing import Any
 
 from firefliesclearer.core.models import Meeting, MeetingState
 
+_VALID_SOURCE_STATES: frozenset[str] = frozenset({"live", "gone"})
+
 LEGAL_TRANSITIONS: Mapping[MeetingState | None, frozenset[MeetingState]] = {
-    None: frozenset({MeetingState.PENDING}),
+    # None → KNOWN is the new sync-driven first-touch path.
+    # None → PENDING is preserved for Manifest.register() backward compat;
+    # both will collapse to None → KNOWN only in Phase 6.
+    None: frozenset({MeetingState.KNOWN, MeetingState.PENDING}),
+    MeetingState.KNOWN: frozenset({MeetingState.PENDING}),
     MeetingState.PENDING: frozenset(
         {
             MeetingState.ARCHIVED,
@@ -45,7 +51,14 @@ CREATE TABLE IF NOT EXISTS meetings (
   archived_at       TEXT,
   verified_at       TEXT,
   deleted_at        TEXT,
-  last_error        TEXT
+  last_error        TEXT,
+  duration_minutes  REAL,
+  host_email        TEXT,
+  participant_count INTEGER,
+  has_transcript    INTEGER,
+  tags_json         TEXT,
+  source_state      TEXT NOT NULL DEFAULT 'live',
+  cached_at         TEXT
 );
 CREATE TABLE IF NOT EXISTS state_log (
   id            INTEGER PRIMARY KEY,
@@ -56,9 +69,60 @@ CREATE TABLE IF NOT EXISTS state_log (
   details       TEXT,
   FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
 );
-CREATE INDEX IF NOT EXISTS idx_meetings_state ON meetings(state);
-CREATE INDEX IF NOT EXISTS idx_state_log_meeting ON state_log(meeting_id);
+CREATE TABLE IF NOT EXISTS sync_runs (
+  id                INTEGER PRIMARY KEY,
+  mode              TEXT    NOT NULL,
+  trigger_source    TEXT    NOT NULL,
+  started_at        TEXT    NOT NULL,
+  finished_at       TEXT,
+  outcome           TEXT    NOT NULL,
+  meetings_seen     INTEGER NOT NULL DEFAULT 0,
+  meetings_added    INTEGER NOT NULL DEFAULT 0,
+  meetings_updated  INTEGER NOT NULL DEFAULT 0,
+  meetings_gone     INTEGER NOT NULL DEFAULT 0,
+  cursor_skip       INTEGER,
+  seen_ids_json     TEXT,
+  next_resume_at    TEXT,
+  error_message     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_meetings_state         ON meetings(state);
+CREATE INDEX IF NOT EXISTS idx_meetings_source_state  ON meetings(source_state);
+CREATE INDEX IF NOT EXISTS idx_meetings_meeting_date  ON meetings(meeting_date);
+CREATE INDEX IF NOT EXISTS idx_meetings_host_email    ON meetings(host_email);
+CREATE INDEX IF NOT EXISTS idx_state_log_meeting      ON state_log(meeting_id);
+CREATE INDEX IF NOT EXISTS idx_sync_runs_started_at   ON sync_runs(started_at DESC);
 """
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
+
+
+def _migrate_meetings_columns(conn: sqlite3.Connection) -> None:
+    """Add Phase 1 snapshot columns to a legacy meetings table.
+
+    Idempotent: safe to call on a fresh DB (where columns already exist
+    via SCHEMA) or on an existing DB without the columns.
+    """
+    additions = [
+        ("duration_minutes", "REAL"),
+        ("host_email", "TEXT"),
+        ("participant_count", "INTEGER"),
+        ("has_transcript", "INTEGER"),
+        ("tags_json", "TEXT"),
+        ("source_state", "TEXT NOT NULL DEFAULT 'live'"),
+        ("cached_at", "TEXT"),
+    ]
+    for col_name, col_def in additions:
+        if not _has_column(conn, "meetings", col_name):
+            conn.execute(f"ALTER TABLE meetings ADD COLUMN {col_name} {col_def}")
+    # Indexes use IF NOT EXISTS so they are safe to re-run, but SCHEMA
+    # only runs them on fresh DBs (executescript on existing DBs is a
+    # no-op for existing CREATEs but we want explicit idempotency here).
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_meetings_source_state ON meetings(source_state)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_meetings_meeting_date ON meetings(meeting_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_meetings_host_email   ON meetings(host_email)")
 
 
 class IllegalStateTransition(Exception):  # noqa: N818
@@ -79,6 +143,15 @@ class MeetingRecord:
     verified_at: datetime | None
     deleted_at: datetime | None
     last_error: str | None
+    # Phase 1 snapshot fields — populated by sync (upsert_known); None for
+    # rows inserted via the legacy register() path until a sync touches them.
+    duration_minutes: float | None = None
+    host_email: str | None = None
+    participant_count: int | None = None
+    has_transcript: bool | None = None
+    tags: tuple[str, ...] | None = None
+    source_state: str = "live"
+    cached_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,12 +163,51 @@ class StateLogEntry:
     details: dict[str, Any] | None
 
 
+@dataclass(frozen=True, slots=True)
+class SyncRunRecord:
+    id: int
+    mode: str
+    trigger_source: str
+    started_at: datetime
+    finished_at: datetime | None
+    outcome: str
+    meetings_seen: int
+    meetings_added: int
+    meetings_updated: int
+    meetings_gone: int
+    cursor_skip: int | None
+    seen_ids_json: str | None
+    next_resume_at: datetime | None
+    error_message: str | None
+
+
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt is not None else None
 
 
 def _parse_iso(text: str | None) -> datetime | None:
     return datetime.fromisoformat(text) if text else None
+
+
+def _row_to_sync_run_record(row: tuple[Any, ...]) -> SyncRunRecord:
+    started_at = _parse_iso(row[3])
+    assert started_at is not None
+    return SyncRunRecord(
+        id=int(row[0]),
+        mode=row[1],
+        trigger_source=row[2],
+        started_at=started_at,
+        finished_at=_parse_iso(row[4]),
+        outcome=row[5],
+        meetings_seen=int(row[6]),
+        meetings_added=int(row[7]),
+        meetings_updated=int(row[8]),
+        meetings_gone=int(row[9]),
+        cursor_skip=row[10],
+        seen_ids_json=row[11],
+        next_resume_at=_parse_iso(row[12]),
+        error_message=row[13],
+    )
 
 
 class Manifest:
@@ -105,11 +217,25 @@ class Manifest:
     @classmethod
     def open(cls, path: Path) -> Manifest:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # TODO(phase-5): accept check_same_thread flag for background workers (SSE ops).
-        conn = sqlite3.connect(str(path), isolation_level=None)
+        # check_same_thread=False: required because the connection is cached on
+        # app.state and reused across requests. Under uvicorn this is the same
+        # event-loop thread, but background tasks (SSE op runners) and the
+        # FastAPI threadpool can dispatch sync work from a different thread.
+        # Async route handlers and ops are serialized by the event loop, so
+        # there is no concurrent access to guard against; WAL mode covers any
+        # incidental reader/writer overlap.
+        conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        # Migrate columns BEFORE executescript so the new indexes in SCHEMA
+        # (idx_meetings_source_state, etc.) can reference columns that exist.
+        # On a fresh DB the meetings table doesn't yet exist, so the helper
+        # is a no-op (PRAGMA table_info returns no rows; ALTER TABLE skipped).
+        # SCHEMA then creates the table with the new columns inline.
+        if _has_column(conn, "meetings", "meeting_id"):
+            _migrate_meetings_columns(conn)
         conn.executescript(SCHEMA)
+        _migrate_meetings_columns(conn)
         return cls(conn)
 
     def close(self) -> None:
@@ -129,11 +255,298 @@ class Manifest:
         )
         self._log(meeting.meeting_id, None, MeetingState.PENDING, at, None)
 
+    def upsert_known(self, meeting: Meeting, *, at: datetime) -> None:
+        """Cache a meeting from the live API.
+
+        If the row does not exist, INSERT with state=KNOWN and a state_log
+        entry. If it exists, refresh snapshot fields and ``cached_at`` but
+        leave ``state`` untouched (so an already-archived meeting whose title
+        was edited in Fireflies retains state=ARCHIVED while the cached title
+        updates).
+        """
+        tags_json = json.dumps(list(meeting.tags))
+        has_transcript = 1 if meeting.has_transcript else 0
+        cached_at_iso = _iso(at)
+
+        existing = self.get(meeting.meeting_id)
+        if existing is None:
+            self._conn.execute(
+                "INSERT INTO meetings ("
+                "  meeting_id, title, meeting_date, state, "
+                "  duration_minutes, host_email, participant_count, has_transcript, "
+                "  tags_json, source_state, cached_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    meeting.meeting_id,
+                    meeting.title,
+                    meeting.meeting_date.isoformat(),
+                    MeetingState.KNOWN.value,
+                    meeting.duration_minutes,
+                    meeting.host_email,
+                    meeting.participant_count,
+                    has_transcript,
+                    tags_json,
+                    "live",
+                    cached_at_iso,
+                ),
+            )
+            self._log(meeting.meeting_id, None, MeetingState.KNOWN, at, None)
+            return
+
+        # Existing row — refresh snapshot fields, do NOT touch state.
+        self._conn.execute(
+            "UPDATE meetings SET "
+            "  title = ?, meeting_date = ?, "
+            "  duration_minutes = ?, host_email = ?, participant_count = ?, "
+            "  has_transcript = ?, tags_json = ?, cached_at = ? "
+            "WHERE meeting_id = ?",
+            (
+                meeting.title,
+                meeting.meeting_date.isoformat(),
+                meeting.duration_minutes,
+                meeting.host_email,
+                meeting.participant_count,
+                has_transcript,
+                tags_json,
+                cached_at_iso,
+                meeting.meeting_id,
+            ),
+        )
+
+    def set_source_state(self, meeting_id: str, source_state: str) -> None:
+        """Flip a row's source_state. No-op for unknown meeting_ids.
+
+        source_state must be 'live' or 'gone' (the two values reachable from
+        the sync engine's reconciliation pass and the purge pipeline).
+        """
+        if source_state not in _VALID_SOURCE_STATES:
+            raise ValueError(
+                f"source_state must be one of {sorted(_VALID_SOURCE_STATES)}; got {source_state!r}"
+            )
+        self._conn.execute(
+            "UPDATE meetings SET source_state = ? WHERE meeting_id = ?",
+            (source_state, meeting_id),
+        )
+
+    def update_cache_fields(self, meeting: Meeting, *, at: datetime) -> bool:
+        """Refresh a row's snapshot columns. Returns True if any field changed.
+
+        Always updates ``cached_at`` to *at*, even when no other field changed,
+        so the freshness timestamp reflects the most recent sync touch. The
+        returned bool tells full-reconciliation callers whether the row counts
+        as ``meetings_updated`` (real change observed) or just ``meetings_seen``.
+
+        Returns False if the meeting_id does not exist in the manifest.
+        """
+        existing = self.get(meeting.meeting_id)
+        if existing is None:
+            return False
+
+        new_tags_json = json.dumps(list(meeting.tags))
+        new_has_transcript = 1 if meeting.has_transcript else 0
+        existing_tags_tuple = existing.tags or ()
+
+        changed = (
+            existing.title != meeting.title
+            or existing.meeting_date != meeting.meeting_date
+            or existing.duration_minutes != meeting.duration_minutes
+            or existing.host_email != meeting.host_email
+            or existing.participant_count != meeting.participant_count
+            or (existing.has_transcript if existing.has_transcript is not None else None)
+            != meeting.has_transcript
+            or tuple(existing_tags_tuple) != tuple(meeting.tags)
+        )
+
+        self._conn.execute(
+            "UPDATE meetings SET "
+            "  title = ?, meeting_date = ?, "
+            "  duration_minutes = ?, host_email = ?, participant_count = ?, "
+            "  has_transcript = ?, tags_json = ?, cached_at = ? "
+            "WHERE meeting_id = ?",
+            (
+                meeting.title,
+                meeting.meeting_date.isoformat(),
+                meeting.duration_minutes,
+                meeting.host_email,
+                meeting.participant_count,
+                new_has_transcript,
+                new_tags_json,
+                _iso(at),
+                meeting.meeting_id,
+            ),
+        )
+        return changed
+
+    def list_known(
+        self,
+        *,
+        older_than: datetime | None = None,
+        include_archived: bool = False,
+        include_gone: bool = False,
+    ) -> Iterable[Meeting]:
+        """Yield Meeting objects for cached rows matching the predicates.
+
+        Default scope: live (source_state='live'), not-yet-archived rows. This
+        is what the cleanup wizard wants — meetings still in Fireflies that
+        we haven't already operated on.
+
+        Predicates:
+          - older_than: yield only rows with meeting_date < this datetime.
+          - include_archived: also yield rows in op_state ARCHIVED / DELETED /
+            DELETED_FAILED / FAILED_*.
+          - include_gone: also yield rows with source_state='gone'.
+
+        Rows lacking snapshot columns (legacy register() entries) are skipped:
+        Meeting requires non-None duration_minutes, host_email, participant_count,
+        has_transcript. Phase 3 deployments rely on a full sync to backfill
+        snapshot fields for any such rows.
+        """
+        sql = (
+            "SELECT meeting_id, title, meeting_date, duration_minutes, host_email, "
+            "       participant_count, has_transcript, tags_json, state, source_state "
+            "FROM meetings "
+            "WHERE duration_minutes IS NOT NULL "
+            "  AND host_email IS NOT NULL "
+            "  AND participant_count IS NOT NULL "
+            "  AND has_transcript IS NOT NULL"
+        )
+        params: list[Any] = []
+        if older_than is not None:
+            sql += " AND meeting_date < ?"
+            params.append(_iso(older_than))
+        if not include_archived:
+            sql += (
+                " AND state NOT IN ('archived', 'deleted', 'deleted_failed', "
+                "'failed_fetch', 'failed_download', 'failed_render', 'failed_verify')"
+            )
+        if not include_gone:
+            sql += " AND source_state = 'live'"
+        sql += " ORDER BY meeting_date DESC"
+
+        rows = self._conn.execute(sql, params).fetchall()
+        for row in rows:
+            meeting_date = _parse_iso(row[2])
+            assert meeting_date is not None
+            tags_raw = row[7]
+            tags = tuple(json.loads(tags_raw)) if tags_raw else ()
+            yield Meeting(
+                meeting_id=row[0],
+                title=row[1],
+                meeting_date=meeting_date,
+                duration_minutes=float(row[3]),
+                host_email=row[4],
+                participant_count=int(row[5]),
+                tags=tags,
+                has_transcript=bool(row[6]),
+            )
+
+    def start_sync_run(self, *, mode: str, trigger: str, at: datetime) -> int:
+        self._conn.execute(
+            "INSERT INTO sync_runs (mode, trigger_source, started_at, outcome) "
+            "VALUES (?, ?, ?, 'running')",
+            (mode, trigger, _iso(at)),
+        )
+        row = self._conn.execute("SELECT last_insert_rowid()").fetchone()
+        return int(row[0])
+
+    def record_sync_progress(
+        self,
+        run_id: int,
+        *,
+        seen: int,
+        added: int,
+        updated: int,
+        gone: int,
+        cursor_skip: int | None,
+        seen_ids: list[str] | None = None,
+    ) -> None:
+        seen_ids_json = json.dumps(seen_ids) if seen_ids is not None else None
+        self._conn.execute(
+            "UPDATE sync_runs SET "
+            "  meetings_seen = ?, meetings_added = ?, meetings_updated = ?, "
+            "  meetings_gone = ?, cursor_skip = ?, seen_ids_json = ? "
+            "WHERE id = ?",
+            (seen, added, updated, gone, cursor_skip, seen_ids_json, run_id),
+        )
+
+    def finalize_sync_run(
+        self,
+        run_id: int,
+        *,
+        outcome: str,
+        at: datetime,
+        error_message: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE sync_runs SET outcome = ?, finished_at = ?, error_message = ? WHERE id = ?",
+            (outcome, _iso(at), error_message, run_id),
+        )
+
+    def mark_sync_run_partial(
+        self,
+        run_id: int,
+        *,
+        at: datetime,
+        next_resume_at: datetime,
+        error_message: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE sync_runs SET outcome = 'partial', finished_at = ?, "
+            "  next_resume_at = ?, error_message = ? "
+            "WHERE id = ?",
+            (_iso(at), _iso(next_resume_at), error_message, run_id),
+        )
+
+    def get_sync_run(self, run_id: int) -> SyncRunRecord | None:
+        row = self._conn.execute(
+            "SELECT id, mode, trigger_source, started_at, finished_at, outcome, "
+            "  meetings_seen, meetings_added, meetings_updated, meetings_gone, "
+            "  cursor_skip, seen_ids_json, next_resume_at, error_message "
+            "FROM sync_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_sync_run_record(row)
+
+    def get_last_sync_run(self) -> SyncRunRecord | None:
+        row = self._conn.execute(
+            "SELECT id, mode, trigger_source, started_at, finished_at, outcome, "
+            "  meetings_seen, meetings_added, meetings_updated, meetings_gone, "
+            "  cursor_skip, seen_ids_json, next_resume_at, error_message "
+            "FROM sync_runs ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_sync_run_record(row)
+
+    def get_last_full_sync_run(self) -> SyncRunRecord | None:
+        """Return the most recent successful full reconciliation, or None.
+
+        Used by the scheduler to honour ``full_interval_days``. Distinct from
+        ``get_last_sync_run`` because a full is typically followed by many
+        incrementals, and the scheduler needs the last *full* to gate the
+        next reconciliation tick.
+        """
+        row = self._conn.execute(
+            "SELECT id, mode, trigger_source, started_at, finished_at, outcome, "
+            "  meetings_seen, meetings_added, meetings_updated, meetings_gone, "
+            "  cursor_skip, seen_ids_json, next_resume_at, error_message "
+            "FROM sync_runs WHERE mode = 'full' AND outcome = 'success' "
+            "ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_sync_run_record(row)
+
     def get(self, meeting_id: str) -> MeetingRecord | None:
         cur = self._conn.execute(
             "SELECT meeting_id, title, meeting_date, state, archive_path, "
             "audio_sha256, summary_sha256, transcript_sha256, archived_at, "
-            "verified_at, deleted_at, last_error FROM meetings WHERE meeting_id = ?",
+            "verified_at, deleted_at, last_error, "
+            "duration_minutes, host_email, participant_count, has_transcript, "
+            "tags_json, source_state, cached_at "
+            "FROM meetings WHERE meeting_id = ?",
             (meeting_id,),
         )
         row = cur.fetchone()
@@ -141,6 +554,8 @@ class Manifest:
             return None
         meeting_date = _parse_iso(row[2])
         assert meeting_date is not None
+        tags_raw = row[16]
+        tags = tuple(json.loads(tags_raw)) if tags_raw else None
         return MeetingRecord(
             meeting_id=row[0],
             title=row[1],
@@ -154,6 +569,13 @@ class Manifest:
             verified_at=_parse_iso(row[9]),
             deleted_at=_parse_iso(row[10]),
             last_error=row[11],
+            duration_minutes=row[12],
+            host_email=row[13],
+            participant_count=row[14],
+            has_transcript=bool(row[15]) if row[15] is not None else None,
+            tags=tags,
+            source_state=row[17] if row[17] is not None else "live",
+            cached_at=_parse_iso(row[18]),
         )
 
     def transition(

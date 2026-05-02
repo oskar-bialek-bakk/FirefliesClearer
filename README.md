@@ -77,6 +77,22 @@ firefliesclearer run --preset "Old meetings" # use a named preset
 
 > **v1:** the hard-coded `[rules.auto]` block is no longer read by `run`. Create equivalent presets via `firefliesclearer serve` → `/presets`. See [CHANGELOG.md](CHANGELOG.md) for the OR → AND filter-semantics change.
 
+## Local cache
+
+FirefliesClearer keeps a local SQLite mirror of your Fireflies meetings in `manifest.db` next to your archive root. Periodic background sync (every 6 h, with a weekly full reconciliation at 03:00 local time) keeps it fresh. The cleanup wizard reads from this cache, so filtering and selection stay responsive even when Fireflies is rate-limiting your account. Archive downloads and deletes still go to the live API.
+
+Fresh installs enable sync by default. Existing v2.0 users see a one-time opt-in banner on the dashboard.
+
+```toml
+[sync]
+enabled = true                    # master flag
+incremental_interval_hours = 6
+full_interval_days = 7            # 0 disables full reconciliation
+full_run_hour_local = 3
+```
+
+Run a sync from the CLI: `firefliesclearer sync [--full]`. Or use the **Sync now** button on the cleanup wizard's review page, the dashboard banner, or the **Full re-sync** button on the settings page.
+
 ## Audit
 
 ```bash
@@ -108,9 +124,12 @@ concurrency = 3
 delete_confirmation_threshold = 10
 default_age_days = 180
 log_retention_days = 30
+
+[sync]
+enabled = true
 ```
 
-Presets (saved filter combinations) are managed via `firefliesclearer serve` → `/presets`, not in the TOML file.
+Presets (saved filter combinations) are managed via `firefliesclearer serve` → `/presets`, not in the TOML file. See **Local cache** above for the full `[sync]` schema.
 
 ## Safety guarantees
 

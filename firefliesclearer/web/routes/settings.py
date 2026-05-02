@@ -90,6 +90,8 @@ async def settings_page(request: Request) -> Response:
 
     run = raw.get("run", {})
     archive = raw.get("archive", {})
+    sync = raw.get("sync", {})
+    sync_enabled = bool(sync.get("enabled", False))
 
     ctx: dict[str, Any] = {
         "archive_root": archive.get("root_dir", ""),
@@ -97,9 +99,19 @@ async def settings_page(request: Request) -> Response:
         "default_age_days": run.get("default_age_days", 180),
         "delete_confirmation_threshold": run.get("delete_confirmation_threshold", 10),
         "log_retention_days": run.get("log_retention_days", 30),
+        "sync_enabled": sync_enabled,
         "flash": None,
         "errors": {},
     }
+    if sync_enabled:
+        # Lazy-imported to avoid a circular import via routes.sync → deps.
+        from firefliesclearer.web.deps import get_deps
+        from firefliesclearer.web.routes.sync import maybe_status_for_template
+
+        deps = await get_deps(request)
+        sync_status = maybe_status_for_template(request, deps)
+        if sync_status is not None:
+            ctx["sync_status"] = sync_status
     return _templates(request).TemplateResponse(request, "settings.html", ctx)
 
 

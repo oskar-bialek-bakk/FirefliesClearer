@@ -210,6 +210,10 @@ ignore_imports = [
     # Transitive path: any_cmd → cli.app → serve_cmd → web.* (Typer registration)
     "firefliesclearer.cli.serve_cmd -> firefliesclearer.web.app",
     "firefliesclearer.cli.serve_cmd -> firefliesclearer.web.lockfile",
+    # serve_cmd reuses make_scheduler_hooks from web/routes/sync to coordinate
+    # the scheduler's lock + current_sync state with the /sync/now endpoint.
+    # Transitive via cli.app → serve_cmd; same Typer-registration leak.
+    "firefliesclearer.cli.serve_cmd -> firefliesclearer.web.routes.sync",
     # Transitive path: any_cmd → cli.app → run_cmd → web.wizard_session
     "firefliesclearer.cli.run_cmd -> firefliesclearer.web.wizard_session",
 ]

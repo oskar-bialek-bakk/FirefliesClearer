@@ -4,23 +4,45 @@
    every selection mutation and concatenates it with the table fragment so the
    ``hx-swap-oob`` directive lands a fresh copy in the response.
 #}
+{% if sync_status is defined %}
+  {% include "partials/_sync_banner.html" %}
+{% endif %}
 <div class="review-toolbar" id="review-toolbar" hx-swap-oob="true">
   <span class="selected-count">
     <strong>{{ selected_count }}</strong> of <strong>{{ total }}</strong> selected
   </span>
 
-  <form class="toolbar-actions" method="post" hx-include="this"
+  {# NOTE: ``hx-include="this"`` on the form would resolve to the requesting
+     button (HTMX evaluates the directive relative to the firing element), so
+     ``_csrf`` and ``page`` would be dropped from the POST body and CSRF would
+     reject the request. Instead, declare ``hx-include="closest form"`` on each
+     button so the resolution is anchored on the form itself. #}
+  <form class="toolbar-actions" method="post"
         hx-target=".review-table" hx-swap="outerHTML">
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
     <input type="hidden" name="page" value="{{ page }}">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="dir" value="{{ dir }}">
 
     <button type="submit" class="btn-select-all"
-      hx-post="/cleanup/review/select-all">Select all on page</button>
+      hx-post="/cleanup/review/select-all"
+      hx-include="closest form"
+      hx-indicator=".review-toolbar-spinner">Select all on page</button>
     <button type="submit" class="btn-deselect-all"
-      hx-post="/cleanup/review/deselect-all">Deselect all on page</button>
+      hx-post="/cleanup/review/deselect-all"
+      hx-include="closest form"
+      hx-indicator=".review-toolbar-spinner">Deselect all on page</button>
     <button type="submit" class="btn-invert"
-      hx-post="/cleanup/review/invert">Invert page</button>
+      hx-post="/cleanup/review/invert"
+      hx-include="closest form"
+      hx-indicator=".review-toolbar-spinner">Invert page</button>
   </form>
+
+  <span class="review-toolbar-spinner htmx-indicator" aria-hidden="true">
+    <span class="spinner-dot"></span>
+    <span class="spinner-dot"></span>
+    <span class="spinner-dot"></span>
+  </span>
 
   {% if total > page_size %}
     <div class="banner-select-all" role="status">
@@ -30,8 +52,13 @@
             hx-target=".review-table" hx-swap="outerHTML"
             style="display:inline">
         <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+        <input type="hidden" name="page" value="{{ page }}">
+        <input type="hidden" name="sort" value="{{ sort }}">
+        <input type="hidden" name="dir" value="{{ dir }}">
         <input type="hidden" name="all" value="true">
-        <button type="submit" class="btn-select-all-matches">
+        <button type="submit" class="btn-select-all-matches"
+          hx-include="closest form"
+          hx-indicator=".review-toolbar-spinner">
           Select all {{ total }}?
         </button>
       </form>

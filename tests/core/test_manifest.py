@@ -30,6 +30,29 @@ def manifest(tmp_path):
     return Manifest.open(tmp_path / "manifest.db")
 
 
+def test_meeting_state_has_known_variant():
+    assert MeetingState.KNOWN.value == "known"
+
+
+def test_legal_transitions_include_none_to_known():
+    from firefliesclearer.core.manifest import LEGAL_TRANSITIONS
+
+    assert MeetingState.KNOWN in LEGAL_TRANSITIONS[None]
+
+
+def test_legal_transitions_include_known_to_pending():
+    from firefliesclearer.core.manifest import LEGAL_TRANSITIONS
+
+    assert MeetingState.PENDING in LEGAL_TRANSITIONS[MeetingState.KNOWN]
+
+
+def test_legal_transitions_preserve_existing_none_to_pending():
+    """register() still works — Phase 1 is strictly additive."""
+    from firefliesclearer.core.manifest import LEGAL_TRANSITIONS
+
+    assert MeetingState.PENDING in LEGAL_TRANSITIONS[None]
+
+
 def test_open_creates_schema(tmp_path):
     db_path = tmp_path / "manifest.db"
     Manifest.open(db_path)
@@ -280,3 +303,640 @@ def test_query_history_filters_by_title_contains(manifest):
     assert len(result) == 2
     result_ids = {r.meeting_id for r in result}
     assert result_ids == {"a", "c"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Local cache schema (snapshot columns + indexes)
+# ---------------------------------------------------------------------------
+
+
+def test_fresh_manifest_has_snapshot_columns(tmp_path):
+    """A newly-opened DB has all Phase 1 snapshot columns + source_state."""
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(meetings)")}
+    conn.close()
+
+    expected_new = {
+        "duration_minutes",
+        "host_email",
+        "participant_count",
+        "has_transcript",
+        "tags_json",
+        "source_state",
+        "cached_at",
+    }
+    assert expected_new <= cols, f"missing: {expected_new - cols}"
+
+
+def test_fresh_manifest_source_state_defaults_to_live(tmp_path):
+    """source_state column defaults to 'live' so existing-row migration is one-step."""
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    row = conn.execute(
+        "SELECT dflt_value FROM pragma_table_info('meetings') WHERE name = 'source_state'"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    # SQLite returns the literal default expression; quoted string in our case.
+    assert row[0] in ("'live'", "live")
+
+
+def test_fresh_manifest_has_new_indexes(tmp_path):
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    conn.close()
+    expected = {
+        "idx_meetings_source_state",
+        "idx_meetings_meeting_date",
+        "idx_meetings_host_email",
+    }
+    assert expected <= indexes, f"missing: {expected - indexes}"
+
+
+def _legacy_v2_schema() -> str:
+    """The pre-Phase-1 SCHEMA, used to simulate an existing manifest."""
+    return """
+    CREATE TABLE meetings (
+      meeting_id        TEXT PRIMARY KEY,
+      title             TEXT NOT NULL,
+      meeting_date      TEXT NOT NULL,
+      state             TEXT NOT NULL,
+      archive_path      TEXT,
+      audio_sha256      TEXT,
+      summary_sha256    TEXT,
+      transcript_sha256 TEXT,
+      archived_at       TEXT,
+      verified_at       TEXT,
+      deleted_at        TEXT,
+      last_error        TEXT
+    );
+    CREATE TABLE state_log (
+      id            INTEGER PRIMARY KEY,
+      meeting_id    TEXT NOT NULL,
+      from_state    TEXT,
+      to_state      TEXT NOT NULL,
+      at            TEXT NOT NULL,
+      details       TEXT
+    );
+    """
+
+
+def test_migration_adds_snapshot_columns_to_existing_manifest(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "manifest.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(_legacy_v2_schema())
+    conn.execute(
+        "INSERT INTO meetings (meeting_id, title, meeting_date, state) VALUES (?, ?, ?, ?)",
+        ("legacy-1", "Old Standup", "2026-01-01T00:00:00+00:00", "archived"),
+    )
+    conn.commit()
+    conn.close()
+
+    Manifest.open(db_path)  # should migrate, not raise
+
+    conn = sqlite3.connect(str(db_path))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(meetings)")}
+    row = conn.execute(
+        "SELECT title, source_state, duration_minutes FROM meetings WHERE meeting_id = ?",
+        ("legacy-1",),
+    ).fetchone()
+    conn.close()
+
+    assert {"duration_minutes", "host_email", "source_state", "cached_at"} <= cols
+    assert row[0] == "Old Standup"  # legacy data preserved
+    assert row[1] == "live"  # source_state backfilled by DEFAULT clause
+    assert row[2] is None  # legacy row has no duration
+
+
+def test_migration_is_idempotent(tmp_path):
+    """Running Manifest.open twice on the same DB does not error."""
+    db_path = tmp_path / "manifest.db"
+    Manifest.open(db_path)
+    Manifest.open(db_path)  # second open must succeed without raising
+    Manifest.open(db_path)  # and a third
+
+
+def test_migration_preserves_existing_indexes(tmp_path):
+    """The legacy idx_meetings_state index must survive migration."""
+    import sqlite3
+
+    db_path = tmp_path / "manifest.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(_legacy_v2_schema())
+    conn.execute("CREATE INDEX idx_meetings_state ON meetings(state)")
+    conn.commit()
+    conn.close()
+
+    Manifest.open(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    conn.close()
+    assert "idx_meetings_state" in indexes
+
+
+def test_meeting_record_has_snapshot_fields(manifest):
+    """MeetingRecord exposes snapshot + source_state fields read from the row."""
+    manifest.register(_meeting(), at=NOW)
+    rec = manifest.get("01HW")
+    assert rec is not None
+    # New attributes exist
+    assert hasattr(rec, "duration_minutes")
+    assert hasattr(rec, "host_email")
+    assert hasattr(rec, "participant_count")
+    assert hasattr(rec, "has_transcript")
+    assert hasattr(rec, "tags")
+    assert hasattr(rec, "source_state")
+    assert hasattr(rec, "cached_at")
+
+
+def test_meeting_record_legacy_register_has_null_snapshot(manifest):
+    """register() still inserts only legacy columns; snapshot fields are None."""
+    manifest.register(_meeting(), at=NOW)
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.duration_minutes is None
+    assert rec.host_email is None
+    assert rec.tags is None
+    # source_state defaults to 'live' via the column DEFAULT clause
+    assert rec.source_state == "live"
+    assert rec.cached_at is None
+
+
+def test_sync_runs_table_exists(tmp_path):
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_runs'"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+
+
+def test_sync_runs_columns(tmp_path):
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(sync_runs)")}
+    conn.close()
+    expected = {
+        "id",
+        "mode",
+        "trigger_source",
+        "started_at",
+        "finished_at",
+        "outcome",
+        "meetings_seen",
+        "meetings_added",
+        "meetings_updated",
+        "meetings_gone",
+        "cursor_skip",
+        "seen_ids_json",
+        "next_resume_at",
+        "error_message",
+    }
+    assert expected <= cols, f"missing: {expected - cols}"
+
+
+def test_sync_runs_started_at_index_exists(tmp_path):
+    import sqlite3
+
+    Manifest.open(tmp_path / "manifest.db")
+    conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    conn.close()
+    assert "idx_sync_runs_started_at" in indexes
+
+
+def test_sync_runs_table_created_on_existing_manifest(tmp_path):
+    """Migration creates sync_runs even when meetings table predates Phase 1."""
+    import sqlite3
+
+    db_path = tmp_path / "manifest.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(_legacy_v2_schema())
+    conn.commit()
+    conn.close()
+
+    Manifest.open(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_runs'"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+
+
+def _meeting_with_full_snapshot(meeting_id: str = "01HW") -> Meeting:
+    return Meeting(
+        meeting_id=meeting_id,
+        title="Q4 Planning",
+        meeting_date=NOW,
+        duration_minutes=45.5,
+        host_email="alice@example.com",
+        participant_count=6,
+        tags=("planning", "q4"),
+        has_transcript=True,
+    )
+
+
+def test_upsert_known_inserts_new_row_in_known_state(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.state is MeetingState.KNOWN
+    assert rec.title == "Q4 Planning"
+    assert rec.duration_minutes == 45.5
+    assert rec.host_email == "alice@example.com"
+    assert rec.participant_count == 6
+    assert rec.has_transcript is True
+    assert rec.tags == ("planning", "q4")
+    assert rec.source_state == "live"
+    assert rec.cached_at == NOW
+
+
+def test_upsert_known_writes_state_log_entry_for_new_row(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    log = manifest.state_log("01HW")
+    assert len(log) == 1
+    assert log[0].from_state is None
+    assert log[0].to_state is MeetingState.KNOWN
+
+
+def test_upsert_known_refreshes_snapshot_on_existing_row_without_touching_state(manifest):
+    """If the row already exists in any state, snapshot fields update; state does not."""
+    # Initial insert as KNOWN
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    # User then archives — moves to PENDING then ARCHIVED
+    manifest.transition("01HW", to=MeetingState.PENDING, at=NOW)
+    manifest.transition("01HW", to=MeetingState.ARCHIVED, at=NOW, archive_path="/tmp/x")
+
+    # Sync runs again, title was edited in Fireflies
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    edited = Meeting(
+        meeting_id="01HW",
+        title="Q4 Planning (rescheduled)",
+        meeting_date=NOW,
+        duration_minutes=60.0,
+        host_email="alice@example.com",
+        participant_count=8,
+        tags=("planning", "q4", "rescheduled"),
+        has_transcript=True,
+    )
+    manifest.upsert_known(edited, at=later)
+
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.state is MeetingState.ARCHIVED  # state preserved
+    assert rec.title == "Q4 Planning (rescheduled)"  # snapshot updated
+    assert rec.duration_minutes == 60.0
+    assert rec.participant_count == 8
+    assert rec.tags == ("planning", "q4", "rescheduled")
+    assert rec.cached_at == later  # cached_at refreshed
+
+
+def test_upsert_known_does_not_log_for_existing_row(manifest):
+    """No state transition happens when refreshing an existing row."""
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=later)
+
+    log = manifest.state_log("01HW")
+    assert len(log) == 1  # still just the initial KNOWN log
+
+
+def test_set_source_state_flips_live_to_gone(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    manifest.set_source_state("01HW", "gone")
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.source_state == "gone"
+
+
+def test_set_source_state_flips_gone_to_live(manifest):
+    """Resurrection edge case: a 'gone' meeting reappears in Fireflies."""
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    manifest.set_source_state("01HW", "gone")
+    manifest.set_source_state("01HW", "live")
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.source_state == "live"
+
+
+def test_set_source_state_leaves_op_state_unchanged(manifest):
+    """source_state and op_state are independent axes."""
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    manifest.transition("01HW", to=MeetingState.PENDING, at=NOW)
+    manifest.transition("01HW", to=MeetingState.ARCHIVED, at=NOW, archive_path="/tmp/x")
+    manifest.set_source_state("01HW", "gone")
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.state is MeetingState.ARCHIVED
+    assert rec.source_state == "gone"
+
+
+def test_set_source_state_unknown_id_is_noop(manifest):
+    """Setting source_state on a non-existent row is silently ignored."""
+    manifest.set_source_state("does-not-exist", "gone")
+    assert manifest.get("does-not-exist") is None
+
+
+def test_set_source_state_rejects_invalid_value(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    with pytest.raises(ValueError, match="source_state"):
+        manifest.set_source_state("01HW", "bogus")
+
+
+def test_update_cache_fields_returns_false_when_nothing_changed(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    changed = manifest.update_cache_fields(_meeting_with_full_snapshot(), at=later)
+    assert changed is False
+
+
+def test_update_cache_fields_refreshes_cached_at_even_when_no_change(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    manifest.update_cache_fields(_meeting_with_full_snapshot(), at=later)
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.cached_at == later
+
+
+def test_update_cache_fields_returns_true_when_title_changed(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    edited = Meeting(
+        meeting_id="01HW",
+        title="Q4 Planning (rescheduled)",
+        meeting_date=NOW,
+        duration_minutes=45.5,
+        host_email="alice@example.com",
+        participant_count=6,
+        tags=("planning", "q4"),
+        has_transcript=True,
+    )
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    changed = manifest.update_cache_fields(edited, at=later)
+    assert changed is True
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.title == "Q4 Planning (rescheduled)"
+
+
+def test_update_cache_fields_returns_true_when_tags_changed(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    edited = Meeting(
+        meeting_id="01HW",
+        title="Q4 Planning",
+        meeting_date=NOW,
+        duration_minutes=45.5,
+        host_email="alice@example.com",
+        participant_count=6,
+        tags=("planning", "q4", "added-tag"),
+        has_transcript=True,
+    )
+    later = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    assert manifest.update_cache_fields(edited, at=later) is True
+
+
+def test_update_cache_fields_does_not_touch_op_state(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot(), at=NOW)
+    manifest.transition("01HW", to=MeetingState.PENDING, at=NOW)
+    edited = Meeting(
+        meeting_id="01HW",
+        title="renamed",
+        meeting_date=NOW,
+        duration_minutes=45.5,
+        host_email="alice@example.com",
+        participant_count=6,
+        tags=("planning", "q4"),
+        has_transcript=True,
+    )
+    manifest.update_cache_fields(edited, at=NOW)
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.state is MeetingState.PENDING
+
+
+def test_update_cache_fields_unknown_id_returns_false(manifest):
+    edited = _meeting_with_full_snapshot("not-in-db")
+    assert manifest.update_cache_fields(edited, at=NOW) is False
+
+
+def test_list_known_yields_known_rows(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    manifest.upsert_known(_meeting_with_full_snapshot("b"), at=NOW)
+
+    ids = sorted(m.meeting_id for m in manifest.list_known())
+    assert ids == ["a", "b"]
+
+
+def test_list_known_skips_archived_by_default(manifest):
+    """Archived meetings are excluded unless explicitly requested."""
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    manifest.upsert_known(_meeting_with_full_snapshot("b"), at=NOW)
+    manifest.transition("b", to=MeetingState.PENDING, at=NOW)
+    manifest.transition("b", to=MeetingState.ARCHIVED, at=NOW)
+
+    ids = sorted(m.meeting_id for m in manifest.list_known())
+    assert ids == ["a"]
+
+
+def test_list_known_includes_archived_when_flag_true(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    manifest.upsert_known(_meeting_with_full_snapshot("b"), at=NOW)
+    manifest.transition("b", to=MeetingState.PENDING, at=NOW)
+    manifest.transition("b", to=MeetingState.ARCHIVED, at=NOW)
+
+    ids = sorted(m.meeting_id for m in manifest.list_known(include_archived=True))
+    assert ids == ["a", "b"]
+
+
+def test_list_known_skips_gone_by_default(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    manifest.upsert_known(_meeting_with_full_snapshot("b"), at=NOW)
+    manifest.set_source_state("b", "gone")
+
+    ids = sorted(m.meeting_id for m in manifest.list_known())
+    assert ids == ["a"]
+
+
+def test_list_known_includes_gone_when_flag_true(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    manifest.upsert_known(_meeting_with_full_snapshot("b"), at=NOW)
+    manifest.set_source_state("b", "gone")
+
+    ids = sorted(m.meeting_id for m in manifest.list_known(include_gone=True))
+    assert ids == ["a", "b"]
+
+
+def test_list_known_filters_older_than(manifest):
+    """older_than=cutoff yields rows whose meeting_date < cutoff."""
+    older_dt = datetime(2025, 1, 1, tzinfo=UTC)
+    newer_dt = datetime(2026, 6, 1, tzinfo=UTC)
+    manifest.upsert_known(Meeting("old", "old", older_dt, 30.0, "a@x", 2, (), True), at=NOW)
+    manifest.upsert_known(Meeting("new", "new", newer_dt, 30.0, "a@x", 2, (), True), at=NOW)
+
+    cutoff = datetime(2026, 1, 1, tzinfo=UTC)
+    ids = sorted(m.meeting_id for m in manifest.list_known(older_than=cutoff))
+    assert ids == ["old"]
+
+
+def test_list_known_returns_meeting_with_all_fields(manifest):
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    meetings = list(manifest.list_known())
+    assert len(meetings) == 1
+    m = meetings[0]
+    assert m.meeting_id == "a"
+    assert m.title == "Q4 Planning"
+    assert m.duration_minutes == 45.5
+    assert m.host_email == "alice@example.com"
+    assert m.participant_count == 6
+    assert m.has_transcript is True
+    assert m.tags == ("planning", "q4")
+
+
+def test_list_known_skips_legacy_rows_without_snapshot(manifest):
+    """Rows from the legacy register() path lack snapshot columns.
+    list_known cannot reconstruct a valid Meeting, so it skips them.
+    Phase 3 deployment will rely on a full sync to populate these.
+    """
+    manifest.register(_meeting(), at=NOW)  # legacy entry
+    manifest.upsert_known(_meeting_with_full_snapshot("synced"), at=NOW)
+
+    ids = sorted(m.meeting_id for m in manifest.list_known())
+    assert ids == ["synced"]
+
+
+def test_list_known_empty_manifest_yields_nothing(manifest):
+    assert list(manifest.list_known()) == []
+
+
+def test_start_sync_run_inserts_running_row(manifest):
+    run_id = manifest.start_sync_run(mode="incremental", trigger="manual_review", at=NOW)
+    assert isinstance(run_id, int)
+    rec = manifest.get_sync_run(run_id)
+    assert rec is not None
+    assert rec.mode == "incremental"
+    assert rec.trigger_source == "manual_review"
+    assert rec.outcome == "running"
+    assert rec.started_at == NOW
+    assert rec.finished_at is None
+
+
+def test_record_sync_progress_updates_counters(manifest):
+    run_id = manifest.start_sync_run(mode="full", trigger="bootstrap", at=NOW)
+    manifest.record_sync_progress(
+        run_id, seen=50, added=45, updated=3, gone=0, cursor_skip=50, seen_ids=["a", "b"]
+    )
+    rec = manifest.get_sync_run(run_id)
+    assert rec.meetings_seen == 50
+    assert rec.meetings_added == 45
+    assert rec.meetings_updated == 3
+    assert rec.meetings_gone == 0
+    assert rec.cursor_skip == 50
+    assert rec.seen_ids_json is not None  # JSON array
+
+
+def test_finalize_sync_run_success(manifest):
+    later = datetime(2026, 5, 2, 13, 0, tzinfo=UTC)
+    run_id = manifest.start_sync_run(mode="incremental", trigger="scheduled", at=NOW)
+    manifest.finalize_sync_run(run_id, outcome="success", at=later)
+    rec = manifest.get_sync_run(run_id)
+    assert rec.outcome == "success"
+    assert rec.finished_at == later
+    assert rec.error_message is None
+
+
+def test_finalize_sync_run_failed_with_error(manifest):
+    run_id = manifest.start_sync_run(mode="full", trigger="scheduled", at=NOW)
+    manifest.finalize_sync_run(run_id, outcome="failed", at=NOW, error_message="API key invalid")
+    rec = manifest.get_sync_run(run_id)
+    assert rec.outcome == "failed"
+    assert rec.error_message == "API key invalid"
+
+
+def test_mark_sync_run_partial(manifest):
+    later = datetime(2026, 5, 2, 13, 0, tzinfo=UTC)
+    resume = datetime(2026, 5, 2, 14, 0, tzinfo=UTC)
+    run_id = manifest.start_sync_run(mode="full", trigger="scheduled", at=NOW)
+    manifest.mark_sync_run_partial(
+        run_id, at=later, next_resume_at=resume, error_message="rate-limited"
+    )
+    rec = manifest.get_sync_run(run_id)
+    assert rec.outcome == "partial"
+    assert rec.finished_at == later
+    assert rec.next_resume_at == resume
+    assert rec.error_message == "rate-limited"
+
+
+def test_get_last_sync_run_returns_most_recent(manifest):
+    earlier = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    later = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    manifest.start_sync_run(mode="incremental", trigger="scheduled", at=earlier)
+    rid2 = manifest.start_sync_run(mode="full", trigger="scheduled", at=later)
+    last = manifest.get_last_sync_run()
+    assert last is not None
+    assert last.id == rid2
+
+
+def test_get_last_sync_run_none_when_empty(manifest):
+    assert manifest.get_last_sync_run() is None
+
+
+def test_get_sync_run_unknown_id_returns_none(manifest):
+    assert manifest.get_sync_run(999_999) is None
+
+
+def test_get_last_full_sync_run_returns_most_recent_successful_full(manifest):
+    """Regression: scheduler needs to find the last completed *full* run, not
+    the last run overall. After a full followed by an incremental, the
+    'last run' is the incremental, but a recent full still exists."""
+    t0 = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    t1 = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    t2 = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
+
+    full_id = manifest.start_sync_run(mode="full", trigger="scheduled", at=t0)
+    manifest.finalize_sync_run(full_id, outcome="success", at=t0)
+
+    incr_id = manifest.start_sync_run(mode="incremental", trigger="scheduled", at=t1)
+    manifest.finalize_sync_run(incr_id, outcome="success", at=t1)
+
+    # A second full that *failed* must NOT be returned — only successful fulls.
+    fail_id = manifest.start_sync_run(mode="full", trigger="scheduled", at=t2)
+    manifest.finalize_sync_run(fail_id, outcome="failed", at=t2, error_message="boom")
+
+    last_full = manifest.get_last_full_sync_run()
+    assert last_full is not None
+    assert last_full.id == full_id
+    assert last_full.mode == "full"
+    assert last_full.outcome == "success"
+
+
+def test_get_last_full_sync_run_none_when_no_successful_full(manifest):
+    """A run that's still 'running' or 'partial' isn't a completed full."""
+    t0 = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    rid = manifest.start_sync_run(mode="full", trigger="scheduled", at=t0)
+    # left at outcome='running' — should not satisfy the query
+    assert manifest.get_last_full_sync_run() is None
+    manifest.mark_sync_run_partial(
+        rid,
+        at=t0,
+        next_resume_at=datetime(2026, 5, 1, 13, 0, tzinfo=UTC),
+        error_message="rate limited",
+    )
+    assert manifest.get_last_full_sync_run() is None

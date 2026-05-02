@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import cast
 
 import typer
 
@@ -14,6 +15,7 @@ from firefliesclearer.cli.app import app
 from firefliesclearer.cli.archive_cmd import _print_report
 from firefliesclearer.core.pipeline import PipelineMode
 from firefliesclearer.infra.config import user_config_path
+from firefliesclearer.ports.meeting_repository import MeetingRepository
 from firefliesclearer.web.wizard_session import filters_from_dict
 
 
@@ -52,7 +54,7 @@ def run(
     filters = filters_from_dict(preset.filters.model_dump())
 
     deps = _common.build_deps(config_override=config)
-    scan_svc = ScanService(repo=deps.client, clock=deps.clock)
+    scan_svc = ScanService(repo=cast(MeetingRepository, deps.scan_repo), clock=deps.clock)
 
     scan_result = asyncio.run(scan_svc.scan(filters))
     matched = [m.meeting for m in scan_result.matches]

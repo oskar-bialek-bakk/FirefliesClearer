@@ -40,6 +40,51 @@ def configured_client(configured_app) -> TestClient:
     return c
 
 
+def test_dashboard_includes_sync_banner(configured_app_sync_on) -> None:
+    """Dashboard renders the sync banner partial when sync is enabled."""
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "sync-banner" in r.text
+
+
+def test_dashboard_shows_opt_in_banner_when_sync_disabled(configured_app) -> None:
+    """Existing users with [sync] enabled = false see the opt-in banner."""
+    with TestClient(configured_app) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "Enable local cache" in r.text
+
+
+def test_dashboard_hides_opt_in_banner_when_sync_enabled(configured_app_sync_on) -> None:
+    """Once sync is enabled, the opt-in banner does not appear."""
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "Enable local cache" not in r.text
+
+
+def test_dashboard_hides_opt_in_banner_after_dismiss(configured_app) -> None:
+    """After dismissal, the banner stays hidden even though sync is disabled."""
+    with TestClient(configured_app) as client:
+        client.get("/?token=T", follow_redirects=False)
+        csrf = client.cookies.get("ffc_csrf", "") or ""
+        # Dismiss the banner
+        client.post(
+            "/sync/enable",
+            data={"_csrf": csrf, "action": "dismiss"},
+            follow_redirects=False,
+        )
+        # Drop cached deps so the next dashboard request reloads the config
+        configured_app.state.deps = None
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "Enable local cache" not in r.text
+
+
 def test_dashboard_renders_with_zero_counts(configured_client: TestClient) -> None:
     r = configured_client.get("/")
     assert r.status_code == 200

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.console import Console
@@ -16,6 +16,7 @@ from firefliesclearer.infra.config import (
     user_config_path,
 )
 from firefliesclearer.infra.fireflies_client import FirefliesClient
+from firefliesclearer.infra.manifest_backed_repo import ManifestBackedRepository
 from firefliesclearer.infra.pdf_renderer import ReportlabSummaryRenderer
 from firefliesclearer.infra.system_clock import SystemClock
 from firefliesclearer.ports.clock import Clock
@@ -30,6 +31,16 @@ class Deps:
     manifest: Manifest
     client: FirefliesClient
     clock: Clock
+    # MeetingRepository for read paths. After Phase 6 cleanup this is always
+    # ``ManifestBackedRepository(manifest)`` — the cache adapter — regardless
+    # of ``[sync] enabled``. The flag now only controls whether the scheduler
+    # runs; the read path is unconditional.  When omitted, defaults to the
+    # cache adapter so legacy callers stay forward-compatible.
+    scan_repo: object = field(default=None)
+
+    def __post_init__(self) -> None:
+        if self.scan_repo is None:
+            self.scan_repo = ManifestBackedRepository(self.manifest)
 
 
 def build_deps(*, config_override: Path | None = None) -> Deps:
@@ -49,4 +60,14 @@ def build_deps(*, config_override: Path | None = None) -> Deps:
         renderer=renderer,
         clock=clock,
     )
-    return Deps(config=cfg, pipeline=pipeline, manifest=manifest, client=client, clock=clock)
+    # Phase 6: cache adapter is unconditional; the [sync] flag now only
+    # controls whether the scheduler runs.
+    scan_repo = ManifestBackedRepository(manifest)
+    return Deps(
+        config=cfg,
+        pipeline=pipeline,
+        manifest=manifest,
+        client=client,
+        clock=clock,
+        scan_repo=scan_repo,
+    )

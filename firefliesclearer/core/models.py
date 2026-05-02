@@ -9,6 +9,7 @@ from typing import Any
 
 
 class MeetingState(StrEnum):
+    KNOWN = "known"
     PENDING = "pending"
     ARCHIVED = "archived"
     DELETED = "deleted"

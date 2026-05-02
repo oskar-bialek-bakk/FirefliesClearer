@@ -54,10 +54,15 @@ def patched_deps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from tests.fakes.fake_renderer import FakeSummaryRenderer
     from tests.fakes.frozen_clock import FrozenClock
 
-    repo = InMemoryMeetingRepository(meetings=_meetings())
+    seeded = _meetings()
+    repo = InMemoryMeetingRepository(meetings=seeded)
     archive_root = tmp_path / "arch"
     archive_root.mkdir()
     manifest = Manifest.open(archive_root / "manifest.db")
+    # Phase 6: cache adapter is the only read path, so seed the manifest
+    # with the same meetings the live repo holds.
+    for m in seeded:
+        manifest.upsert_known(m, at=NOW)
     cfg = AppConfig.model_validate(
         {
             "fireflies": {"api_key": "x"},

@@ -128,6 +128,29 @@ class FirefliesClient:
                         return
                 skip += len(items)
 
+    async def list_meetings_page(
+        self,
+        *,
+        skip: int,
+        limit: int,
+        to_date: datetime | None = None,
+    ) -> AsyncIterator[Meeting]:
+        """Single-page list — used by SyncService for explicit pagination control.
+
+        Differs from :meth:`list_meetings` (which auto-paginates internally):
+        the caller drives ``skip`` and ``limit``, so SyncService can persist a
+        cursor and resume after a rate-limit interruption.
+        """
+        async with self._http() as client:
+            variables: dict[str, Any] = {
+                "limit": limit,
+                "skip": skip,
+                "toDate": to_date.isoformat() if to_date is not None else None,
+            }
+            payload = await self._request(client, LIST_QUERY, variables, op="list_meetings_page")
+            for raw in payload.get("data", {}).get("transcripts", []) or []:
+                yield _meeting_from_raw(raw)
+
     async def fetch_artifacts(self, meeting_id: str) -> ArtifactBundle:
         async with self._http() as client:
             payload = await self._request(

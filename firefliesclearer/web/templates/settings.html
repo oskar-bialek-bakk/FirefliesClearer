@@ -170,7 +170,35 @@
   </details>
 
   {# ------------------------------------------------------------------ #}
-  {# 6. Danger zone #}
+  {# 6. Local cache sync (Phase 4 — flag-gated) #}
+  {# ------------------------------------------------------------------ #}
+  {% if sync_enabled %}
+  <details class="settings-section" id="section-sync" open>
+    <summary><h2>Local cache sync</h2></summary>
+    <div class="settings-section__body">
+      <p class="settings-hint">
+        Periodic background sync keeps your local cache up to date. The
+        cleanup wizard reads from this cache so it stays usable even when
+        Fireflies is rate-limiting your account.
+      </p>
+      <p>
+        <strong>Full re-sync</strong> walks every meeting in Fireflies and
+        reconciles updates and deletions. Slow (~N API calls); run this when
+        you want to detect title edits or meetings deleted in the Fireflies UI.
+      </p>
+      <form method="post" hx-post="/sync/now"
+            hx-vals='{"mode":"full","trigger":"manual_settings"}'
+            hx-target="#sync-banner" hx-swap="outerHTML">
+        <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+        <button type="submit" class="btn-secondary">Full re-sync now</button>
+      </form>
+      {% include "partials/_sync_banner.html" %}
+    </div>
+  </details>
+  {% endif %}
+
+  {# ------------------------------------------------------------------ #}
+  {# 7. Danger zone #}
   {# ------------------------------------------------------------------ #}
   <details class="settings-section settings-section--danger" id="section-danger">
     <summary><h2>Danger zone</h2></summary>

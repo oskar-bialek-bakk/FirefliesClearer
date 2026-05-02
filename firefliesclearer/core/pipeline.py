@@ -69,7 +69,7 @@ class Pipeline:
             ok = await self._archive(meeting, report)
             if not ok:
                 return
-        elif existing.state.value.startswith("failed_"):
+        elif existing.state is MeetingState.KNOWN or existing.state.value.startswith("failed_"):
             self._manifest.transition(
                 meeting.meeting_id,
                 to=MeetingState.PENDING,
@@ -210,7 +210,7 @@ class Pipeline:
         if existing is None or existing.state is MeetingState.PENDING:
             self._manifest.register(meeting, at=self._clock.now())
             await self._archive(meeting, report)
-        elif existing.state.value.startswith("failed_"):
+        elif existing.state is MeetingState.KNOWN or existing.state.value.startswith("failed_"):
             self._manifest.transition(
                 meeting.meeting_id,
                 to=MeetingState.PENDING,

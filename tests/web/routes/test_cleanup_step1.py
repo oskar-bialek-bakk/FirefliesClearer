@@ -23,7 +23,11 @@ def configured_client(configured_app) -> TestClient:
 
 
 def _seed_old_meetings(app, count: int, days_old: int = 90) -> None:
-    """Replace the app's repo with one pre-seeded with *count* old meetings."""
+    """Replace the app's repo with one pre-seeded with *count* old meetings.
+
+    Phase 6: also register meetings in the manifest so the cache-backed
+    scan_repo (the only read path now) returns them.
+    """
     when = NOW - timedelta(days=days_old)
     meetings = [
         Meeting(
@@ -39,6 +43,8 @@ def _seed_old_meetings(app, count: int, days_old: int = 90) -> None:
     fresh = InMemoryMeetingRepository(meetings=meetings, api_key="ff_test")
     fresh.set_user_email_for_key("ff_test", "oskar@example.com")
     app.state.deps.client = fresh
+    for m in meetings:
+        app.state.deps.manifest.upsert_known(m, at=NOW)
 
 
 # ---------------------------------------------------------------------------
@@ -157,9 +163,13 @@ def test_preview_count_zero_matches_renders_zero(configured_client: TestClient) 
 
 
 def test_preview_count_handles_repo_error(configured_client: TestClient, configured_app) -> None:
-    """When the repo blows up, the fragment renders an inline error."""
+    """When the repo blows up, the fragment renders an inline error.
 
-    repo = configured_app.state.deps.client
+    Phase 6: scan goes through ``scan_repo`` (the cache adapter), so patch
+    that — patching ``client.list_meetings`` no longer affects the read path.
+    """
+
+    repo = configured_app.state.deps.scan_repo
 
     async def _broken_list(_filter):
         raise RuntimeError("boom")
@@ -259,3 +269,53 @@ def test_post_cleanup_with_invalid_regex_renders_error(configured_client: TestCl
     assert "Invalid regex" in r.text
     doc = HTMLParser(r.text)
     assert doc.css_first("form#cleanup-step1-form") is not None
+
+
+# ---------------------------------------------------------------------------
+# Regression: when [sync] enabled = true, wizard reads must hit the cache only
+# ---------------------------------------------------------------------------
+
+
+def test_wizard_step1_filter_does_not_call_live_api_when_sync_on(
+    configured_app_sync_on,
+) -> None:
+    """The wizard's filter step reads from cache — zero ``list_meetings`` on
+    the live FirefliesClient when ``[sync] enabled = true``."""
+    # Pre-populate cache with one old meeting so the filter has something to match.
+    manifest = configured_app_sync_on.state.deps.manifest
+    manifest.upsert_known(
+        Meeting(
+            meeting_id="m1",
+            title="Old standup",
+            meeting_date=datetime(2025, 1, 1, tzinfo=UTC),
+            duration_minutes=10.0,
+            host_email="a@x",
+            participant_count=2,
+            tags=(),
+            has_transcript=True,
+        ),
+        at=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+
+    client = TestClient(configured_app_sync_on)
+    client.get("/?token=T", follow_redirects=False)
+    csrf = client.cookies.get("ffc_csrf", "") or ""
+
+    # Step 1: submit the filter form (POST /cleanup) — older_than_days = 365.
+    r = client.post(
+        "/cleanup",
+        data={
+            "_csrf": csrf,
+            "older_than_days": "365",
+            "older_than_days_enabled": "on",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (200, 302, 303, 307), r.text
+
+    # Step 2: load the review page — this would ordinarily call list_meetings.
+    r = client.get("/cleanup/review")
+    assert r.status_code == 200, r.text
+
+    # The live client.list_meetings was NEVER called.
+    assert configured_app_sync_on.state.tracking_repo.list_call_count == 0

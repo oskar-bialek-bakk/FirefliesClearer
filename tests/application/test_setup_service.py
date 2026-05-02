@@ -215,7 +215,9 @@ def test_write_config_stores_rules_auto_block(tmp_path: Path) -> None:
         data = tomllib.load(f)
     auto = data["rules"]["auto"]
     assert auto["older_than_days"] == 90
-    assert auto["delete_failed_transcripts"] is True
+    # Fresh setup writes False so the migrated default preset does NOT
+    # pre-select no_transcript (which would silently narrow archive scope).
+    assert auto["delete_failed_transcripts"] is False
 
 
 def test_write_config_stores_run_and_defaults_blocks(tmp_path: Path) -> None:
@@ -289,6 +291,23 @@ def test_write_config_creates_parent_dirs(tmp_path: Path) -> None:
     values = _default_values(tmp_path)
     svc.write_config(cfg_path, values)
     assert cfg_path.exists()
+
+
+def test_write_config_enables_sync_for_fresh_installs(tmp_path: Path) -> None:
+    """Phase 6: fresh installs get [sync] enabled = true so the local-cache
+    benefits ship by default without users flipping a flag."""
+    svc = _make_service()
+    cfg_path = tmp_path / "config.toml"
+    values = SetupValues(
+        api_key="ff_key",
+        archive_root=tmp_path / "arch",
+        default_age_days=90,
+        concurrency=5,
+    )
+    svc.write_config(cfg_path, values)
+    with open(cfg_path, "rb") as f:
+        data = tomllib.load(f)
+    assert data["sync"]["enabled"] is True
 
 
 # ---------------------------------------------------------------------------

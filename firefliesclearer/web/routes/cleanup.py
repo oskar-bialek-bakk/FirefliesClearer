@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Final
 
@@ -74,6 +75,14 @@ AUDIO_KBPS = 64
 
 PAGE_SIZE = 100
 
+# Sort axes available on the review table (Step 2). The default — date desc —
+# matches the implicit ordering produced by ``ScanService.scan`` so existing
+# tests / users see no behavior change without a query param.
+SORT_FIELDS: Final[frozenset[str]] = frozenset({"date", "duration", "title"})
+SORT_DIRECTIONS: Final[frozenset[str]] = frozenset({"asc", "desc"})
+DEFAULT_SORT: Final[str] = "date"
+DEFAULT_DIR: Final[str] = "desc"
+
 # Sentinel for "leave this field unchanged" in ``_set_wizard``. Distinct from
 # ``None``, which is a legitimate value for ``operation_id`` (it clears the id
 # when transitioning to the next step).
@@ -106,7 +115,8 @@ def _templates(request: Request) -> Jinja2Templates:
 
 
 def _service(deps: SimpleNamespace) -> ScanService:
-    return ScanService(repo=deps.client, clock=deps.clock)
+    # Phase 6: deps.scan_repo is always the cache adapter; no fallback needed.
+    return ScanService(repo=deps.scan_repo, clock=deps.clock)
 
 
 def _validate_regex(filters: ScanFilters) -> str | None:
@@ -395,6 +405,52 @@ def _page_slice(
     return matches[start:end], total, pages
 
 
+def _normalize_sort(raw: object) -> str:
+    """Coerce a raw ``?sort=...`` value to a known axis (default: date)."""
+    if raw is None:
+        return DEFAULT_SORT
+    candidate = str(raw).strip().lower()
+    return candidate if candidate in SORT_FIELDS else DEFAULT_SORT
+
+
+def _normalize_dir(raw: object) -> str:
+    """Coerce a raw ``?dir=...`` value to ``asc`` or ``desc`` (default: desc)."""
+    if raw is None:
+        return DEFAULT_DIR
+    candidate = str(raw).strip().lower()
+    return candidate if candidate in SORT_DIRECTIONS else DEFAULT_DIR
+
+
+def _sort_matches(
+    matches: tuple[ScanMatch, ...], *, sort: str, direction: str
+) -> tuple[ScanMatch, ...]:
+    """Return ``matches`` reordered by the chosen axis.
+
+    Unknown ``sort`` / ``direction`` values fall back to date / desc so a stray
+    URL never produces a 500. Sort is stable; ties retain the input ordering.
+    """
+    axis = _normalize_sort(sort)
+    descending = _normalize_dir(direction) == "desc"
+
+    if axis == "title":
+        return tuple(sorted(matches, key=_title_key, reverse=descending))
+    if axis == "duration":
+        return tuple(sorted(matches, key=_duration_key, reverse=descending))
+    return tuple(sorted(matches, key=_date_key, reverse=descending))
+
+
+def _title_key(match: ScanMatch) -> str:
+    return match.meeting.title.casefold()
+
+
+def _duration_key(match: ScanMatch) -> float:
+    return match.meeting.duration_minutes
+
+
+def _date_key(match: ScanMatch) -> datetime:
+    return match.meeting.meeting_date
+
+
 def _review_context(
     request: Request,
     *,
@@ -404,11 +460,14 @@ def _review_context(
     pages: int,
     selected_ids: set[str],
     error: str | None = None,
+    sort: str = DEFAULT_SORT,
+    direction: str = DEFAULT_DIR,
+    sync_status: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Shared template context for full-page + table-fragment renders."""
     page_ids = {m.meeting.meeting_id for m in matches_page}
     selected_on_page = len(selected_ids & page_ids)
-    return {
+    ctx: dict[str, object] = {
         "matches": matches_page,
         "total": total,
         "page": page,
@@ -419,7 +478,12 @@ def _review_context(
         "selected_on_page": selected_on_page,
         "step": "review",
         "error": error,
+        "sort": sort,
+        "dir": direction,
     }
+    if sync_status is not None:
+        ctx["sync_status"] = sync_status
+    return ctx
 
 
 @router.get("/cleanup/review")
@@ -439,9 +503,12 @@ async def step2_review(
         return _redirect("/cleanup")
 
     page = _safe_page(request.query_params.get("page"))
+    sort = _normalize_sort(request.query_params.get("sort"))
+    direction = _normalize_dir(request.query_params.get("dir"))
     result, scan_error = await _scan_or_error(deps, filters)
     matches = result.matches if result is not None else ()
-    page_matches, total, pages = _page_slice(matches, page)
+    sorted_matches = _sort_matches(matches, sort=sort, direction=direction)
+    page_matches, total, pages = _page_slice(sorted_matches, page)
 
     selected_ids = wizard_session.get_selected(_store(request), _sid(request))
 
@@ -454,6 +521,8 @@ async def step2_review(
         # WHY the table is empty instead of a confusing zero-results page.
         inline_error = scan_error
 
+    from firefliesclearer.web.routes.sync import maybe_status_for_template
+
     ctx = _review_context(
         request,
         matches_page=page_matches,
@@ -462,6 +531,9 @@ async def step2_review(
         pages=pages,
         selected_ids=selected_ids,
         error=inline_error,
+        sort=sort,
+        direction=direction,
+        sync_status=maybe_status_for_template(request, deps),
     )
     template = (
         "cleanup/_review_table.html"
@@ -482,8 +554,15 @@ async def review_toggle(
     if filters is None:
         return _redirect("/cleanup")
 
+    form = await request.form()
+    page = _safe_page(form.get("page"))
+    sort = _normalize_sort(form.get("sort"))
+    direction = _normalize_dir(form.get("dir"))
+
     wizard_session.toggle_in_selection(_store(request), _sid(request), meeting_id)
-    return await _render_table_fragment(request, deps, filters)
+    return await _render_table_fragment(
+        request, deps, filters, page=page, sort=sort, direction=direction
+    )
 
 
 @router.post("/cleanup/review/select-all")
@@ -499,22 +578,27 @@ async def review_select_all(
     form = await request.form()
     use_all = _is_true(form.get("all"))
     page = _safe_page(form.get("page"))
+    sort = _normalize_sort(form.get("sort"))
+    direction = _normalize_dir(form.get("dir"))
 
     result = await _scan_or_none(deps, filters)
     matches = result.matches if result is not None else ()
+    sorted_matches = _sort_matches(matches, sort=sort, direction=direction)
 
     if use_all:
-        ids = [m.meeting.meeting_id for m in matches]
+        ids = [m.meeting.meeting_id for m in sorted_matches]
         wizard_session.replace_selection(_store(request), _sid(request), ids)
     else:
-        page_matches, _total, _pages = _page_slice(matches, page)
+        page_matches, _total, _pages = _page_slice(sorted_matches, page)
         wizard_session.add_to_selection(
             _store(request),
             _sid(request),
             [m.meeting.meeting_id for m in page_matches],
         )
 
-    return await _render_table_fragment(request, deps, filters, page=page)
+    return await _render_table_fragment(
+        request, deps, filters, page=page, sort=sort, direction=direction
+    )
 
 
 @router.post("/cleanup/review/deselect-all")
@@ -530,20 +614,25 @@ async def review_deselect_all(
     form = await request.form()
     use_all = _is_true(form.get("all"))
     page = _safe_page(form.get("page"))
+    sort = _normalize_sort(form.get("sort"))
+    direction = _normalize_dir(form.get("dir"))
 
     if use_all:
         wizard_session.replace_selection(_store(request), _sid(request), [])
     else:
         result = await _scan_or_none(deps, filters)
         matches = result.matches if result is not None else ()
-        page_matches, _total, _pages = _page_slice(matches, page)
+        sorted_matches = _sort_matches(matches, sort=sort, direction=direction)
+        page_matches, _total, _pages = _page_slice(sorted_matches, page)
         wizard_session.remove_from_selection(
             _store(request),
             _sid(request),
             [m.meeting.meeting_id for m in page_matches],
         )
 
-    return await _render_table_fragment(request, deps, filters, page=page)
+    return await _render_table_fragment(
+        request, deps, filters, page=page, sort=sort, direction=direction
+    )
 
 
 @router.post("/cleanup/review/invert")
@@ -558,10 +647,13 @@ async def review_invert(
 
     form = await request.form()
     page = _safe_page(form.get("page"))
+    sort = _normalize_sort(form.get("sort"))
+    direction = _normalize_dir(form.get("dir"))
 
     result = await _scan_or_none(deps, filters)
     matches = result.matches if result is not None else ()
-    page_matches, _total, _pages = _page_slice(matches, page)
+    sorted_matches = _sort_matches(matches, sort=sort, direction=direction)
+    page_matches, _total, _pages = _page_slice(sorted_matches, page)
 
     page_ids = {m.meeting.meeting_id for m in page_matches}
     selected = wizard_session.get_selected(_store(request), _sid(request))
@@ -572,7 +664,9 @@ async def review_invert(
     on_page = [m.meeting.meeting_id for m in page_matches if m.meeting.meeting_id in inverted]
     wizard_session.replace_selection(_store(request), _sid(request), off_page + on_page)
 
-    return await _render_table_fragment(request, deps, filters, page=page)
+    return await _render_table_fragment(
+        request, deps, filters, page=page, sort=sort, direction=direction
+    )
 
 
 @router.get("/cleanup/meeting/{meeting_id}/panel")
@@ -612,12 +706,15 @@ async def step2_submit(
 
     form = await request.form()
     page = _safe_page(form.get("page"))
+    sort = _normalize_sort(form.get("sort"))
+    direction = _normalize_dir(form.get("dir"))
 
     selected_ids = wizard_session.get_selected(_store(request), _sid(request))
     if not selected_ids:
         result = await _scan_or_none(deps, filters)
         matches = result.matches if result is not None else ()
-        page_matches, total, pages = _page_slice(matches, page)
+        sorted_matches = _sort_matches(matches, sort=sort, direction=direction)
+        page_matches, total, pages = _page_slice(sorted_matches, page)
         ctx = _review_context(
             request,
             matches_page=page_matches,
@@ -626,6 +723,8 @@ async def step2_submit(
             pages=pages,
             selected_ids=set(),
             error="Please select at least one meeting before continuing.",
+            sort=sort,
+            direction=direction,
         )
         return _templates(request).TemplateResponse(
             request,
@@ -656,6 +755,8 @@ async def _render_table_fragment(
     filters: ScanFilters,
     *,
     page: int | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
 ) -> Response:
     """Re-run the scan and render the table + OOB toolbar fragment.
 
@@ -668,9 +769,14 @@ async def _render_table_fragment(
     in ``firefliesclearer.web.security``; no per-route check is needed.
     """
     page = page if page is not None else _safe_page(request.query_params.get("page"))
+    sort = sort if sort is not None else _normalize_sort(request.query_params.get("sort"))
+    direction = (
+        direction if direction is not None else _normalize_dir(request.query_params.get("dir"))
+    )
     result = await _scan_or_none(deps, filters)
     matches = result.matches if result is not None else ()
-    page_matches, total, pages = _page_slice(matches, page)
+    sorted_matches = _sort_matches(matches, sort=sort, direction=direction)
+    page_matches, total, pages = _page_slice(sorted_matches, page)
     selected_ids = wizard_session.get_selected(_store(request), _sid(request))
     ctx = _review_context(
         request,
@@ -679,6 +785,8 @@ async def _render_table_fragment(
         page=page,
         pages=pages,
         selected_ids=selected_ids,
+        sort=sort,
+        direction=direction,
     )
     templates = _templates(request)
     table_html = templates.get_template("cleanup/_review_table.html").render(

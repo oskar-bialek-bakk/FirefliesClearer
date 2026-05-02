@@ -65,6 +65,48 @@ def serve(
         sweep_old_logs(_cfg.archive.root_dir, _cfg.run.log_retention_days)
         deps = _common.build_deps(config_override=config_path)
         fastapi_app.state.deps = deps
+
+        # Phase 2: start sync scheduler when enabled (default false)
+        if _cfg.sync.enabled:
+            import asyncio
+
+            from firefliesclearer.application.sync_service import SyncService
+            from firefliesclearer.infra.sync_scheduler import run_scheduler
+            from firefliesclearer.web.routes.sync import make_scheduler_hooks
+
+            snapshot_callback, on_run_started, on_run_finished = make_scheduler_hooks(
+                fastapi_app.state
+            )
+            sync_service = SyncService(
+                repo=deps.client,
+                manifest=deps.manifest,
+                clock=deps.clock,
+                snapshot_callback=snapshot_callback,
+            )
+            shutdown_event = asyncio.Event()
+            fastapi_app.state.sync_shutdown_event = shutdown_event
+            fastapi_app.state.sync_service = sync_service
+
+            @fastapi_app.on_event("startup")
+            async def _start_sync_scheduler() -> None:
+                # Reference held on app.state so the task is not garbage-
+                # collected mid-run (RUF006).
+                fastapi_app.state.sync_scheduler_task = asyncio.create_task(
+                    run_scheduler(
+                        sync_service=sync_service,
+                        manifest=deps.manifest,
+                        config=_cfg.sync,
+                        clock=deps.clock,
+                        shutdown_event=shutdown_event,
+                        sync_lock=fastapi_app.state.sync_lock,
+                        on_run_started=on_run_started,
+                        on_run_finished=on_run_finished,
+                    )
+                )
+
+            @fastapi_app.on_event("shutdown")
+            async def _stop_sync_scheduler() -> None:
+                shutdown_event.set()
     else:
         fastapi_app.state.deps = None
 
