@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
-from firefliesclearer.core.manifest import SyncRunRecord
+from firefliesclearer.application.sync_service import SyncService
+from firefliesclearer.core.manifest import Manifest, SyncRunRecord
+from firefliesclearer.core.models import Meeting
 from firefliesclearer.infra.config import SyncConfig
 from firefliesclearer.infra.sync_scheduler import compute_next, decide_mode
+from firefliesclearer.infra.system_clock import SystemClock
+from tests.fakes.controllable_repository import ControllableMeetingRepository
 
 
 def _run(
@@ -93,3 +98,52 @@ def test_decide_mode_returns_incremental_when_full_disabled():
     now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
     cfg = SyncConfig(enabled=True, full_interval_days=0)
     assert decide_mode(last_full=None, config=cfg, now=now) == "incremental"
+
+
+def _scheduler_meeting(mid: str) -> Meeting:
+    return Meeting(
+        meeting_id=mid,
+        title=mid,
+        meeting_date=datetime(2026, 4, 1, tzinfo=UTC),
+        duration_minutes=30.0,
+        host_email="a@x",
+        participant_count=2,
+        tags=(),
+        has_transcript=True,
+    )
+
+
+async def test_run_scheduler_invokes_sync_service_once_then_stops(tmp_path):
+    """The scheduler runs a single sync when shutdown_event is set early."""
+    from firefliesclearer.infra.sync_scheduler import run_scheduler
+
+    manifest = Manifest.open(tmp_path / "manifest.db")
+    repo = ControllableMeetingRepository(meetings=[_scheduler_meeting("a")], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest, clock=SystemClock())
+    cfg = SyncConfig(enabled=True, incremental_interval_hours=24)
+
+    shutdown = asyncio.Event()
+
+    async def stop_after_one_run():
+        # Wait for one sync to complete then signal shutdown
+        for _ in range(50):
+            await asyncio.sleep(0.05)
+            if manifest.get_last_sync_run() is not None:
+                shutdown.set()
+                return
+        shutdown.set()
+
+    await asyncio.gather(
+        run_scheduler(
+            sync_service=svc,
+            manifest=manifest,
+            config=cfg,
+            clock=SystemClock(),
+            shutdown_event=shutdown,
+        ),
+        stop_after_one_run(),
+    )
+
+    last = manifest.get_last_sync_run()
+    assert last is not None
+    assert last.outcome == "success"

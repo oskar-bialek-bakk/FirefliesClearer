@@ -7,8 +7,10 @@ SyncService.run invocation.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
+from typing import Any
 
 from firefliesclearer.core.manifest import SyncRunRecord
 from firefliesclearer.infra.config import SyncConfig
@@ -81,3 +83,88 @@ def _next_local_hour_at_or_after(*, threshold: datetime, hour_local: int) -> dat
     if candidate < threshold:
         candidate += timedelta(days=1)
     return candidate
+
+
+async def run_scheduler(
+    *,
+    sync_service: Any,  # SyncService
+    manifest: Any,  # Manifest
+    config: SyncConfig,
+    clock: Any,  # Clock
+    shutdown_event: asyncio.Event,
+) -> None:
+    """Drive sync_service.run() at the scheduler's chosen cadence.
+
+    Loops until shutdown_event is set. On every iteration:
+      1. Read last_run + last_full from manifest.
+      2. Compute next_tick. If now < next_tick, sleep until next_tick
+         (with shutdown event check).
+      3. Decide mode (full vs incremental) based on last_full.
+      4. Bootstrap detection: if no runs yet AND meetings table is empty,
+         override mode to 'full' and trigger to 'bootstrap'.
+      5. Call sync_service.run(...). Catch and log exceptions; failure
+         marks the run failed but does not stop the scheduler.
+    """
+    from firefliesclearer.application.sync_service import SyncMode, SyncTrigger
+
+    while not shutdown_event.is_set():
+        try:
+            last_run = manifest.get_last_sync_run()
+            # last_full is the most recent finished full run; manifest doesn't
+            # have a dedicated lookup, so we filter in Python (small data).
+            last_full = _find_last_completed_full(manifest)
+
+            now = clock.now()
+            next_tick = compute_next(last_run=last_run, last_full=last_full, config=config, now=now)
+            if next_tick > now:
+                wait_seconds = (next_tick - now).total_seconds()
+                try:
+                    await asyncio.wait_for(shutdown_event.wait(), timeout=wait_seconds)
+                    return  # shutdown signaled during sleep
+                except TimeoutError:
+                    pass
+
+            # Bootstrap: no runs ever and cache empty -> force full sync
+            is_bootstrap = last_run is None and _cache_is_empty(manifest)
+            if is_bootstrap:
+                mode = SyncMode.FULL
+                trigger = SyncTrigger.BOOTSTRAP
+            else:
+                mode_str = decide_mode(last_full=last_full, config=config, now=clock.now())
+                mode = SyncMode.FULL if mode_str == "full" else SyncMode.INCREMENTAL
+                trigger = SyncTrigger.SCHEDULED
+
+            resume_id = (
+                last_run.id if last_run is not None and last_run.outcome == "partial" else None
+            )
+            try:
+                await sync_service.run(mode=mode, trigger=trigger, resume_run_id=resume_id)
+            except Exception as exc:
+                # Top-level loop guard: any sync error is logged but does
+                # not stop the scheduler.
+                logger.exception("Scheduler tick failed: %s", exc)
+        except Exception as exc:
+            # Outer guard: never let the scheduler loop die. Sleep a minute
+            # before retrying so we don't spin on persistent failures.
+            logger.exception("Scheduler loop error: %s", exc)
+            await asyncio.sleep(60)
+
+
+def _find_last_completed_full(manifest: Any) -> SyncRunRecord | None:
+    """Walk recent sync_runs for the most recent full+success record."""
+    last: SyncRunRecord | None = manifest.get_last_sync_run()
+    if last is None:
+        return None
+    if last.mode == "full" and last.outcome == "success":
+        return last
+    # In Phase 2 we only have get_last_sync_run; querying by mode is a
+    # Phase 4 concern when the UI wants it. For now, accept that
+    # "no recent full" means "treat as never ran a full".
+    return None
+
+
+def _cache_is_empty(manifest: Any) -> bool:
+    """Return True if there are no meetings cached at all."""
+    for _ in manifest.list_known(include_archived=True, include_gone=True):
+        return False
+    return True
