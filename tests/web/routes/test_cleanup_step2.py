@@ -410,3 +410,346 @@ def test_post_review_with_selection_redirects_to_archive(
     assert r.headers["location"] == "/cleanup/archive"
     state = configured_app.state.session_store.get(sid)["wizard"]
     assert state["step"] == "archive"
+
+
+# ---------------------------------------------------------------------------
+# B1 — Toggle checkbox HTMX wiring regression
+# ---------------------------------------------------------------------------
+
+
+def test_toggle_form_uses_plain_change_trigger(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Regression for B1: ``hx-trigger="change from:find input"`` resolved to
+    the FIRST descendant input, which is the hidden ``_csrf`` input. Hidden
+    inputs don't bubble change events when the visible checkbox flips, so the
+    trigger never fired and the toolbar count never updated. The fix uses a
+    plain ``change`` trigger so the form catches the bubbling change event
+    from the checkbox.
+    """
+    _seed_repo_with_meetings(configured_app, 3)
+    _set_filters_in_session(
+        configured_app,
+        _sid_from_client(configured_client),
+        ScanFilters(older_than_days=30),
+    )
+    r = configured_client.get("/cleanup/review")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    rows = doc.css(".row[data-meeting-id]")
+    assert rows
+    form = rows[0].css_first("td.col-check form")
+    assert form is not None
+    trigger = form.attributes.get("hx-trigger")
+    assert trigger == "change", (
+        f"hx-trigger should be 'change' (so the bubbling checkbox event fires "
+        f"the form post), got {trigger!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# B2 — Bulk-action buttons must include form fields when posting via HTMX
+# ---------------------------------------------------------------------------
+
+
+def test_toolbar_buttons_use_closest_form_include(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Regression for B2: ``hx-include="this"`` on the form is inherited by
+    buttons but resolved relative to the *requesting element* (the button), so
+    button posts dropped ``_csrf`` and ``page`` fields and silently 403'd.
+    Each button now declares ``hx-include="closest form"``.
+    """
+    _seed_repo_with_meetings(configured_app, 3)
+    _set_filters_in_session(
+        configured_app,
+        _sid_from_client(configured_client),
+        ScanFilters(older_than_days=30),
+    )
+    r = configured_client.get("/cleanup/review")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    toolbar_form = doc.css_first(".review-toolbar form.toolbar-actions")
+    assert toolbar_form is not None
+    # Form-level hx-include must NOT be "this" (it would resolve to the button).
+    assert toolbar_form.attributes.get("hx-include") != "this"
+    # Each bulk-action button must declare hx-include="closest form".
+    for selector in (
+        "button.btn-select-all",
+        "button.btn-deselect-all",
+        "button.btn-invert",
+    ):
+        btn = toolbar_form.css_first(selector)
+        assert btn is not None, f"missing button {selector}"
+        assert btn.attributes.get("hx-include") == "closest form", (
+            f"{selector} must use hx-include='closest form'; "
+            f"got {btn.attributes.get('hx-include')!r}"
+        )
+
+
+def test_select_all_posts_via_button_form_data(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Live integration: a submission containing the form fields the button's
+    ``hx-include="closest form"`` would carry must pass CSRF and update the
+    selection. This is the behavior the broken version silently failed to do.
+    """
+    _seed_repo_with_meetings(configured_app, 5)
+    sid = _sid_from_client(configured_client)
+    _set_filters_in_session(configured_app, sid, ScanFilters(older_than_days=30))
+    r = configured_client.post(
+        "/cleanup/review/select-all",
+        data={"_csrf": _csrf(configured_client), "page": "1"},
+    )
+    assert r.status_code == 200, r.text
+
+
+# ---------------------------------------------------------------------------
+# B3 — Spinner indicator for in-flight bulk operations
+# ---------------------------------------------------------------------------
+
+
+def test_toolbar_includes_htmx_indicator(configured_client: TestClient, configured_app) -> None:
+    """Regression for B3: bulk-action buttons must reference an
+    ``hx-indicator`` so users see progress while the slow ``_scan_or_none``
+    call is in flight.
+    """
+    _seed_repo_with_meetings(configured_app, 3)
+    _set_filters_in_session(
+        configured_app,
+        _sid_from_client(configured_client),
+        ScanFilters(older_than_days=30),
+    )
+    r = configured_client.get("/cleanup/review")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    spinner = doc.css_first(".review-toolbar-spinner")
+    assert spinner is not None, "expected an .review-toolbar-spinner element"
+    assert "htmx-indicator" in (spinner.attributes.get("class") or "")
+    for selector in (
+        "button.btn-select-all",
+        "button.btn-deselect-all",
+        "button.btn-invert",
+    ):
+        btn = doc.css_first(f".review-toolbar form.toolbar-actions {selector}")
+        assert btn is not None
+        assert btn.attributes.get("hx-indicator") == ".review-toolbar-spinner"
+
+
+# ---------------------------------------------------------------------------
+# B4 — Sortable columns
+# ---------------------------------------------------------------------------
+
+
+def _seed_repo_with_varied_meetings(app) -> list[Meeting]:
+    """Three meetings whose date / duration / title each yield distinct orderings."""
+    meetings = [
+        Meeting(
+            meeting_id="ma",
+            title="Charlie",
+            meeting_date=datetime(2026, 1, 10, tzinfo=UTC),
+            duration_minutes=60.0,
+            host_email="h@x",
+            participant_count=3,
+        ),
+        Meeting(
+            meeting_id="mb",
+            title="Alpha",
+            meeting_date=datetime(2026, 3, 1, tzinfo=UTC),
+            duration_minutes=15.0,
+            host_email="h@x",
+            participant_count=3,
+        ),
+        Meeting(
+            meeting_id="mc",
+            title="Bravo",
+            meeting_date=datetime(2026, 2, 5, tzinfo=UTC),
+            duration_minutes=45.0,
+            host_email="h@x",
+            participant_count=3,
+        ),
+    ]
+    repo = InMemoryMeetingRepository(meetings=meetings, api_key="ff_test")
+    repo.set_user_email_for_key("ff_test", "oskar@example.com")
+    app.state.deps.client = repo
+    return meetings
+
+
+@pytest.mark.parametrize(
+    ("sort", "direction", "expected"),
+    [
+        # Date defaults to descending (newest first).
+        ("date", "desc", ["mb", "mc", "ma"]),
+        ("date", "asc", ["ma", "mc", "mb"]),
+        ("duration", "desc", ["ma", "mc", "mb"]),
+        ("duration", "asc", ["mb", "mc", "ma"]),
+        ("title", "asc", ["mb", "mc", "ma"]),  # Alpha, Bravo, Charlie
+        ("title", "desc", ["ma", "mc", "mb"]),
+    ],
+)
+def test_sort_matches_orders_by_axis(sort: str, direction: str, expected: list[str]) -> None:
+    """Table-driven coverage for the ``_sort_matches`` helper.
+
+    Each axis (date / duration / title) is exercised in both directions.
+    """
+    from firefliesclearer.application.scan_service import ScanMatch
+    from firefliesclearer.web.routes.cleanup import _sort_matches
+
+    base = [
+        Meeting(
+            meeting_id="ma",
+            title="Charlie",
+            meeting_date=datetime(2026, 1, 10, tzinfo=UTC),
+            duration_minutes=60.0,
+            host_email="h@x",
+            participant_count=3,
+        ),
+        Meeting(
+            meeting_id="mb",
+            title="Alpha",
+            meeting_date=datetime(2026, 3, 1, tzinfo=UTC),
+            duration_minutes=15.0,
+            host_email="h@x",
+            participant_count=3,
+        ),
+        Meeting(
+            meeting_id="mc",
+            title="Bravo",
+            meeting_date=datetime(2026, 2, 5, tzinfo=UTC),
+            duration_minutes=45.0,
+            host_email="h@x",
+            participant_count=3,
+        ),
+    ]
+    matches = tuple(ScanMatch(meeting=m, matched_rules=()) for m in base)
+    out = _sort_matches(matches, sort=sort, direction=direction)
+    assert [m.meeting.meeting_id for m in out] == expected
+
+
+def test_sort_matches_unknown_axis_falls_back_to_date_desc() -> None:
+    """Unknown sort/direction values must not blow up — fall back to date desc."""
+    from firefliesclearer.application.scan_service import ScanMatch
+    from firefliesclearer.web.routes.cleanup import _sort_matches
+
+    meetings = [
+        Meeting(
+            meeting_id="m1",
+            title="X",
+            meeting_date=datetime(2026, 1, 1, tzinfo=UTC),
+            duration_minutes=1.0,
+            host_email="h@x",
+            participant_count=1,
+        ),
+        Meeting(
+            meeting_id="m2",
+            title="Y",
+            meeting_date=datetime(2026, 2, 1, tzinfo=UTC),
+            duration_minutes=2.0,
+            host_email="h@x",
+            participant_count=1,
+        ),
+    ]
+    matches = tuple(ScanMatch(meeting=m, matched_rules=()) for m in meetings)
+    out = _sort_matches(matches, sort="bogus", direction="bogus")
+    # Default = date desc => newest first.
+    assert [m.meeting.meeting_id for m in out] == ["m2", "m1"]
+
+
+def test_get_review_renders_sort_links(configured_client: TestClient, configured_app) -> None:
+    """The review table headers must be HTMX sort links pointing at the route."""
+    _seed_repo_with_varied_meetings(configured_app)
+    _set_filters_in_session(
+        configured_app,
+        _sid_from_client(configured_client),
+        ScanFilters(older_than_days=30),
+    )
+    r = configured_client.get("/cleanup/review")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    # Date column has a sort link.
+    th_date = doc.css_first("th.col-date a")
+    assert th_date is not None
+    href = th_date.attributes.get("href") or ""
+    assert "sort=date" in href
+
+
+def test_get_review_applies_sort_query_param(configured_client: TestClient, configured_app) -> None:
+    """``?sort=title&dir=asc`` reorders the rows by title ascending."""
+    _seed_repo_with_varied_meetings(configured_app)
+    _set_filters_in_session(
+        configured_app,
+        _sid_from_client(configured_client),
+        ScanFilters(older_than_days=30),
+    )
+    r = configured_client.get("/cleanup/review?sort=title&dir=asc")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    rows = doc.css(".row[data-meeting-id]")
+    ids = [row.attributes.get("data-meeting-id") for row in rows]
+    # Alpha (mb), Bravo (mc), Charlie (ma)
+    assert ids == ["mb", "mc", "ma"]
+
+
+def test_get_review_default_sort_is_date_desc(
+    configured_client: TestClient, configured_app
+) -> None:
+    """No sort query param => newest first (preserves prior behavior)."""
+    _seed_repo_with_varied_meetings(configured_app)
+    _set_filters_in_session(
+        configured_app,
+        _sid_from_client(configured_client),
+        ScanFilters(older_than_days=30),
+    )
+    r = configured_client.get("/cleanup/review")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    rows = doc.css(".row[data-meeting-id]")
+    ids = [row.attributes.get("data-meeting-id") for row in rows]
+    # mb (March 1), mc (Feb 5), ma (Jan 10) — newest first
+    assert ids == ["mb", "mc", "ma"]
+
+
+def test_sort_persisted_in_toolbar_form(configured_client: TestClient, configured_app) -> None:
+    """The toolbar form must include ``sort`` / ``dir`` as hidden inputs so
+    bulk-action POSTs preserve the sort across selection mutations.
+    """
+    _seed_repo_with_varied_meetings(configured_app)
+    _set_filters_in_session(
+        configured_app,
+        _sid_from_client(configured_client),
+        ScanFilters(older_than_days=30),
+    )
+    r = configured_client.get("/cleanup/review?sort=title&dir=asc")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    form = doc.css_first(".review-toolbar form.toolbar-actions")
+    assert form is not None
+    sort_input = form.css_first('input[type="hidden"][name="sort"]')
+    dir_input = form.css_first('input[type="hidden"][name="dir"]')
+    assert sort_input is not None and sort_input.attributes.get("value") == "title"
+    assert dir_input is not None and dir_input.attributes.get("value") == "asc"
+
+
+def test_select_all_preserves_sort_in_table_render(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Bulk-action POST that carries ``sort``/``dir`` must reorder its
+    re-rendered table fragment to match.
+    """
+    _seed_repo_with_varied_meetings(configured_app)
+    sid = _sid_from_client(configured_client)
+    _set_filters_in_session(configured_app, sid, ScanFilters(older_than_days=30))
+    r = configured_client.post(
+        "/cleanup/review/select-all",
+        data={
+            "_csrf": _csrf(configured_client),
+            "page": "1",
+            "sort": "title",
+            "dir": "asc",
+        },
+    )
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    rows = doc.css(".row[data-meeting-id]")
+    ids = [row.attributes.get("data-meeting-id") for row in rows]
+    assert ids == ["mb", "mc", "ma"]

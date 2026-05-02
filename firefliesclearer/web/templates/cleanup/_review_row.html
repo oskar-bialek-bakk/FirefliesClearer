@@ -5,12 +5,15 @@
 <tr class="row" data-meeting-id="{{ match.meeting.meeting_id }}">
   <td class="col-check">
     <form hx-post="/cleanup/review/toggle/{{ match.meeting.meeting_id }}"
-          hx-trigger="change from:find input"
+          hx-trigger="change"
           hx-target=".review-table"
           hx-swap="outerHTML"
           hx-include="this"
           style="display:inline">
       <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+      <input type="hidden" name="page" value="{{ page }}">
+      <input type="hidden" name="sort" value="{{ sort }}">
+      <input type="hidden" name="dir" value="{{ dir }}">
       <input type="checkbox" name="selected"
         aria-label="Select meeting {{ match.meeting.title }}"
         {% if match.meeting.meeting_id in selected_ids %}checked{% endif %}>

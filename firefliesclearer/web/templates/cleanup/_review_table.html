@@ -1,12 +1,41 @@
-{# Review table — HTMX swap target for paged re-renders. #}
+{# Review table — HTMX swap target for paged re-renders.
+
+   Three columns are sortable (Title / Date / Duration). Each header link
+   carries both ``href`` (full-page navigation) and ``hx-get`` (in-place table
+   swap), and the sort+direction state is forwarded through the pagination
+   links and the toolbar's hidden inputs so it survives selection mutations.
+#}
+{% macro sort_link(label, field, sort, dir, page) -%}
+  {% set is_active = (sort == field) %}
+  {% if is_active and dir == 'asc' %}
+    {% set next_dir = 'desc' %}
+    {% set arrow = '&uarr;' %}
+  {% elif is_active and dir == 'desc' %}
+    {% set next_dir = 'asc' %}
+    {% set arrow = '&darr;' %}
+  {% else %}
+    {# Default toggle direction: asc for title (alphabetical), desc for date /
+       duration (largest/newest first matches the implicit ordering). #}
+    {% set next_dir = 'asc' if field == 'title' else 'desc' %}
+    {% set arrow = '' %}
+  {% endif %}
+  <a href="/cleanup/review?page={{ page }}&sort={{ field }}&dir={{ next_dir }}"
+     hx-get="/cleanup/review?page={{ page }}&sort={{ field }}&dir={{ next_dir }}"
+     hx-target=".review-table"
+     hx-swap="outerHTML">
+    {{ label }}
+    {%- if arrow %}<span class="sort-arrow active">{{ arrow|safe }}</span>{% endif %}
+  </a>
+{%- endmacro %}
+
 <div class="review-table" id="review-table">
   <table class="meetings-table">
     <thead>
       <tr>
         <th scope="col" class="col-check"><span class="visually-hidden">Selected</span></th>
-        <th scope="col" class="col-title">Title</th>
-        <th scope="col" class="col-date">Date</th>
-        <th scope="col" class="col-duration">Duration</th>
+        <th scope="col" class="col-title">{{ sort_link('Title', 'title', sort, dir, page) }}</th>
+        <th scope="col" class="col-date">{{ sort_link('Date', 'date', sort, dir, page) }}</th>
+        <th scope="col" class="col-duration">{{ sort_link('Duration', 'duration', sort, dir, page) }}</th>
         <th scope="col" class="col-host">Host</th>
         <th scope="col" class="col-participants">Participants</th>
         <th scope="col" class="col-rules">Matched rules</th>
@@ -23,16 +52,16 @@
   {% if pages > 1 %}
     <nav class="pagination" aria-label="Pagination">
       {% if page > 1 %}
-        <a href="/cleanup/review?page={{ page - 1 }}"
-           hx-get="/cleanup/review?page={{ page - 1 }}"
+        <a href="/cleanup/review?page={{ page - 1 }}&sort={{ sort }}&dir={{ dir }}"
+           hx-get="/cleanup/review?page={{ page - 1 }}&sort={{ sort }}&dir={{ dir }}"
            hx-target=".review-table"
            hx-swap="outerHTML"
            class="page-prev">&larr; Prev</a>
       {% endif %}
       <span class="page-indicator">Page {{ page }} of {{ pages }} ({{ total }} matches)</span>
       {% if page < pages %}
-        <a href="/cleanup/review?page={{ page + 1 }}"
-           hx-get="/cleanup/review?page={{ page + 1 }}"
+        <a href="/cleanup/review?page={{ page + 1 }}&sort={{ sort }}&dir={{ dir }}"
+           hx-get="/cleanup/review?page={{ page + 1 }}&sort={{ sort }}&dir={{ dir }}"
            hx-target=".review-table"
            hx-swap="outerHTML"
            class="page-next">Next &rarr;</a>

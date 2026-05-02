@@ -3,8 +3,9 @@
 {% block page %}
 {% include "cleanup/_stepper.html" %}
 
-{# TODO(phase-9): client-side search box, sort dropdown (Date / Duration / Title),
-   and shift-click range selection. Deferred from Task 5.3 to keep scope tight. #}
+{# TODO(phase-9): client-side search box and shift-click range selection.
+   Server-side column sort (Date / Duration / Title) shipped in Phase 5.x; see
+   ``_review_table.html`` for the sort_link macro. #}
 
 <section class="cleanup-step cleanup-step-review">
   <h1>Step 2 — Review</h1>
@@ -29,6 +30,8 @@
   <form method="post" action="/cleanup/review" class="continue-form">
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
     <input type="hidden" name="page" value="{{ page }}">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="dir" value="{{ dir }}">
     <div class="form-actions">
       <button type="submit" class="continue-btn"
         {% if not selected_count %}disabled{% endif %}>
