@@ -148,6 +148,11 @@ class SyncService:
                 if existing is None:
                     self._manifest.upsert_known(raw, at=started_at)
                     added += 1
+                elif existing.source_state == "gone":
+                    # Resurrected: refresh snapshot + flip back to live.
+                    self._manifest.upsert_known(raw, at=started_at)
+                    self._manifest.set_source_state(raw.meeting_id, "live")
+                    added += 1
                 else:
                     seen_known = True
                     break  # stop processing this page

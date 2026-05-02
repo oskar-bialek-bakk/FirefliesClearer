@@ -152,3 +152,19 @@ async def test_incremental_sync_records_run_in_sync_runs_table(manifest_db):
     assert rec.trigger_source == "manual_review"
     assert rec.outcome == "success"
     assert rec.meetings_added == 1
+
+
+async def test_incremental_sync_resurrects_gone_meeting(manifest_db):
+    """A meeting marked 'gone' that reappears in API → flip to 'live'."""
+    manifest_db.upsert_known(_meeting("m0"), at=datetime(2026, 4, 1, tzinfo=UTC))
+    manifest_db.set_source_state("m0", "gone")
+
+    # API now returns m0 again (resurrection)
+    repo = ControllableMeetingRepository(meetings=[_meeting("m0")], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    outcome = await svc.run(mode=SyncMode.INCREMENTAL, trigger=SyncTrigger.SCHEDULED)
+
+    assert outcome.meetings_added == 1
+    rec = manifest_db.get("m0")
+    assert rec.source_state == "live"
