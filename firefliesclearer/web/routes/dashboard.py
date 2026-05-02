@@ -125,6 +125,9 @@ async def dashboard(
         "needs_attention": rows,
         "version": request.app.state.version,
         "MeetingState": MeetingState,
+        "show_sync_opt_in": (
+            deps.config.sync.enabled is False and deps.config.sync.opt_in_dismissed is False
+        ),
     }
     sync_status = maybe_status_for_template(request, deps)
     if sync_status is not None:

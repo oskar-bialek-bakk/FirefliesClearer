@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tomllib
 from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
 from firefliesclearer.application.sync_service import SyncMode, SyncService, SyncTrigger
+from firefliesclearer.infra.atomic_toml import write_atomic_toml
 from firefliesclearer.web.deps import get_deps
 
 # Manual triggers permitted from the public POST /sync/now endpoint.
@@ -225,3 +227,37 @@ async def trigger_sync(
         },
         status_code=202,
     )
+
+
+@router.post("/sync/enable")
+async def enable_or_dismiss(request: Request) -> Response:
+    """Persist the user's choice from the dashboard opt-in banner.
+
+    ``action=enable`` flips ``[sync] enabled = true``; ``action=dismiss``
+    sets ``[sync] opt_in_dismissed = true`` so the banner stops appearing.
+    Either way, the cached deps are invalidated so the next request sees
+    the new config and (for ``enable``) starts the scheduler lazily.
+    """
+    form = await request.form()
+    action = form.get("action", "")
+    if action not in ("enable", "dismiss"):
+        raise HTTPException(status_code=422, detail=f"Invalid action: {action!r}")
+
+    cfg_path = getattr(request.app.state, "config_path", None)
+    if cfg_path is None or not cfg_path.exists():
+        raise HTTPException(status_code=500, detail="No config to update")
+
+    with open(cfg_path, "rb") as f:
+        data: dict[str, Any] = tomllib.load(f)
+    sync_section = dict(data.get("sync", {}))
+    if action == "enable":
+        sync_section["enabled"] = True
+    else:
+        sync_section["opt_in_dismissed"] = True
+    data["sync"] = sync_section
+    write_atomic_toml(cfg_path, data)
+
+    # Invalidate cached deps so the next request rebuilds with the new config.
+    request.app.state.deps = None
+
+    return RedirectResponse("/", status_code=303)

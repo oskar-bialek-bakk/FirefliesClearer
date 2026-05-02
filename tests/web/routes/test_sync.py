@@ -207,3 +207,58 @@ def test_status_banner_renders_running_html(configured_app_sync_on) -> None:
         assert r.status_code == 200
         assert "sync-banner--running" in r.text
         assert "10" in r.text  # meetings_seen rendered
+
+
+# ---------------------------------------------------------------------------
+# POST /sync/enable — opt-in / dismiss banner
+# ---------------------------------------------------------------------------
+
+
+def test_post_sync_enable_writes_flag_and_redirects(configured_app) -> None:
+    """POST /sync/enable with action=enable persists [sync] enabled=true."""
+    import tomllib
+
+    with TestClient(configured_app) as client:
+        client.get("/?token=T", follow_redirects=False)
+        csrf = client.cookies.get("ffc_csrf", "") or ""
+        r = client.post(
+            "/sync/enable",
+            data={"_csrf": csrf, "action": "enable"},
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 303, 307)
+        cfg_path = configured_app.state.config_path
+        with open(cfg_path, "rb") as f:
+            data = tomllib.load(f)
+        assert data["sync"]["enabled"] is True
+
+
+def test_post_sync_enable_dismiss_writes_marker(configured_app) -> None:
+    """POST /sync/enable with action=dismiss persists opt_in_dismissed=true."""
+    import tomllib
+
+    with TestClient(configured_app) as client:
+        client.get("/?token=T", follow_redirects=False)
+        csrf = client.cookies.get("ffc_csrf", "") or ""
+        r = client.post(
+            "/sync/enable",
+            data={"_csrf": csrf, "action": "dismiss"},
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 303, 307)
+        cfg_path = configured_app.state.config_path
+        with open(cfg_path, "rb") as f:
+            data = tomllib.load(f)
+        assert data.get("sync", {}).get("opt_in_dismissed") is True
+
+
+def test_post_sync_enable_rejects_invalid_action(configured_app) -> None:
+    with TestClient(configured_app) as client:
+        client.get("/?token=T", follow_redirects=False)
+        csrf = client.cookies.get("ffc_csrf", "") or ""
+        r = client.post(
+            "/sync/enable",
+            data={"_csrf": csrf, "action": "bogus"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 422

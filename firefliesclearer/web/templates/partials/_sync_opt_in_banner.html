@@ -1,0 +1,17 @@
+<div class="sync-optin-banner" role="status">
+  <div class="sync-optin-banner__msg">
+    <strong>New: local cache for offline cleanup.</strong>
+    Periodic background sync keeps a copy of your meetings locally so the
+    cleanup wizard works even when Fireflies is rate-limiting your account.
+  </div>
+  <form method="post" action="/sync/enable" style="display:inline">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+    <input type="hidden" name="action" value="enable">
+    <button type="submit" class="btn-primary">Enable local cache</button>
+  </form>
+  <form method="post" action="/sync/enable" style="display:inline">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+    <input type="hidden" name="action" value="dismiss">
+    <button type="submit" class="btn-link">Not now</button>
+  </form>
+</div>
