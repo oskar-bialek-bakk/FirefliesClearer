@@ -153,3 +153,37 @@ def test_post_sync_now_rejects_invalid_trigger(configured_app_sync_on) -> None:
         # 'scheduled' is for scheduler-internal use; manual triggers must be
         # 'manual_review' or 'manual_settings'.
         assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /sync/status/banner — HTML partial render
+# ---------------------------------------------------------------------------
+
+
+def test_status_banner_renders_idle_html(configured_app_sync_on) -> None:
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.get("/sync/status/banner")
+        assert r.status_code == 200
+        assert "sync-banner--idle" in r.text
+        assert "Sync now" in r.text or "No sync run yet" in r.text
+
+
+def test_status_banner_renders_running_html(configured_app_sync_on) -> None:
+    from firefliesclearer.web.routes.sync import CurrentSyncSnapshot
+
+    configured_app_sync_on.state.current_sync = CurrentSyncSnapshot(
+        run_id=1,
+        mode="incremental",
+        trigger_source="manual_review",
+        started_at=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+        meetings_seen=10,
+        meetings_added=5,
+    )
+
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.get("/sync/status/banner")
+        assert r.status_code == 200
+        assert "sync-banner--running" in r.text
+        assert "10" in r.text  # meetings_seen rendered

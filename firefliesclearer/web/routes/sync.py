@@ -11,6 +11,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.templating import Jinja2Templates
+from starlette.responses import Response
 
 from firefliesclearer.application.sync_service import SyncMode, SyncService, SyncTrigger
 from firefliesclearer.web.deps import get_deps
@@ -49,6 +51,21 @@ async def status_endpoint(
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> JSONResponse:
     return JSONResponse(_build_status_dict(request, deps))
+
+
+@router.get("/sync/status/banner")
+async def status_banner(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """HTMX-polled endpoint that renders the banner partial as HTML."""
+    templates: Jinja2Templates = request.app.state.templates
+    sync_status = _build_status_dict(request, deps)
+    return templates.TemplateResponse(
+        request,
+        "partials/_sync_banner.html",
+        {"sync_status": sync_status},
+    )
 
 
 def _build_status_dict(request: Request, deps: SimpleNamespace) -> dict[str, Any]:
