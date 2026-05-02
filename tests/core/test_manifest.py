@@ -361,3 +361,87 @@ def test_fresh_manifest_has_new_indexes(tmp_path):
         "idx_meetings_host_email",
     }
     assert expected <= indexes, f"missing: {expected - indexes}"
+
+
+def _legacy_v2_schema() -> str:
+    """The pre-Phase-1 SCHEMA, used to simulate an existing manifest."""
+    return """
+    CREATE TABLE meetings (
+      meeting_id        TEXT PRIMARY KEY,
+      title             TEXT NOT NULL,
+      meeting_date      TEXT NOT NULL,
+      state             TEXT NOT NULL,
+      archive_path      TEXT,
+      audio_sha256      TEXT,
+      summary_sha256    TEXT,
+      transcript_sha256 TEXT,
+      archived_at       TEXT,
+      verified_at       TEXT,
+      deleted_at        TEXT,
+      last_error        TEXT
+    );
+    CREATE TABLE state_log (
+      id            INTEGER PRIMARY KEY,
+      meeting_id    TEXT NOT NULL,
+      from_state    TEXT,
+      to_state      TEXT NOT NULL,
+      at            TEXT NOT NULL,
+      details       TEXT
+    );
+    """
+
+
+def test_migration_adds_snapshot_columns_to_existing_manifest(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "manifest.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(_legacy_v2_schema())
+    conn.execute(
+        "INSERT INTO meetings (meeting_id, title, meeting_date, state) VALUES (?, ?, ?, ?)",
+        ("legacy-1", "Old Standup", "2026-01-01T00:00:00+00:00", "archived"),
+    )
+    conn.commit()
+    conn.close()
+
+    Manifest.open(db_path)  # should migrate, not raise
+
+    conn = sqlite3.connect(str(db_path))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(meetings)")}
+    row = conn.execute(
+        "SELECT title, source_state, duration_minutes FROM meetings WHERE meeting_id = ?",
+        ("legacy-1",),
+    ).fetchone()
+    conn.close()
+
+    assert {"duration_minutes", "host_email", "source_state", "cached_at"} <= cols
+    assert row[0] == "Old Standup"        # legacy data preserved
+    assert row[1] == "live"               # source_state backfilled by DEFAULT clause
+    assert row[2] is None                 # legacy row has no duration
+
+
+def test_migration_is_idempotent(tmp_path):
+    """Running Manifest.open twice on the same DB does not error."""
+    db_path = tmp_path / "manifest.db"
+    Manifest.open(db_path)
+    Manifest.open(db_path)  # second open must succeed without raising
+    Manifest.open(db_path)  # and a third
+
+
+def test_migration_preserves_existing_indexes(tmp_path):
+    """The legacy idx_meetings_state index must survive migration."""
+    import sqlite3
+
+    db_path = tmp_path / "manifest.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(_legacy_v2_schema())
+    conn.execute("CREATE INDEX idx_meetings_state ON meetings(state)")
+    conn.commit()
+    conn.close()
+
+    Manifest.open(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    conn.close()
+    assert "idx_meetings_state" in indexes

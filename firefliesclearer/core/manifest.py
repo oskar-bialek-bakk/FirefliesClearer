@@ -75,6 +75,37 @@ CREATE INDEX IF NOT EXISTS idx_state_log_meeting      ON state_log(meeting_id);
 """
 
 
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
+
+
+def _migrate_meetings_columns(conn: sqlite3.Connection) -> None:
+    """Add Phase 1 snapshot columns to a legacy meetings table.
+
+    Idempotent: safe to call on a fresh DB (where columns already exist
+    via SCHEMA) or on an existing DB without the columns.
+    """
+    additions = [
+        ("duration_minutes",  "REAL"),
+        ("host_email",        "TEXT"),
+        ("participant_count", "INTEGER"),
+        ("has_transcript",    "INTEGER"),
+        ("tags_json",         "TEXT"),
+        ("source_state",      "TEXT NOT NULL DEFAULT 'live'"),
+        ("cached_at",         "TEXT"),
+    ]
+    for col_name, col_def in additions:
+        if not _has_column(conn, "meetings", col_name):
+            conn.execute(f"ALTER TABLE meetings ADD COLUMN {col_name} {col_def}")
+    # Indexes use IF NOT EXISTS so they are safe to re-run, but SCHEMA
+    # only runs them on fresh DBs (executescript on existing DBs is a
+    # no-op for existing CREATEs but we want explicit idempotency here).
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_meetings_source_state ON meetings(source_state)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_meetings_meeting_date ON meetings(meeting_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_meetings_host_email   ON meetings(host_email)")
+
+
 class IllegalStateTransition(Exception):  # noqa: N818
     pass
 
@@ -129,7 +160,15 @@ class Manifest:
         conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        # Migrate columns BEFORE executescript so the new indexes in SCHEMA
+        # (idx_meetings_source_state, etc.) can reference columns that exist.
+        # On a fresh DB the meetings table doesn't yet exist, so the helper
+        # is a no-op (PRAGMA table_info returns no rows; ALTER TABLE skipped).
+        # SCHEMA then creates the table with the new columns inline.
+        if _has_column(conn, "meetings", "meeting_id"):
+            _migrate_meetings_columns(conn)
         conn.executescript(SCHEMA)
+        _migrate_meetings_columns(conn)
         return cls(conn)
 
     def close(self) -> None:
