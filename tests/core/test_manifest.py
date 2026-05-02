@@ -445,3 +445,31 @@ def test_migration_preserves_existing_indexes(tmp_path):
     indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     conn.close()
     assert "idx_meetings_state" in indexes
+
+
+def test_meeting_record_has_snapshot_fields(manifest):
+    """MeetingRecord exposes snapshot + source_state fields read from the row."""
+    manifest.register(_meeting(), at=NOW)
+    rec = manifest.get("01HW")
+    assert rec is not None
+    # New attributes exist
+    assert hasattr(rec, "duration_minutes")
+    assert hasattr(rec, "host_email")
+    assert hasattr(rec, "participant_count")
+    assert hasattr(rec, "has_transcript")
+    assert hasattr(rec, "tags")
+    assert hasattr(rec, "source_state")
+    assert hasattr(rec, "cached_at")
+
+
+def test_meeting_record_legacy_register_has_null_snapshot(manifest):
+    """register() still inserts only legacy columns; snapshot fields are None."""
+    manifest.register(_meeting(), at=NOW)
+    rec = manifest.get("01HW")
+    assert rec is not None
+    assert rec.duration_minutes is None
+    assert rec.host_email is None
+    assert rec.tags is None
+    # source_state defaults to 'live' via the column DEFAULT clause
+    assert rec.source_state == "live"
+    assert rec.cached_at is None

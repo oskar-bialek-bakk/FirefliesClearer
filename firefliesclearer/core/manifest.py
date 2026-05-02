@@ -124,6 +124,15 @@ class MeetingRecord:
     verified_at: datetime | None
     deleted_at: datetime | None
     last_error: str | None
+    # Phase 1 snapshot fields — populated by sync (upsert_known); None for
+    # rows inserted via the legacy register() path until a sync touches them.
+    duration_minutes: float | None = None
+    host_email: str | None = None
+    participant_count: int | None = None
+    has_transcript: bool | None = None
+    tags: tuple[str, ...] | None = None
+    source_state: str = "live"
+    cached_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,7 +201,10 @@ class Manifest:
         cur = self._conn.execute(
             "SELECT meeting_id, title, meeting_date, state, archive_path, "
             "audio_sha256, summary_sha256, transcript_sha256, archived_at, "
-            "verified_at, deleted_at, last_error FROM meetings WHERE meeting_id = ?",
+            "verified_at, deleted_at, last_error, "
+            "duration_minutes, host_email, participant_count, has_transcript, "
+            "tags_json, source_state, cached_at "
+            "FROM meetings WHERE meeting_id = ?",
             (meeting_id,),
         )
         row = cur.fetchone()
@@ -200,6 +212,8 @@ class Manifest:
             return None
         meeting_date = _parse_iso(row[2])
         assert meeting_date is not None
+        tags_raw = row[16]
+        tags = tuple(json.loads(tags_raw)) if tags_raw else None
         return MeetingRecord(
             meeting_id=row[0],
             title=row[1],
@@ -213,6 +227,13 @@ class Manifest:
             verified_at=_parse_iso(row[9]),
             deleted_at=_parse_iso(row[10]),
             last_error=row[11],
+            duration_minutes=row[12],
+            host_email=row[13],
+            participant_count=row[14],
+            has_transcript=bool(row[15]) if row[15] is not None else None,
+            tags=tags,
+            source_state=row[17] if row[17] is not None else "live",
+            cached_at=_parse_iso(row[18]),
         )
 
     def transition(
