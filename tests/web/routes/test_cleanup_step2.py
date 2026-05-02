@@ -753,3 +753,41 @@ def test_select_all_preserves_sort_in_table_render(
     rows = doc.css(".row[data-meeting-id]")
     ids = [row.attributes.get("data-meeting-id") for row in rows]
     assert ids == ["mb", "mc", "ma"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: review page reads cache only when [sync] enabled = true
+# ---------------------------------------------------------------------------
+
+
+def test_review_does_not_call_live_api_when_sync_on(
+    configured_app_sync_on,
+) -> None:
+    """GET /cleanup/review with sync on hits the cache, not the live API."""
+    # Pre-populate the cache so the filter has matches.
+    manifest = configured_app_sync_on.state.deps.manifest
+    manifest.upsert_known(
+        Meeting(
+            meeting_id="cached-1",
+            title="Old standup",
+            meeting_date=datetime(2025, 1, 1, tzinfo=UTC),
+            duration_minutes=10.0,
+            host_email="a@x",
+            participant_count=2,
+            tags=(),
+            has_transcript=True,
+        ),
+        at=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+
+    client = TestClient(configured_app_sync_on)
+    client.get("/?token=T", follow_redirects=False)
+
+    # Seed wizard session with filters so /cleanup/review doesn't redirect.
+    sid = client.cookies.get("ffc_session", "") or ""
+    _set_filters_in_session(configured_app_sync_on, sid, ScanFilters(older_than_days=365))
+
+    r = client.get("/cleanup/review")
+    assert r.status_code == 200, r.text
+
+    assert configured_app_sync_on.state.tracking_repo.list_call_count == 0

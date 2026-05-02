@@ -259,3 +259,53 @@ def test_post_cleanup_with_invalid_regex_renders_error(configured_client: TestCl
     assert "Invalid regex" in r.text
     doc = HTMLParser(r.text)
     assert doc.css_first("form#cleanup-step1-form") is not None
+
+
+# ---------------------------------------------------------------------------
+# Regression: when [sync] enabled = true, wizard reads must hit the cache only
+# ---------------------------------------------------------------------------
+
+
+def test_wizard_step1_filter_does_not_call_live_api_when_sync_on(
+    configured_app_sync_on,
+) -> None:
+    """The wizard's filter step reads from cache — zero ``list_meetings`` on
+    the live FirefliesClient when ``[sync] enabled = true``."""
+    # Pre-populate cache with one old meeting so the filter has something to match.
+    manifest = configured_app_sync_on.state.deps.manifest
+    manifest.upsert_known(
+        Meeting(
+            meeting_id="m1",
+            title="Old standup",
+            meeting_date=datetime(2025, 1, 1, tzinfo=UTC),
+            duration_minutes=10.0,
+            host_email="a@x",
+            participant_count=2,
+            tags=(),
+            has_transcript=True,
+        ),
+        at=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+
+    client = TestClient(configured_app_sync_on)
+    client.get("/?token=T", follow_redirects=False)
+    csrf = client.cookies.get("ffc_csrf", "") or ""
+
+    # Step 1: submit the filter form (POST /cleanup) — older_than_days = 365.
+    r = client.post(
+        "/cleanup",
+        data={
+            "_csrf": csrf,
+            "older_than_days": "365",
+            "older_than_days_enabled": "on",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (200, 302, 303, 307), r.text
+
+    # Step 2: load the review page — this would ordinarily call list_meetings.
+    r = client.get("/cleanup/review")
+    assert r.status_code == 200, r.text
+
+    # The live client.list_meetings was NEVER called.
+    assert configured_app_sync_on.state.tracking_repo.list_call_count == 0
