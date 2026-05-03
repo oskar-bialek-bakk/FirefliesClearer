@@ -25,13 +25,11 @@
   {% endif %}
 
   <div class="form-actions purge-done-actions">
-    <form method="post" action="/cleanup/purge/finalize" class="purge-finalize-form"
-          style="display: inline;">
+    <form method="post" action="/cleanup/purge/finalize" class="purge-finalize-form">
       <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
       <button type="submit" class="purge-done-btn continue-btn">Done</button>
     </form>
-    <form method="post" action="/cleanup/purge/restart" class="purge-restart-form"
-          style="display: inline;">
+    <form method="post" action="/cleanup/purge/restart" class="purge-restart-form">
       <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
       <button type="submit" class="purge-restart-btn">Cleanup another batch</button>
     </form>
