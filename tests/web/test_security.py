@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
 from firefliesclearer.web.security import SecurityConfig, install_security
@@ -72,6 +72,67 @@ def test_post_with_mismatched_csrf_returns_403():
     # POST with wrong _csrf value
     response = client.post("/mutate", data={"_csrf": "wrong"})
     assert response.status_code == 403
+
+
+def test_first_get_exposes_csrf_token_to_template_via_request_cookies():
+    """Regression: on the first GET (no prior cookies), the CSRF middleware
+    must mint the cookie BEFORE the route handler runs and inject it into
+    ``request.cookies`` so templates rendering on this same request emit the
+    matching ``_csrf`` form field.
+
+    Symptom this prevents: user lands on the dashboard, clicks a form on the
+    same page (e.g. the sync opt-in banner), and the immediate POST 403s
+    with "CSRF mismatch" because the form had ``_csrf=""``.
+    """
+    app = make_app()
+
+    @app.get("/peek")
+    def peek_csrf(request: Request) -> dict[str, str]:
+        # Templates use this exact pattern: ``request.cookies.get('ffc_csrf', '')``.
+        return {"csrf_in_request_cookies": request.cookies.get("ffc_csrf", "")}
+
+    client = TestClient(app, raise_server_exceptions=False)
+    r = client.get("/peek?token=TOKEN")
+    assert r.status_code == 200
+
+    body_token = r.json()["csrf_in_request_cookies"]
+    cookie_token = r.cookies["ffc_csrf"]
+
+    assert body_token, "template/route saw an empty CSRF token on first GET"
+    assert body_token == cookie_token, (
+        "template-emitted token must equal the Set-Cookie value so the "
+        "subsequent POST passes double-submit validation"
+    )
+
+
+def test_first_post_after_first_get_succeeds_when_form_uses_request_cookies():
+    """End-to-end variant of the previous test: GET, parse the rendered
+    ``_csrf`` value from the body, POST with that value, expect 200.
+    """
+    app = make_app()
+
+    @app.get("/form")
+    def render_form(request: Request) -> Response:
+        token = request.cookies.get("ffc_csrf", "")
+        # Mimic a Jinja form fragment.
+        return Response(
+            content=f'<form><input name="_csrf" value="{token}"></form>',
+            media_type="text/html",
+        )
+
+    client = TestClient(app, raise_server_exceptions=False)
+    r = client.get("/form?token=TOKEN")
+    # Pull _csrf out of the rendered HTML.
+    import re
+
+    m = re.search(r'name="_csrf" value="([^"]+)"', r.text)
+    assert m is not None, "form did not render a _csrf field"
+    form_token = m.group(1)
+    assert form_token, "_csrf rendered as empty string"
+
+    # Now POST using the value that was in the form.
+    r2 = client.post("/mutate", data={"_csrf": form_token})
+    assert r2.status_code == 200, r2.text
 
 
 def test_static_paths_bypass_session_and_csrf():
