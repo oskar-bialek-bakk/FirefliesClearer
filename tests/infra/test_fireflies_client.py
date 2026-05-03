@@ -69,19 +69,64 @@ async def test_4xx_error_not_retried_and_raises(
 
 
 @respx.mock
-async def test_5xx_is_retried_then_succeeds(
+async def test_5xx_is_retried_once_then_succeeds(
     client: FirefliesClient,
 ) -> None:
+    """A single 5xx blip is retried once; if the second attempt succeeds, fine.
+
+    With ``retry_5xx_max=1`` (the new default) this is the happy path for a
+    transient server hiccup. Fireflies serves persistent 504s in ~15s each,
+    so retrying more than once burns clock for no real benefit.
+    """
     route = respx.post(API_URL).mock(
         side_effect=[
-            httpx.Response(503, text="boom"),
             httpx.Response(503, text="boom"),
             httpx.Response(200, json={"data": {"transcripts": []}}),
         ]
     )
     async for _ in client.list_meetings(MeetingFilter()):
         pass
-    assert route.call_count == 3
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_5xx_gives_up_after_retry_5xx_max_attempts() -> None:
+    """Persistent 5xx surfaces as ``TransientServerError`` after the
+    retry_5xx_max cap, so the sync engine can mark the run partial fast
+    instead of waiting through ~3 x 15s of pointless retries.
+    """
+    from firefliesclearer.infra.fireflies_client import TransientServerError
+
+    fast_client = FirefliesClient(
+        api_key="ff_secret_xyz",
+        endpoint=API_URL,
+        retry_5xx_max=1,
+        retry_base_seconds=0.0,
+    )
+    route = respx.post(API_URL).mock(return_value=httpx.Response(504, text="gateway timeout"))
+    with pytest.raises(TransientServerError):
+        async for _ in fast_client.list_meetings(MeetingFilter()):
+            pass
+    # 1 initial + 1 retry = 2 attempts total.
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_5xx_max_can_be_disabled() -> None:
+    """``retry_5xx_max=0`` means: surface the first 5xx immediately."""
+    from firefliesclearer.infra.fireflies_client import TransientServerError
+
+    no_retry = FirefliesClient(
+        api_key="ff_secret_xyz",
+        endpoint=API_URL,
+        retry_5xx_max=0,
+        retry_base_seconds=0.0,
+    )
+    route = respx.post(API_URL).mock(return_value=httpx.Response(504, text="boom"))
+    with pytest.raises(TransientServerError):
+        async for _ in no_retry.list_meetings(MeetingFilter()):
+            pass
+    assert route.call_count == 1
 
 
 @respx.mock
