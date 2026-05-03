@@ -587,11 +587,33 @@ button[type="submit"]:hover,
   text-decoration: underline;
   text-underline-offset: 2px;
   font-weight: 500;
+  box-shadow: none;
 }
 .btn-link:hover {
   color: var(--accent-strong);
   background: transparent;
   border-color: transparent;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Link-style danger (e.g., Delete in presets list) */
+.btn-link.btn-danger {
+  background: transparent;
+  border-color: transparent;
+  color: var(--hot);
+  padding: 8px 8px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 500;
+  box-shadow: none;
+}
+.btn-link.btn-danger:hover {
+  color: color-mix(in oklab, var(--hot) 70%, white);
+  background: transparent;
+  border-color: transparent;
+  transform: none;
+  box-shadow: none;
 }
 
 /* Secondary/outline buttons (toolbar, retry, view-folder, etc.) */
@@ -1572,7 +1594,14 @@ button:disabled,
   border-radius: var(--radius);
 }
 
-.presets-list { display: flex; flex-direction: column; gap: 12px; }
+.presets-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
 
 .preset-card {
   background-color: var(--bg-elevated);

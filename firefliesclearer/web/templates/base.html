@@ -46,12 +46,13 @@
 <div style="display: flex">
   <aside class="sidebar">
     <div><strong>FirefliesClearer</strong> <small>v{{ version }}</small></div>
+    {%- set _path = request.url.path if request is defined else '/' -%}
     <nav>
-      <a href="/" hx-get="/" hx-target="#page" hx-push-url="true">Dashboard</a><br>
-      <a href="/cleanup" hx-get="/cleanup" hx-target="#page" hx-push-url="true">Cleanup</a><br>
-      <a href="/presets" hx-get="/presets" hx-target="#page" hx-push-url="true">Presets</a><br>
-      <a href="/history" hx-get="/history" hx-target="#page" hx-push-url="true">History</a><br>
-      <a href="/settings" hx-get="/settings" hx-target="#page" hx-push-url="true">Settings</a>
+      <a href="/"         hx-get="/"         hx-target="#page" hx-push-url="true"{% if _path == '/' %} aria-current="page"{% endif %}>Dashboard</a>
+      <a href="/cleanup"  hx-get="/cleanup"  hx-target="#page" hx-push-url="true"{% if _path.startswith('/cleanup') %} aria-current="page"{% endif %}>Cleanup</a>
+      <a href="/presets"  hx-get="/presets"  hx-target="#page" hx-push-url="true"{% if _path.startswith('/presets') %} aria-current="page"{% endif %}>Presets</a>
+      <a href="/history"  hx-get="/history"  hx-target="#page" hx-push-url="true"{% if _path.startswith('/history') %} aria-current="page"{% endif %}>History</a>
+      <a href="/settings" hx-get="/settings" hx-target="#page" hx-push-url="true"{% if _path.startswith('/settings') %} aria-current="page"{% endif %}>Settings</a>
     </nav>
     <hr>
     <div hx-get="/sidebar/status" hx-trigger="every 30s" hx-swap="innerHTML">{% block sidebar_status %}{% endblock %}</div>
