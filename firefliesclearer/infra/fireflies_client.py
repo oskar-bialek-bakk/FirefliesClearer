@@ -168,18 +168,17 @@ class FirefliesClient:
                 # required-field resolver failure up to the row root. Skip
                 # them: an unparseable row is never recoverable, and the
                 # alternative — calling `_meeting_from_raw(None)` — would
-                # crash the whole sync over a single bad row.
-                page_yielded = 0
+                # crash the whole sync over a single bad row. Pagination
+                # only stops on an empty *items* list — a page of all-null
+                # rows still advances ``skip`` so later pages with valid
+                # rows are reached (Copilot review on PR #19).
                 for raw in items:
                     if raw is None:
                         continue
                     yield _meeting_from_raw(raw)
-                    page_yielded += 1
                     emitted += 1
                     if filter.limit and emitted >= filter.limit:
                         return
-                if page_yielded == 0:
-                    return
                 skip += len(items)
 
     async def list_meetings_page(
@@ -547,13 +546,21 @@ _TOLERABLE_LEAF_FIELDS = frozenset(
 
 
 def _errors_are_tolerable_field_failures(errors: Any) -> bool:
-    """True iff every error in the array targets a tolerable leaf field.
+    """True iff every error in the array is a timeout-flavored field failure.
 
-    A "tolerable" error is one with a non-empty ``path`` whose final element is a
-    known non-required field. Response-level errors (no path), schema-drift
-    errors, or errors targeting required fields (id/date) all return False — those
-    must surface as :class:`FirefliesError` so we don't silently swallow a
-    structural problem.
+    Two conditions must hold for an error to be tolerable:
+
+    1. ``path`` is non-empty and its final element is a known non-required
+       leaf field (see ``_TOLERABLE_LEAF_FIELDS``). Required fields (id /
+       date) are never tolerable; without them ``_meeting_from_raw`` can't
+       construct a Meeting.
+    2. The error itself is timeout-flavored — ``code`` /
+       ``extensions.code`` is ``request_timeout`` OR ``extensions.status``
+       is 408. This is the failure pattern the 2026-05-03 probe captured.
+       Tightened on Copilot review (PR #19): without this guard, an
+       upstream schema or data regression that happened to produce an
+       error on, say, ``host_email`` would be silently downgraded to a
+       warning + partial data instead of surfacing as an error.
     """
     if not isinstance(errors, list) or not errors:
         return False
@@ -566,7 +573,28 @@ def _errors_are_tolerable_field_failures(errors: Any) -> bool:
         leaf = path[-1]
         if not isinstance(leaf, str) or leaf not in _TOLERABLE_LEAF_FIELDS:
             return False
+        if not _error_is_timeout_flavored(entry):
+            return False
     return True
+
+
+def _error_is_timeout_flavored(entry: dict[str, Any]) -> bool:
+    """True iff a GraphQL error entry signals a per-field 408 timeout.
+
+    Fireflies' partial-failure shape carries ``code: 'request_timeout'`` at
+    the entry root and again under ``extensions``, with ``status: 408``.
+    Either signal is enough — Fireflies has been inconsistent about which
+    fields they populate.
+    """
+    if entry.get("code") == "request_timeout":
+        return True
+    ext = entry.get("extensions")
+    if isinstance(ext, dict):
+        if ext.get("code") == "request_timeout":
+            return True
+        if ext.get("status") == 408:
+            return True
+    return False
 
 
 def _tolerable_error_field_names(errors: Any) -> set[str]:

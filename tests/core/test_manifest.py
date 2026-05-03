@@ -766,6 +766,40 @@ def test_list_known_includes_archived_when_flag_true(manifest):
     assert ids == ["a", "b"]
 
 
+def test_list_known_by_ids_returns_only_requested_ids(manifest):
+    """Single SQL query for the targeted set — used by the cleanup wizard
+    to re-resolve selected ids without scanning the full manifest."""
+    for mid in ("a", "b", "c", "d"):
+        manifest.upsert_known(_meeting_with_full_snapshot(mid), at=NOW)
+    out = list(manifest.list_known_by_ids(["b", "d"]))
+    assert sorted(m.meeting_id for m in out) == ["b", "d"]
+
+
+def test_list_known_by_ids_skips_gone_rows(manifest):
+    """``source_state='gone'`` rows are excluded — the wizard never wants to
+    operate on transcripts the user already removed in Fireflies."""
+    for mid in ("a", "b"):
+        manifest.upsert_known(_meeting_with_full_snapshot(mid), at=NOW)
+    manifest.set_source_state("b", "gone")
+    out = list(manifest.list_known_by_ids(["a", "b"]))
+    assert [m.meeting_id for m in out] == ["a"]
+
+
+def test_list_known_by_ids_returns_empty_for_empty_input(manifest):
+    """Defensive: empty input must not produce an SQL ``IN ()`` syntax error."""
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    assert list(manifest.list_known_by_ids([])) == []
+
+
+def test_list_known_by_ids_drops_unknown_ids_silently(manifest):
+    """Ids that aren't in the cache are simply absent from the result; no
+    error. Mirrors the behaviour ``_selected_meetings`` relies on when an
+    id was deleted from Fireflies between Step 2 and Step 3."""
+    manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
+    out = list(manifest.list_known_by_ids(["a", "missing"]))
+    assert [m.meeting_id for m in out] == ["a"]
+
+
 def test_list_known_skips_gone_by_default(manifest):
     manifest.upsert_known(_meeting_with_full_snapshot("a"), at=NOW)
     manifest.upsert_known(_meeting_with_full_snapshot("b"), at=NOW)

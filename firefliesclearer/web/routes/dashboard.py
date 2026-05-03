@@ -90,46 +90,46 @@ def _needs_attention_rows(manifest: Manifest, summary: StateSummary) -> list[Mee
     return rows
 
 
-def _fetch_meeting_from_cache(*, manifest: Manifest, meeting_id: str) -> Meeting | None:
+class _CacheLookup:
+    """Outcome tagging for ``_fetch_meeting_from_cache``.
+
+    The retry endpoint needs to distinguish three outcomes so it can return
+    different 404 messages: present-and-usable, marked-gone-by-sync, and
+    truly-absent-from-the-manifest. The previous "return Meeting | None"
+    signature collapsed the latter two into the same "Run a sync first"
+    message even when sync was the last thing that learned the meeting was
+    gone — actively misleading (Copilot review on PR #19).
+    """
+
+    PRESENT = "present"
+    GONE = "gone"
+    ABSENT = "absent"
+
+
+def _fetch_meeting_from_cache(*, manifest: Manifest, meeting_id: str) -> tuple[str, Meeting | None]:
     """Look up the Meeting metadata from the local cache.
 
-    Used by the retry flow to reconstruct the full Meeting (duration, host,
-    participants, tags) needed to write a faithful metadata.json.
+    Returns ``(_CacheLookup.PRESENT, Meeting)`` when the row is usable,
+    ``(_CacheLookup.GONE, None)`` when the last full sync flagged the row
+    as gone-from-source, and ``(_CacheLookup.ABSENT, None)`` when no row
+    exists at all.
 
-    Reads come from the cache rather than the live API. The previous version
-    walked ``repo.list_meetings(MeetingFilter())`` — a network round-trip
-    that paginated through every meeting in the user's account just to find
-    one row by id. With a slow upstream or under rate-limit pressure
-    (the user hit 429s during the 2026-05-03 incident), the retry button
-    appeared to "do nothing" because the request silently 5xx'd before HTMX
-    could swap in any feedback. The cache has the same metadata after a
-    sync, with no network cost.
-
-    ``include_archived=True`` covers retry-archive (failed states) and
-    retry-purge (archived state); ``include_gone=False`` skips rows the
-    last full sync flagged as gone-from-source so we don't try to operate
-    on transcripts the user already removed in Fireflies.
+    Lookup goes through ``manifest.get(meeting_id)`` directly — that's an
+    indexed primary-key query, O(log n). Iterating
+    ``manifest.list_known(...)`` for a single id was O(n) Python work over
+    every cached row, which Copilot flagged as a hot-path concern on
+    larger manifests.
     """
-    for meeting in manifest.list_known(include_archived=True, include_gone=False):
-        if meeting.meeting_id == meeting_id:
-            return meeting
-    # Fall back to the MeetingRecord directly. ``list_known`` filters out rows
-    # that lack snapshot fields (legacy ``register()``-only inserts that no
-    # sync has touched yet); the retry flow just needs a ``Meeting`` with a
-    # workable identity + title to feed the runner. Default the missing
-    # snapshot fields to safe sentinels — the worst case is a metadata.json
-    # with empty host/participant info, not a crash.
     rec = manifest.get(meeting_id)
     if rec is None:
-        return None
-    # Honour the gone-from-source flag in the fallback path too — otherwise
-    # a row whose snapshot fields are missing (skipped by ``list_known``)
-    # but which the last sync already marked as ``gone`` would be served up
-    # as if still present, and the retry would inevitably 404 against the
-    # live API anyway.
+        return (_CacheLookup.ABSENT, None)
     if rec.source_state == "gone":
-        return None
-    return Meeting(
+        return (_CacheLookup.GONE, None)
+    # Default missing snapshot fields to safe sentinels — legacy
+    # ``register()``-only rows lack them until a sync touches the row.
+    # The metadata.json will have empty host/participant info in that
+    # case rather than crashing.
+    meeting = Meeting(
         meeting_id=rec.meeting_id,
         title=rec.title,
         meeting_date=rec.meeting_date,
@@ -139,6 +139,7 @@ def _fetch_meeting_from_cache(*, manifest: Manifest, meeting_id: str) -> Meeting
         tags=rec.tags or (),
         has_transcript=bool(rec.has_transcript) if rec.has_transcript is not None else True,
     )
+    return (_CacheLookup.PRESENT, meeting)
 
 
 # ---------------------------------------------------------------------------
@@ -230,8 +231,16 @@ async def retry_meeting(
             detail="Meeting not in a retry-able state.",
         )
 
-    meeting = _fetch_meeting_from_cache(manifest=deps.manifest, meeting_id=meeting_id)
-    if meeting is None:
+    cache_state, meeting = _fetch_meeting_from_cache(manifest=deps.manifest, meeting_id=meeting_id)
+    if cache_state == _CacheLookup.GONE:
+        # Sync has already learned the meeting is no longer in Fireflies —
+        # retrying won't change that. Tell the user the truth instead of
+        # asking them to sync again.
+        raise HTTPException(
+            status_code=404,
+            detail="Meeting is no longer in Fireflies (detected by last sync).",
+        )
+    if cache_state == _CacheLookup.ABSENT or meeting is None:
         raise HTTPException(
             status_code=404,
             detail="Meeting metadata not in local cache. Run a sync first.",

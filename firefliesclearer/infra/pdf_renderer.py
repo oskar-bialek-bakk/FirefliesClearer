@@ -161,9 +161,14 @@ class ReportlabSummaryRenderer:
         if meta_parts:
             story.append(Paragraph(" · ".join(meta_parts), styles["meta"]))
         if source_url:
+            # Attribute and text contexts have different escape rules — use
+            # ``_escape_attr`` for the href value (covers quotes too) and
+            # ``_escape`` for the visible link text. Mixing them up would
+            # break reportlab's XML parser if a URL ever contained ``"`` or
+            # ``'`` (Copilot review on PR #19).
             story.append(
                 Paragraph(
-                    f'<link href="{_escape(source_url)}">{_escape(source_url)}</link>',
+                    f'<link href="{_escape_attr(source_url)}">{_escape(source_url)}</link>',
                     styles["meta"],
                 )
             )
@@ -219,6 +224,23 @@ class ReportlabSummaryRenderer:
 def _escape(text: str) -> str:
     """Escape XML special chars used by reportlab Paragraph markup."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _escape_attr(text: str) -> str:
+    """Escape a string for use inside a double-quoted XML attribute.
+
+    Same rules as ``_escape`` plus ``"`` and ``'`` so a value containing
+    quotes can't break out of the attribute and corrupt reportlab's XML
+    parsing. Required for the ``<link href="...">`` build in
+    :class:`ReportlabSummaryRenderer.render`.
+    """
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
 
 
 def _meta_parts(meeting: Meeting | None) -> list[str]:

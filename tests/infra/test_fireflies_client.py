@@ -773,6 +773,83 @@ async def test_list_meetings_tolerates_field_level_resolver_timeouts(
 
 
 @respx.mock
+async def test_field_level_error_without_timeout_flavor_is_not_tolerated(
+    client: FirefliesClient,
+) -> None:
+    """The tolerance branch only applies when the error looks timeout-flavored
+    (``code: 'request_timeout'`` or ``extensions.status: 408``). An upstream
+    schema or data regression that happens to land on a tolerated leaf field
+    must surface as ``FirefliesError`` so we don't silently mask it
+    (Copilot review on PR #19)."""
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "transcripts": [
+                        {
+                            "id": "a",
+                            "title": "M",
+                            "date": "2026-01-01T10:00:00Z",
+                            "duration": 1.0,
+                            "host_email": "u@x.com",
+                            "participants": None,
+                            "transcript_url": None,
+                        }
+                    ]
+                },
+                "errors": [
+                    {
+                        "message": "Resolver crashed",
+                        "path": ["transcripts", 0, "participants"],
+                        "code": "INTERNAL_ERROR",
+                    }
+                ],
+            },
+        )
+    )
+    with pytest.raises(FirefliesError):
+        async for _ in client.list_meetings(MeetingFilter()):
+            pass
+
+
+@respx.mock
+async def test_list_meetings_continues_paginating_after_all_null_page(
+    client: FirefliesClient,
+) -> None:
+    """A page where every row's required fields nulled-out (Fireflies bubbles
+    the null up to row root) used to terminate pagination prematurely.
+    Pagination must only stop when the items list itself is empty so that
+    later pages with valid rows are still reached (Copilot review on PR #19)."""
+    page1 = {"data": {"transcripts": [None, None]}}  # all rows nulled
+    page2 = {
+        "data": {
+            "transcripts": [
+                {
+                    "id": "z",
+                    "title": "M",
+                    "date": "2026-01-01T10:00:00Z",
+                    "duration": 1.0,
+                    "host_email": "u@x.com",
+                    "participants": [],
+                    "transcript_url": None,
+                }
+            ]
+        }
+    }
+    page3 = {"data": {"transcripts": []}}
+    respx.post(API_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=page1),
+            httpx.Response(200, json=page2),
+            httpx.Response(200, json=page3),
+        ]
+    )
+    ids = [m.meeting_id async for m in client.list_meetings(MeetingFilter())]
+    assert ids == ["z"]
+
+
+@respx.mock
 async def test_list_meetings_tolerates_per_row_errors_on_full_page(
     client: FirefliesClient,
 ) -> None:

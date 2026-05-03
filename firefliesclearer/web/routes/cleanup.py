@@ -858,24 +858,18 @@ async def _selected_meetings(deps: SimpleNamespace, selected_ids: list[str]) -> 
     user expects to see them. Missing ids (e.g. meeting gone-from-source
     between Step 2 and Step 3) are silently dropped.
 
-    Reads come from ``Manifest.list_known`` rather than the live Fireflies
-    API. The previous implementation walked
-    ``deps.client.list_meetings(...)`` — a live network round-trip that
-    paginated through every meeting in the user's account. With a slow
-    upstream this turned the Continue button (and the equivalent purge entry
-    points) into a 2-minute "frozen app" experience even for 4 selected rows.
-    The manifest already has the data we need; the API call is wasted work.
-    ``include_archived=True`` covers meetings already archived (Step 4 purge
-    re-resolves the same ids); ``include_gone=False`` skips rows that were
-    deleted-from-source since the user picked them.
+    Uses ``Manifest.list_known_by_ids`` — a single SQL query for the
+    targeted set, no full-table scan. The previous implementation walked
+    ``manifest.list_known()`` and filtered in Python, which was O(N_total)
+    per step transition; the version before that walked
+    ``deps.client.list_meetings(...)`` (live API) which compounded the
+    problem with network latency. The targeted helper keeps Step 3 / 4
+    start latency bounded by ``len(selected_ids)`` even on large
+    manifests (Copilot review on PR #19).
     """
     if not selected_ids:
         return []
-    selected_set = set(selected_ids)
-    by_id: dict[str, Meeting] = {}
-    for meeting in deps.manifest.list_known(include_archived=True, include_gone=False):
-        if meeting.meeting_id in selected_set:
-            by_id[meeting.meeting_id] = meeting
+    by_id = {m.meeting_id: m for m in deps.manifest.list_known_by_ids(selected_ids)}
     return [by_id[mid] for mid in selected_ids if mid in by_id]
 
 

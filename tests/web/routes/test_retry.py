@@ -423,7 +423,30 @@ def test_retry_returns_404_when_meeting_marked_gone_in_cache(
         data={"_csrf": _csrf(configured_client)},
     )
     assert r.status_code == 404
-    assert "cache" in r.text.lower() or "no longer" in r.text.lower()
+    # Distinct error message vs the absent-from-cache case — pointing the
+    # user at "run a sync first" would be misleading here because sync
+    # was the very thing that learned the meeting was gone.
+    body = r.text.lower()
+    assert "no longer" in body
+    assert "run a sync" not in body
+
+
+def test_retry_returns_distinct_404_when_meeting_absent_from_cache(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The other 404 path: the meeting id wasn't found at all. Tells the
+    user to sync — that's the action that fixes it. Pairs with the
+    gone-from-source test to lock down the missing-vs-gone distinction
+    Copilot flagged on PR #19."""
+    r = configured_client.post(
+        "/retry/never-seen-this-id",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 404
+    body = r.text.lower()
+    # Falls through the kind/state checks first since manifest.get returns
+    # None — message comes from the "Meeting not found in manifest" path.
+    assert "not found" in body or "not in local cache" in body
 
 
 def test_retry_writes_full_metadata_to_archive_directory(
