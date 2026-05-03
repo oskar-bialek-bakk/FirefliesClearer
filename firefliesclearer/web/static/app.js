@@ -41,4 +41,15 @@
       if (panel) panel.setAttribute("hidden", "");
     }
   });
+
+  // Theme toggle: dark <-> light, persisted in localStorage.
+  document.addEventListener("click", function (e) {
+    const btn = e.target.closest("[data-action='toggle-theme']");
+    if (!btn) return;
+    e.preventDefault();
+    const cur = document.documentElement.dataset.theme || "dark";
+    const next = cur === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("ffc-theme", next); } catch (e) { /* no-op */ }
+  });
 })();
