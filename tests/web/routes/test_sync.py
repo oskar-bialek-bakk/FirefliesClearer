@@ -197,6 +197,34 @@ def test_post_sync_now_wires_snapshot_callback_even_when_service_preset(
     )
 
 
+def test_post_sync_now_returns_running_banner_html_for_htmx_client(
+    configured_app_sync_on,
+) -> None:
+    """Regression: when the dashboard / review-toolbar Sync now form (HTMX)
+    POSTs to /sync/now, the response must be the banner partial — not JSON —
+    so HTMX can swap it into ``#sync-banner``. Without this, the form swap
+    inserted ``{"state":"running",...}`` text into the page and the user
+    saw nothing change until they manually refreshed.
+    """
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.post(
+            "/sync/now",
+            data={
+                "_csrf": _csrf(client),
+                "mode": "incremental",
+                "trigger": "manual_review",
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200, r.text
+        assert "text/html" in r.headers.get("content-type", "")
+        # Banner must reflect the running state (id + class wiring is what
+        # HTMX targets / styles).
+        assert 'id="sync-banner"' in r.text
+        assert "sync-banner--running" in r.text
+
+
 def test_post_sync_now_rejects_invalid_mode(configured_app_sync_on) -> None:
     with TestClient(configured_app_sync_on) as client:
         client.get("/?token=T", follow_redirects=False)

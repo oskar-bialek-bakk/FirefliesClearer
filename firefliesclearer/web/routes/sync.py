@@ -185,7 +185,7 @@ def _build_status_dict(request: Request, deps: SimpleNamespace) -> dict[str, Any
 async def trigger_sync(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
-) -> JSONResponse:
+) -> Response:
     """Acquire ``sync_lock`` and spawn a background SyncService run.
 
     Returns:
@@ -263,6 +263,19 @@ async def trigger_sync(
     # Park the task on app.state so it isn't GC'd mid-flight.
     task = asyncio.create_task(_runner())
     request.app.state.current_sync_task = task
+
+    # HTMX clients (the dashboard / review-toolbar Sync now button) swap the
+    # response into ``#sync-banner``. Render the banner partial so the user
+    # sees the running state immediately instead of having to refresh the
+    # page. Non-HTMX callers (CLI, scripts, tests) keep the JSON 202 contract.
+    if request.headers.get("HX-Request") == "true":
+        templates: Jinja2Templates = request.app.state.templates
+        sync_status = _build_status_dict(request, deps)
+        return templates.TemplateResponse(
+            request,
+            "partials/_sync_banner.html",
+            {"sync_status": sync_status},
+        )
 
     return JSONResponse(
         {

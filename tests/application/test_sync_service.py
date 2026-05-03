@@ -330,6 +330,57 @@ async def test_full_sync_resume_continues_from_cursor(manifest_db):
     assert {m.meeting_id for m in manifest_db.list_known()} == {f"m{i}" for i in range(10)}
 
 
+async def test_incremental_sync_returns_partial_on_transient_5xx(manifest_db):
+    """Regression: a 504 from Fireflies (after retries are exhausted in the
+    HTTP client) must finalize the run as ``partial`` with ``next_resume_at``,
+    not ``failed``. Otherwise a flaky upstream minute leaves the user
+    looking at a sticky 'Last sync failed: server 504' banner until they
+    click Retry — when the scheduler should pick it up automatically.
+    """
+    from collections.abc import AsyncIterator
+
+    from firefliesclearer.infra.fireflies_client import TransientServerError
+
+    class _FlakyRepo:
+        async def list_meetings_page(
+            self, *, skip: int, limit: int, to_date: object = None
+        ) -> AsyncIterator[Meeting]:
+            raise TransientServerError("server 504", retry_after_seconds=120.0)
+            yield  # pragma: no cover — make this a real async generator
+
+    svc = SyncService(repo=_FlakyRepo(), manifest=manifest_db, clock=SystemClock())
+    outcome = await svc.run(mode=SyncMode.INCREMENTAL, trigger=SyncTrigger.SCHEDULED)
+
+    assert outcome.outcome == "partial"
+    assert outcome.next_resume_at is not None
+    rec = manifest_db.get_sync_run(outcome.run_id)
+    assert rec.outcome == "partial"
+    assert rec.error_message is not None
+    assert "504" in rec.error_message
+
+
+async def test_full_sync_returns_partial_on_transient_5xx(manifest_db):
+    """Same property as the incremental case, but for the full reconciliation
+    path — guards against the user-reported scheduler crash."""
+    from collections.abc import AsyncIterator
+
+    from firefliesclearer.infra.fireflies_client import TransientServerError
+
+    class _FlakyRepo:
+        async def list_meetings_page(
+            self, *, skip: int, limit: int, to_date: object = None
+        ) -> AsyncIterator[Meeting]:
+            raise TransientServerError("server 504")
+            yield  # pragma: no cover
+
+    svc = SyncService(repo=_FlakyRepo(), manifest=manifest_db, clock=SystemClock())
+    outcome = await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    assert outcome.outcome == "partial"
+    rec = manifest_db.get_sync_run(outcome.run_id)
+    assert rec.outcome == "partial"
+
+
 async def test_run_finalizes_sync_run_as_failed_on_unexpected_exception(manifest_db):
     """Regression: an unexpected exception inside run() must mark the
     sync_runs row as outcome='failed' before re-raising. Otherwise the row
