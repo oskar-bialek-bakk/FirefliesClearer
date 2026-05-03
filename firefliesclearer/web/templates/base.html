@@ -18,12 +18,24 @@
 {%- set is_htmx = request is defined and request.headers.get('hx-request') == 'true' -%}
 {%- if not is_htmx -%}
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}FirefliesClearer{% endblock %}</title>
+  <link rel="preload" href="/static/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/GeistMono-Variable.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/static/styles.css">
+  <script>
+    // Set theme before paint to avoid flash. Reads localStorage; default = dark.
+    (function () {
+      try {
+        var t = localStorage.getItem('ffc-theme') || 'dark';
+        if (t !== 'dark' && t !== 'light') t = 'dark';
+        document.documentElement.dataset.theme = t;
+      } catch (e) { /* localStorage unavailable; use HTML attribute default */ }
+    })();
+  </script>
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
@@ -34,15 +46,20 @@
 <div style="display: flex">
   <aside class="sidebar">
     <div><strong>FirefliesClearer</strong> <small>v{{ version }}</small></div>
+    {%- set _path = request.url.path if request is defined else '/' -%}
     <nav>
-      <a href="/" hx-get="/" hx-target="#page" hx-push-url="true">Dashboard</a><br>
-      <a href="/cleanup" hx-get="/cleanup" hx-target="#page" hx-push-url="true">Cleanup</a><br>
-      <a href="/presets" hx-get="/presets" hx-target="#page" hx-push-url="true">Presets</a><br>
-      <a href="/history" hx-get="/history" hx-target="#page" hx-push-url="true">History</a><br>
-      <a href="/settings" hx-get="/settings" hx-target="#page" hx-push-url="true">Settings</a>
+      <a href="/"         hx-get="/"         hx-target="#page" hx-push-url="true"{% if _path == '/' %} aria-current="page"{% endif %}>Dashboard</a>
+      <a href="/cleanup"  hx-get="/cleanup"  hx-target="#page" hx-push-url="true"{% if _path.startswith('/cleanup') %} aria-current="page"{% endif %}>Cleanup</a>
+      <a href="/presets"  hx-get="/presets"  hx-target="#page" hx-push-url="true"{% if _path.startswith('/presets') %} aria-current="page"{% endif %}>Presets</a>
+      <a href="/history"  hx-get="/history"  hx-target="#page" hx-push-url="true"{% if _path.startswith('/history') %} aria-current="page"{% endif %}>History</a>
+      <a href="/settings" hx-get="/settings" hx-target="#page" hx-push-url="true"{% if _path.startswith('/settings') %} aria-current="page"{% endif %}>Settings</a>
     </nav>
     <hr>
     <div hx-get="/sidebar/status" hx-trigger="every 30s" hx-swap="innerHTML">{% block sidebar_status %}{% endblock %}</div>
+    <button class="theme-toggle" data-action="toggle-theme" type="button" aria-label="Switch to light theme" aria-pressed="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 0 1-4.4 2.26 5.4 5.4 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+      Switch theme
+    </button>
     <button data-action="quit">Quit app</button>
   </aside>
   <main class="main">

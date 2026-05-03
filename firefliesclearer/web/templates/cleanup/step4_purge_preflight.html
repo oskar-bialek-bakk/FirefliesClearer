@@ -7,7 +7,7 @@
   <h1>Step 4 — Purge</h1>
 
   {% if error %}
-    <p class="error-banner" role="alert" style="color: #b91c1c;">{{ error }}</p>
+    <p class="error-banner" role="alert">{{ error }}</p>
   {% endif %}
 
   <p class="purge-preflight-summary">
@@ -32,8 +32,7 @@
     </ol>
   {% endif %}
 
-  <p class="destructive-notice" role="alert"
-     style="background: #fef3c7; border-left: 4px solid #d97706; padding: 0.75em 1em;">
+  <p class="destructive-notice" role="alert">
     <strong>This cannot be undone.</strong>
     Archived files on disk are kept; only Fireflies' copies are removed.
   </p>
@@ -49,8 +48,7 @@
     </p>
     <div class="form-actions">
       <a href="/cleanup/archive/done" class="cancel-link">&larr; Back</a>
-      <button type="submit" id="purge-btn" class="purge-btn"
-              style="background: #b91c1c; color: white;" disabled>
+      <button type="submit" id="purge-btn" class="purge-btn" disabled>
         Purge {{ count }} meetings
       </button>
     </div>

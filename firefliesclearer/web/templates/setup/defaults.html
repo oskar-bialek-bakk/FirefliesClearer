@@ -2,8 +2,9 @@
 {% block title %}Defaults — FirefliesClearer setup{% endblock %}
 {% block layout %}
 <main style="max-width: 640px; margin: 64px auto; padding: 32px;">
-  <h1>Step 3 of 3: Defaults</h1>
-  <p>You can change these later in Settings.</p>
+  <p class="hint">Setup &middot; Step 3 of 3</p>
+  <h1>Defaults</h1>
+  <p class="muted">You can change these later in Settings.</p>
   <form method="post" action="/setup/defaults">
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
     <label>Age threshold (days): clean up meetings older than
@@ -12,7 +13,10 @@
     <label>Concurrency
       <input type="number" name="concurrency" value="3" min="1" max="20" required>
     </label>
-    <button type="submit">Finish setup</button>
+    <p style="margin-top: 16px;">
+      <button class="btn-primary" type="submit">Finish setup</button>
+      <a class="cancel-link" href="/setup/archive-root" style="margin-left: 12px;">&larr; Back</a>
+    </p>
   </form>
 </main>
 {% endblock %}

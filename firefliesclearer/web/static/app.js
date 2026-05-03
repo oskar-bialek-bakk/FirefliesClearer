@@ -41,4 +41,45 @@
       if (panel) panel.setAttribute("hidden", "");
     }
   });
+
+  // Sidebar active-nav: server renders aria-current on the initial full page,
+  // but HTMX swaps only #page so the sidebar stays stale. Re-evaluate on every
+  // HTMX settle and on browser back/forward.
+  function updateActiveNav() {
+    const path = window.location.pathname;
+    document.querySelectorAll(".sidebar nav a[href]").forEach(function (a) {
+      const href = a.getAttribute("href");
+      const isActive = href === "/" ? path === "/" : path === href || path.startsWith(href + "/");
+      if (isActive) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    });
+  }
+  document.addEventListener("htmx:afterSettle", updateActiveNav);
+  document.addEventListener("htmx:pushedIntoHistory", updateActiveNav);
+  window.addEventListener("popstate", updateActiveNav);
+
+  // Theme toggle: dark <-> light, persisted in localStorage.
+  function syncThemeButton(theme) {
+    document.querySelectorAll("[data-action='toggle-theme']").forEach(function (btn) {
+      btn.setAttribute("aria-pressed", theme === "light" ? "true" : "false");
+      btn.setAttribute(
+        "aria-label",
+        theme === "light" ? "Switch to dark theme" : "Switch to light theme"
+      );
+    });
+  }
+  // Hydrate the toggle's aria state to match whatever the inline pre-paint script chose.
+  window.addEventListener("DOMContentLoaded", function () {
+    syncThemeButton(document.documentElement.dataset.theme || "dark");
+  });
+  document.addEventListener("click", function (e) {
+    const btn = e.target.closest("[data-action='toggle-theme']");
+    if (!btn) return;
+    e.preventDefault();
+    const cur = document.documentElement.dataset.theme || "dark";
+    const next = cur === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("ffc-theme", next); } catch (e) { /* no-op */ }
+    syncThemeButton(next);
+  });
 })();

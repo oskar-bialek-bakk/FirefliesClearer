@@ -2,6 +2,7 @@
 {% block title %}Setup — FirefliesClearer{% endblock %}
 {% block layout %}
 <main style="max-width: 640px; margin: 64px auto; padding: 32px;">
+  <p class="hint">Setup &middot; Welcome</p>
   <h1>Welcome to FirefliesClearer</h1>
   <p>FirefliesClearer needs three things to start:</p>
   <ol>
@@ -9,6 +10,8 @@
     <li>A local archive folder</li>
     <li>Default cleanup rules (age threshold, concurrency)</li>
   </ol>
-  <p><a href="/setup/api-key">Get started &rarr;</a></p>
+  <p style="margin-top: 24px;">
+    <a class="btn-primary" href="/setup/api-key">Get started &rarr;</a>
+  </p>
 </main>
 {% endblock %}
