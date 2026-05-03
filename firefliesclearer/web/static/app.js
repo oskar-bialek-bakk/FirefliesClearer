@@ -42,6 +42,35 @@
     }
   });
 
+  // HTMX error feedback: by default, htmx ignores 4xx/5xx responses and
+  // performs no swap, which makes failed requests look like the button "did
+  // nothing" (user-reported on the dashboard retry buttons after they hit
+  // 429s, 2026-05-03). Surface the error inline so the user sees what
+  // happened — read FastAPI's ``detail`` from the JSON body when present,
+  // fall back to a generic message keyed on status.
+  document.addEventListener("htmx:beforeSwap", function (evt) {
+    var xhr = evt.detail.xhr;
+    if (xhr.status >= 400) {
+      var msg = "Request failed (" + xhr.status + ")";
+      try {
+        var parsed = JSON.parse(xhr.responseText || "{}");
+        if (parsed && parsed.detail) msg = parsed.detail;
+      } catch (e) {
+        if (xhr.responseText && xhr.responseText.length < 200) msg = xhr.responseText;
+      }
+      if (xhr.status === 429) {
+        msg = "Rate limited by Fireflies. " + msg;
+      }
+      // Wrap in a small inline-error fragment matching the swap target's
+      // expected shape (best-effort; works for `outerHTML` swaps).
+      evt.detail.shouldSwap = true;
+      evt.detail.serverResponse =
+        '<div class="inline-error" role="alert" style="color:var(--hot,#c33);padding:6px 10px;border:1px solid var(--hot,#c33);border-radius:4px;font-size:13px">' +
+        msg.replace(/[<&]/g, function (c) { return c === "<" ? "&lt;" : "&amp;"; }) +
+        "</div>";
+    }
+  });
+
   // Sidebar active-nav: server renders aria-current on the initial full page,
   // but HTMX swaps only #page so the sidebar stays stale. Re-evaluate on every
   // HTMX settle and on browser back/forward.

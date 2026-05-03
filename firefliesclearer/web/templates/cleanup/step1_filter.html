@@ -115,10 +115,13 @@
         placeholder="N">
     </fieldset>
 
+    {# `change from:closest form` covers <select>/<input type=checkbox> which
+       don't always fire `input` events; `input changed` handles text fields
+       with debounce so we don't hit the scan on every keystroke. #}
     <div id="preview-count"
          class="preview-count"
          hx-post="/cleanup/preview-count"
-         hx-trigger="input changed delay:500ms from:closest form, load"
+         hx-trigger="input changed delay:400ms from:closest form, change from:closest form, load"
          hx-target="this"
          hx-swap="outerHTML"
          hx-include="closest form">
@@ -129,6 +132,30 @@
       <button type="submit" class="continue-btn">Continue &rarr;</button>
     </div>
   </form>
+
+  {# Mirror of the auto-tick script in presets/_filter_fieldsets.html — keeps
+     gated numeric filters honoured when the user fills the value but forgets
+     to tick the gate. Server-side ``parse_filter_form`` also accepts a bare
+     value as activating, so this is purely a visual cue. #}
+  <script>
+    (function () {
+      var pairs = [
+        ["older_than_days", "older_than_days_enabled"],
+        ["duration_below_minutes", "duration_below_minutes_enabled"],
+      ];
+      pairs.forEach(function (pair) {
+        var valueEl = document.querySelector('[name="' + pair[0] + '"]');
+        var gateEl = document.querySelector('[name="' + pair[1] + '"]');
+        if (!valueEl || !gateEl) return;
+        valueEl.addEventListener("input", function () {
+          if (valueEl.value && !gateEl.checked) {
+            gateEl.checked = true;
+            gateEl.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        });
+      });
+    })();
+  </script>
 
   <details class="save-as-preset">
     <summary>Save current filters as a preset</summary>

@@ -35,6 +35,19 @@
     {% set form_values = {} %}
     {% include "presets/_filter_fieldsets.html" %}
 
+    {# Live count of how many meetings this preset would match — reuses
+       /cleanup/preview-count so the same filter-parsing + scan path is in
+       play as on step 1. #}
+    <div id="preview-count"
+         class="preview-count"
+         hx-post="/cleanup/preview-count"
+         hx-trigger="input changed delay:400ms from:closest form, change from:closest form, load"
+         hx-target="this"
+         hx-swap="outerHTML"
+         hx-include="closest form">
+      Add at least one filter to see a count.
+    </div>
+
     <div class="form-actions">
       <button type="submit" class="btn-primary">Save changes</button>
       <a href="/presets">Cancel</a>

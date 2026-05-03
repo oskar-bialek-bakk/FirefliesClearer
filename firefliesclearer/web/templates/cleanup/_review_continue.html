@@ -1,0 +1,25 @@
+{# Continue form — submits the saved selection and advances the wizard.
+
+   Wrapped in an id'd <form> so server-rendered HTMX fragments can OOB-swap
+   it on every selection change. Without OOB the disabled state would only
+   reflect the initial page render's selected_count, leaving the button stuck
+   disabled even after the user picked rows on later pages. The
+   ``hx-swap-oob`` attribute is benign on the initial full-page render
+   (HTMX only acts on it when it arrives in an HTMX response).
+
+   ``page`` is forwarded so the 422 re-render on POST /cleanup/review keeps
+   the user's pagination position instead of bouncing them to page 1.
+#}
+<form method="post" action="/cleanup/review" class="continue-form"
+      id="continue-form" hx-swap-oob="outerHTML">
+  <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+  <input type="hidden" name="page" value="{{ page }}">
+  <input type="hidden" name="sort" value="{{ sort }}">
+  <input type="hidden" name="dir" value="{{ dir }}">
+  <div class="form-actions">
+    <button type="submit" class="continue-btn"
+      {% if not selected_count %}disabled{% endif %}>
+      Continue &rarr;
+    </button>
+  </div>
+</form>

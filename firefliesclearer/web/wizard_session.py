@@ -244,12 +244,21 @@ def parse_filter_form(form: dict[str, Any]) -> ScanFilters:
             return None
         return str(v)
 
+    # Gating rule: the field is active when either the gate checkbox is on
+    # OR the value field is populated. The pure-checkbox gating dropped any
+    # numeric the user typed when they didn't also tick the box, so the
+    # preview count silently ignored their filter — user-reported on the
+    # preset edit pages where the checkbox was easy to miss (2026-05-03).
+    older_than_days_value = _opt_int(_get("older_than_days"))
     older_than_days = (
-        _opt_int(_get("older_than_days")) if _checkbox(_get("older_than_days_enabled")) else None
+        older_than_days_value
+        if _checkbox(_get("older_than_days_enabled")) or older_than_days_value is not None
+        else None
     )
+    duration_below_value = _opt_float(_get("duration_below_minutes"))
     duration_below_minutes = (
-        _opt_float(_get("duration_below_minutes"))
-        if _checkbox(_get("duration_below_minutes_enabled"))
+        duration_below_value
+        if _checkbox(_get("duration_below_minutes_enabled")) or duration_below_value is not None
         else None
     )
 

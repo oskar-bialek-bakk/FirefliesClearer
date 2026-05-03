@@ -159,6 +159,37 @@ def test_summary_failed_count_is_zero_for_empty_manifest(tmp_path: Path) -> None
     assert summary.failed_count == 0
 
 
+def test_summary_total_count_sums_every_state_including_known(tmp_path: Path) -> None:
+    """``total_count`` must include freshly-synced ``KNOWN`` rows that don't
+    appear in any of the action-oriented cards (Archived/Pending/Failed/Deleted).
+    Otherwise the dashboard's "Total cached" card under-reports right after a
+    sync, when the bulk of meetings sit in KNOWN until the user runs cleanup."""
+    svc, manifest = _build(tmp_path)
+    # 3 KNOWN (sync-only, never wizard-touched), 1 PENDING, 1 ARCHIVED,
+    # 1 FAILED_FETCH = 6 total.
+    for mid in ("k1", "k2", "k3"):
+        manifest.upsert_known(_meeting(mid), at=NOW)
+    manifest.register(_meeting("p1"), at=NOW)  # register seeds PENDING
+    manifest.register(_meeting("a1"), at=NOW)
+    manifest.transition("a1", to=MeetingState.ARCHIVED, at=NOW)
+    manifest.register(_meeting("f1"), at=NOW)
+    manifest.transition("f1", to=MeetingState.FAILED_FETCH, at=NOW, last_error="x")
+
+    summary = svc.summary()
+    assert summary.total_count == 6
+    # Sanity-check: each cohort is in its expected state bucket.
+    assert summary.counts_by_state.get(MeetingState.KNOWN, 0) == 3
+    assert summary.counts_by_state.get(MeetingState.PENDING, 0) == 1
+    assert summary.counts_by_state.get(MeetingState.ARCHIVED, 0) == 1
+    assert summary.counts_by_state.get(MeetingState.FAILED_FETCH, 0) == 1
+
+
+def test_summary_total_count_is_zero_for_empty_manifest(tmp_path: Path) -> None:
+    svc, _ = _build(tmp_path)
+    summary = svc.summary()
+    assert summary.total_count == 0
+
+
 def test_summary_excludes_meetings_with_no_last_error_from_last_errors(tmp_path: Path) -> None:
     svc, manifest = _build(tmp_path)
     manifest.register(_meeting("a"), at=NOW)

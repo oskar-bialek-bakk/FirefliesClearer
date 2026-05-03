@@ -35,6 +35,18 @@ class StateSummary:
         """Total count of meetings in any failed state (across _FAILED_STATES)."""
         return sum(self.counts_by_state.get(s, 0) for s in _FAILED_STATES)
 
+    @property
+    def total_count(self) -> int:
+        """Total meetings in the manifest across every state.
+
+        Includes freshly-synced ``KNOWN`` rows that don't surface in any of
+        the action-oriented cards (Archived / Pending / Failed / Deleted) —
+        those are the bulk of what shows up after a sync, and the user
+        otherwise has no single number telling them how much they've got
+        cached.
+        """
+        return sum(self.counts_by_state.values())
+
 
 @dataclass(frozen=True, slots=True)
 class HistoryEntry:

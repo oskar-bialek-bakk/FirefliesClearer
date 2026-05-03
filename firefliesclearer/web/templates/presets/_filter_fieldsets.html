@@ -90,3 +90,27 @@
   <input type="number" id="pf_participants_below" name="participants_below" min="0" step="1"
     value="{{ pb_val }}" placeholder="N">
 </fieldset>
+
+{# Auto-tick the gate checkbox when the user populates the paired numeric
+   input. Without this, typing 30 into "older than" without first checking
+   the box left the value visually present but server-side dropped — the
+   live count then mysteriously ignored the user's filter. #}
+<script>
+  (function () {
+    var pairs = [
+      ["older_than_days", "older_than_days_enabled"],
+      ["duration_below_minutes", "duration_below_minutes_enabled"],
+    ];
+    pairs.forEach(function (pair) {
+      var valueEl = document.querySelector('[name="' + pair[0] + '"]');
+      var gateEl = document.querySelector('[name="' + pair[1] + '"]');
+      if (!valueEl || !gateEl) return;
+      valueEl.addEventListener("input", function () {
+        if (valueEl.value && !gateEl.checked) {
+          gateEl.checked = true;
+          gateEl.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      });
+    });
+  })();
+</script>

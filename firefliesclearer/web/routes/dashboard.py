@@ -24,7 +24,6 @@ from starlette.responses import Response
 from firefliesclearer.application.audit_service import AuditService, StateSummary
 from firefliesclearer.core.manifest import Manifest, MeetingRecord
 from firefliesclearer.core.models import Meeting, MeetingState
-from firefliesclearer.ports.meeting_repository import MeetingFilter, MeetingRepository
 from firefliesclearer.web.deps import get_deps
 from firefliesclearer.web.operations import (
     Event,
@@ -91,18 +90,55 @@ def _needs_attention_rows(manifest: Manifest, summary: StateSummary) -> list[Mee
     return rows
 
 
-async def _fetch_meeting_from_source(*, repo: MeetingRepository, meeting_id: str) -> Meeting | None:
-    """Look up the live Meeting metadata from Fireflies.
+def _fetch_meeting_from_cache(*, manifest: Manifest, meeting_id: str) -> Meeting | None:
+    """Look up the Meeting metadata from the local cache.
 
     Used by the retry flow to reconstruct the full Meeting (duration, host,
-    participants, tags) needed to write a faithful metadata.json. Returns
-    None if the meeting is no longer present in the source (e.g. the user
-    deleted it from Fireflies between the failed archive and the retry).
+    participants, tags) needed to write a faithful metadata.json.
+
+    Reads come from the cache rather than the live API. The previous version
+    walked ``repo.list_meetings(MeetingFilter())`` — a network round-trip
+    that paginated through every meeting in the user's account just to find
+    one row by id. With a slow upstream or under rate-limit pressure
+    (the user hit 429s during the 2026-05-03 incident), the retry button
+    appeared to "do nothing" because the request silently 5xx'd before HTMX
+    could swap in any feedback. The cache has the same metadata after a
+    sync, with no network cost.
+
+    ``include_archived=True`` covers retry-archive (failed states) and
+    retry-purge (archived state); ``include_gone=False`` skips rows the
+    last full sync flagged as gone-from-source so we don't try to operate
+    on transcripts the user already removed in Fireflies.
     """
-    async for meeting in repo.list_meetings(MeetingFilter()):
+    for meeting in manifest.list_known(include_archived=True, include_gone=False):
         if meeting.meeting_id == meeting_id:
             return meeting
-    return None
+    # Fall back to the MeetingRecord directly. ``list_known`` filters out rows
+    # that lack snapshot fields (legacy ``register()``-only inserts that no
+    # sync has touched yet); the retry flow just needs a ``Meeting`` with a
+    # workable identity + title to feed the runner. Default the missing
+    # snapshot fields to safe sentinels — the worst case is a metadata.json
+    # with empty host/participant info, not a crash.
+    rec = manifest.get(meeting_id)
+    if rec is None:
+        return None
+    # Honour the gone-from-source flag in the fallback path too — otherwise
+    # a row whose snapshot fields are missing (skipped by ``list_known``)
+    # but which the last sync already marked as ``gone`` would be served up
+    # as if still present, and the retry would inevitably 404 against the
+    # live API anyway.
+    if rec.source_state == "gone":
+        return None
+    return Meeting(
+        meeting_id=rec.meeting_id,
+        title=rec.title,
+        meeting_date=rec.meeting_date,
+        duration_minutes=float(rec.duration_minutes) if rec.duration_minutes is not None else 0.0,
+        host_email=rec.host_email or "",
+        participant_count=int(rec.participant_count) if rec.participant_count is not None else 0,
+        tags=rec.tags or (),
+        has_transcript=bool(rec.has_transcript) if rec.has_transcript is not None else True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +185,26 @@ async def sidebar_status(
     )
 
 
+@router.get("/dashboard/state-counts")
+async def dashboard_state_counts(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Return the state-counts cards as a standalone fragment.
+
+    Driven by the ``hx-trigger="every 10s"`` poll on the section so the
+    Total / Archived / Pending / Failed / Deleted numbers stay current
+    while a sync run is adding rows in the background.
+    """
+    audit = AuditService(manifest=deps.manifest)
+    summary = audit.summary()
+    return _templates(request).TemplateResponse(
+        request,
+        "partials/state_counts.html",
+        {"summary": summary, "MeetingState": MeetingState},
+    )
+
+
 @router.post("/retry/{meeting_id}")
 async def retry_meeting(
     request: Request,
@@ -174,11 +230,11 @@ async def retry_meeting(
             detail="Meeting not in a retry-able state.",
         )
 
-    meeting = await _fetch_meeting_from_source(repo=deps.client, meeting_id=meeting_id)
+    meeting = _fetch_meeting_from_cache(manifest=deps.manifest, meeting_id=meeting_id)
     if meeting is None:
         raise HTTPException(
             status_code=404,
-            detail="Meeting no longer in Fireflies",
+            detail="Meeting metadata not in local cache. Run a sync first.",
         )
 
     runner = _make_retry_runner(deps=deps, meeting=meeting, kind=kind)

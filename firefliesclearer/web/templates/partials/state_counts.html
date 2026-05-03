@@ -1,8 +1,21 @@
-{# State count cards: Archived / Pending / Failed / Deleted. #}
+{# State count cards: Total / Archived / Pending / Failed / Deleted.
+
+   Self-polling: this section refreshes itself every 10s via HTMX. The
+   sync scheduler may add freshly-synced rows in the background (KNOWN
+   state — bulk of the Total card), and a static dashboard would otherwise
+   stay stale until the user reloaded. Polling stops when the user navigates
+   away because HTMX scopes its triggers to the live element. #}
 {% set archived_count = summary.counts_by_state.get(MeetingState.ARCHIVED, 0) %}
 {% set pending_count = summary.counts_by_state.get(MeetingState.PENDING, 0) %}
 {% set deleted_count = summary.counts_by_state.get(MeetingState.DELETED, 0) %}
-<section class="state-counts">
+<section class="state-counts" id="state-counts"
+         hx-get="/dashboard/state-counts"
+         hx-trigger="every 10s"
+         hx-swap="outerHTML">
+  <div class="state-count-card state-count-card--total" data-state="total">
+    <div class="state-count-card__label">Total cached</div>
+    <div class="state-count-card__value">{{ summary.total_count }}</div>
+  </div>
   <div class="state-count-card" data-state="archived">
     <div class="state-count-card__label">Archived</div>
     <div class="state-count-card__value">{{ archived_count }}</div>

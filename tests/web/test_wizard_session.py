@@ -52,16 +52,27 @@ def test_parse_filter_form_strips_whitespace_and_drops_empty_csv_entries():
     assert f.title_contains == ("standup", "review", "retro")
 
 
-def test_parse_filter_form_older_than_days_disabled_when_checkbox_missing():
-    form = {"older_than_days": "30"}  # checkbox NOT present
+def test_parse_filter_form_older_than_days_active_when_value_set_without_checkbox():
+    """Behaviour change (2026-05-03): a populated value alone is enough to
+    activate the filter. Previously the gate checkbox was required, which
+    silently dropped any number the user typed without ticking the box —
+    confusing on the preset edit pages where the box was easy to miss."""
+    form = {"older_than_days": "30"}  # checkbox not present
     f = wizard_session.parse_filter_form(form)
-    assert f.older_than_days is None
+    assert f.older_than_days == 30
 
 
-def test_parse_filter_form_duration_disabled_when_checkbox_missing():
-    form = {"duration_below_minutes": "5"}  # checkbox NOT present
+def test_parse_filter_form_duration_active_when_value_set_without_checkbox():
+    form = {"duration_below_minutes": "5"}  # checkbox not present
     f = wizard_session.parse_filter_form(form)
-    assert f.duration_below_minutes is None
+    assert f.duration_below_minutes == 5.0
+
+
+def test_parse_filter_form_older_than_days_inactive_when_blank_and_no_checkbox():
+    """Conversely, a blank value with no checkbox stays inactive — that's the
+    'user opened the form and didn't touch this filter' case."""
+    assert wizard_session.parse_filter_form({"older_than_days": ""}).older_than_days is None
+    assert wizard_session.parse_filter_form({}).older_than_days is None
 
 
 def test_parse_filter_form_blank_numeric_fields_are_none():
