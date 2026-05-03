@@ -32,6 +32,7 @@
     (function () {
       try {
         var t = localStorage.getItem('ffc-theme') || 'dark';
+        if (t !== 'dark' && t !== 'light') t = 'dark';
         document.documentElement.dataset.theme = t;
       } catch (e) { /* localStorage unavailable; use HTML attribute default */ }
     })();
@@ -56,7 +57,7 @@
     </nav>
     <hr>
     <div hx-get="/sidebar/status" hx-trigger="every 30s" hx-swap="innerHTML">{% block sidebar_status %}{% endblock %}</div>
-    <button class="theme-toggle" data-action="toggle-theme" type="button" aria-label="Switch theme">
+    <button class="theme-toggle" data-action="toggle-theme" type="button" aria-label="Switch to light theme" aria-pressed="false">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 0 1-4.4 2.26 5.4 5.4 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
       Switch theme
     </button>

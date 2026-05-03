@@ -18,8 +18,8 @@
   --border:       #2d2920;
   --border-strong:#423c2c;
   --text:         #f4efe2;
-  --text-2:       #b8b0a0;
-  --text-3:       #756d5e;
+  --text-2:       #c8c0b0;
+  --text-3:       #9c9384;
 
   --accent:       #2dd4bf;
   --accent-soft:  rgba(45, 212, 191, 0.13);
@@ -71,7 +71,7 @@
   --border-strong:#c2b8a0;
   --text:         #1c1a16;
   --text-2:       #4a4540;
-  --text-3:       #8a8175;
+  --text-3:       #6b6257;
 
   --accent:       #0d9488;
   --accent-soft:  rgba(13, 148, 136, 0.1);
@@ -151,8 +151,10 @@ body::before {
 }
 [data-theme="light"] body::before { opacity: 0.5; }
 
-/* Make all top-level layout sit above the overlays */
-body > * { position: relative; z-index: 2; }
+/* Make all top-level layout sit above the overlays without creating a
+   stacking context on the wrapper (which would silently break the sticky
+   sidebar if anyone ever adds overflow to the wrapper). */
+body > * { isolation: isolate; }
 
 ::selection { background: var(--accent); color: var(--on-accent); }
 
@@ -264,9 +266,7 @@ body > [style*="display: flex"] {
 
 .sidebar nav { flex: 0; display: flex; flex-direction: column; gap: 1px; }
 
-.sidebar nav a,
-.sidebar nav br + a,
-.sidebar nav > a {
+.sidebar nav a {
   display: flex;
   align-items: center;
   gap: 10px;
