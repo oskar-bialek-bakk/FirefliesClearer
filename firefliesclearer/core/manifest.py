@@ -487,7 +487,7 @@ class Manifest:
         run_id: int,
         *,
         at: datetime,
-        next_resume_at: datetime,
+        next_resume_at: datetime | None,
         error_message: str | None = None,
     ) -> None:
         self._conn.execute(

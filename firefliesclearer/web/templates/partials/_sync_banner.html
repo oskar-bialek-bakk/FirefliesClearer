@@ -16,17 +16,21 @@
       {% set lr = sync_status.last_run %}
       {% if lr.outcome == "partial" %}
         <span class="sync-banner__msg">
-          Sync paused: <strong>{{ lr.error_message or "upstream unavailable" }}</strong>.
-          Next retry around
-          <strong>{{ lr.next_resume_at_local or lr.next_resume_at }}</strong>
-          (estimated). {{ lr.meetings_added }} added so far.
+          Sync paused: <strong>{{ lr.error_message or "upstream unavailable" }}</strong>
+          {% if lr.next_resume_at %}
+            Will retry automatically around
+            <strong>{{ lr.next_resume_at_local or lr.next_resume_at }}</strong>.
+          {% endif %}
+          {% if lr.meetings_added %}
+            {{ lr.meetings_added }} new meeting{{ "s" if lr.meetings_added != 1 else "" }} added so far this run.
+          {% endif %}
         </span>
         <form method="post" hx-post="/sync/now"
               hx-vals='{"mode":"incremental","trigger":"manual_review"}'
               hx-target="#sync-banner" hx-swap="outerHTML"
               style="display:inline">
           <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
-          <button type="submit" class="sync-banner__btn">&#x21bb; Retry</button>
+          <button type="submit" class="sync-banner__btn">&#x21bb; Retry now</button>
         </form>
       {% elif lr.outcome == "failed" %}
         <span class="sync-banner__msg">
@@ -80,6 +84,10 @@
       Syncing&hellip; <strong>{{ sync_status.meetings_seen }}</strong> seen,
       <strong>{{ sync_status.meetings_added }}</strong> added,
       <strong>{{ sync_status.meetings_updated }}</strong> updated.
+      <span class="sync-banner__hint">
+        This can take a few minutes when Fireflies is slow &mdash;
+        progress updates here as each page completes.
+      </span>
     </span>
   {% endif %}
 </div>

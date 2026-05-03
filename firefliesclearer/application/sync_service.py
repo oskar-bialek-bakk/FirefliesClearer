@@ -102,7 +102,7 @@ class SyncOutcome:
         run_id: int,
         meetings_seen: int,
         meetings_added: int,
-        next_resume_at: datetime,
+        next_resume_at: datetime | None,
         meetings_updated: int = 0,
         meetings_gone: int = 0,
     ) -> Self:
@@ -389,8 +389,16 @@ class SyncService:
         seen_ids: list[str] | None = None,
         error: str,
     ) -> SyncOutcome:
-        retry_seconds = retry_after if retry_after is not None else 60.0
-        next_resume_at = self._clock.now() + timedelta(seconds=retry_seconds)
+        # ``retry_after`` is only meaningful when it came from upstream
+        # (typically a ``Retry-After`` header on a 429). For 5xx and transport
+        # timeouts the upstream gives us nothing, so we propagate ``None``
+        # rather than synthesising a placeholder — a fabricated "next retry"
+        # timestamp shown to the user is worse than no timestamp. The
+        # scheduler falls back to its regular incremental cadence when
+        # ``next_resume_at is None`` (see sync_scheduler.next_run_at).
+        next_resume_at: datetime | None = (
+            self._clock.now() + timedelta(seconds=retry_after) if retry_after is not None else None
+        )
         # record final progress before flagging partial
         self._manifest.record_sync_progress(
             run_id,

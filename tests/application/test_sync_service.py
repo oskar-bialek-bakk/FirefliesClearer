@@ -381,6 +381,41 @@ async def test_full_sync_returns_partial_on_transient_5xx(manifest_db):
     assert rec.outcome == "partial"
 
 
+async def test_partial_run_persists_no_next_resume_at_when_no_upstream_estimate(
+    manifest_db,
+):
+    """When the transient error carries no upstream-given retry estimate
+    (the default for 5xx and transport timeouts — Fireflies never tells us
+    when the issue will clear), the persisted ``next_resume_at`` must be
+    ``None``. Synthesising a placeholder timestamp surfaces a fabricated
+    'Next retry around HH:MM' line in the UI, which the user explicitly
+    rejected: a guessed number is worse than no number. The scheduler's
+    regular cadence (incremental_interval_hours) is the fallback for
+    'we don't know when'."""
+    from collections.abc import AsyncIterator
+
+    from firefliesclearer.infra.fireflies_client import TransientServerError
+
+    class _FlakyRepo:
+        async def list_meetings_page(
+            self, *, skip: int, limit: int, to_date: object = None
+        ) -> AsyncIterator[Meeting]:
+            # No retry_after_seconds — mirrors the production default.
+            raise TransientServerError("Fireflies timed out...")
+            yield  # pragma: no cover
+
+    svc = SyncService(repo=_FlakyRepo(), manifest=manifest_db, clock=SystemClock())
+    outcome = await svc.run(mode=SyncMode.INCREMENTAL, trigger=SyncTrigger.SCHEDULED)
+
+    assert outcome.outcome == "partial"
+    assert outcome.next_resume_at is None
+    rec = manifest_db.get_sync_run(outcome.run_id)
+    assert rec.next_resume_at is None
+    # Error message survives intact so the banner can render it.
+    assert rec.error_message is not None
+    assert "Fireflies" in rec.error_message
+
+
 async def test_run_finalizes_sync_run_as_failed_on_unexpected_exception(manifest_db):
     """Regression: an unexpected exception inside run() must mark the
     sync_runs row as outcome='failed' before re-raising. Otherwise the row
