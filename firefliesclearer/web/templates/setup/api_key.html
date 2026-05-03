@@ -5,7 +5,7 @@
   <p class="hint">Setup &middot; Step 1 of 3</p>
   <h1>Fireflies API key</h1>
   <p class="muted">Find your key at <a href="https://app.fireflies.ai/settings" target="_blank" rel="noopener">fireflies.ai/settings</a>.</p>
-  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+  {% if error %}<div class="error-banner" role="alert">{{ error }}</div>{% endif %}
   <form method="post" action="/setup/api-key">
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
     <label>API key

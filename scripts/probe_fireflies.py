@@ -21,7 +21,7 @@ import os
 import time
 from pathlib import Path
 
-from firefliesclearer.infra.config import load_config, user_config_path
+from firefliesclearer.infra.config import ConfigError, load_config, user_config_path
 from firefliesclearer.infra.fireflies_client import (
     FirefliesClient,
     FirefliesError,
@@ -74,7 +74,13 @@ def _load_api_key(config_override: Path | None) -> str:
             f"No API key. Set FIREFLIES_API_KEY env var or pass --config "
             f"pointing at an existing config (looked at {cfg_path})."
         )
-    cfg = load_config(user_config=cfg_path)
+    try:
+        cfg = load_config(user_config=cfg_path)
+    except ConfigError as e:
+        raise SystemExit(
+            f"Could not load API key from {cfg_path}: {e}\n"
+            f"Set FIREFLIES_API_KEY env var to bypass the config file."
+        ) from e
     return cfg.fireflies.api_key
 
 

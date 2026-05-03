@@ -5,7 +5,7 @@
   <p class="hint">Setup &middot; Step 2 of 3</p>
   <h1>Archive folder</h1>
   <p class="muted">Where should FirefliesClearer keep your archived meetings?</p>
-  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+  {% if error %}<div class="error-banner" role="alert">{{ error }}</div>{% endif %}
   <form method="post" action="/setup/archive-root">
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
     <label>Folder path

@@ -2,8 +2,26 @@
    FirefliesClearer — design system (v2.2 modernization)
    Default: vivid-dark with electric mint accent
    Toggle:  warm-light (data-theme="light")
-   Fonts:   Geist + Geist Mono (loaded via base.html)
+   Fonts:   Geist + Geist Mono, self-hosted under /static/fonts/
    ============================================================ */
+
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/Geist-Variable.woff2") format("woff2-variations"),
+       url("/static/fonts/Geist-Variable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/GeistMono-Variable.woff2") format("woff2-variations"),
+       url("/static/fonts/GeistMono-Variable.woff2") format("woff2");
+}
 
 /* ============================================================
    0. TOKENS

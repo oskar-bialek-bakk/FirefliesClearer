@@ -42,6 +42,22 @@
     }
   });
 
+  // Sidebar active-nav: server renders aria-current on the initial full page,
+  // but HTMX swaps only #page so the sidebar stays stale. Re-evaluate on every
+  // HTMX settle and on browser back/forward.
+  function updateActiveNav() {
+    const path = window.location.pathname;
+    document.querySelectorAll(".sidebar nav a[href]").forEach(function (a) {
+      const href = a.getAttribute("href");
+      const isActive = href === "/" ? path === "/" : path === href || path.startsWith(href + "/");
+      if (isActive) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    });
+  }
+  document.addEventListener("htmx:afterSettle", updateActiveNav);
+  document.addEventListener("htmx:pushedIntoHistory", updateActiveNav);
+  window.addEventListener("popstate", updateActiveNav);
+
   // Theme toggle: dark <-> light, persisted in localStorage.
   function syncThemeButton(theme) {
     document.querySelectorAll("[data-action='toggle-theme']").forEach(function (btn) {
