@@ -2,15 +2,21 @@
 {% block title %}API key — FirefliesClearer setup{% endblock %}
 {% block layout %}
 <main style="max-width: 640px; margin: 64px auto; padding: 32px;">
-  <h1>Step 1 of 3: Fireflies API key</h1>
-  <p>Find your key at <a href="https://app.fireflies.ai/settings" target="_blank">fireflies.ai/settings</a>.</p>
-  {% if error %}<p style="color: #b91c1c;">{{ error }}</p>{% endif %}
+  <p class="hint">Setup &middot; Step 1 of 3</p>
+  <h1>Fireflies API key</h1>
+  <p class="muted">Find your key at <a href="https://app.fireflies.ai/settings" target="_blank" rel="noopener">fireflies.ai/settings</a>.</p>
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
   <form method="post" action="/setup/api-key">
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
     <label>API key
       <input type="password" name="api_key" required autocomplete="off">
     </label>
-    <button type="submit">Verify and continue</button>
+    <div class="destructive-notice">
+      Your API key will be stored on disk in your local config file. Keep this device trusted.
+    </div>
+    <p style="margin-top: 16px;">
+      <button class="btn-primary" type="submit">Verify and continue</button>
+    </p>
   </form>
 </main>
 {% endblock %}

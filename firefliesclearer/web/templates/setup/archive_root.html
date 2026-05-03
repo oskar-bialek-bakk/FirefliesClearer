@@ -2,16 +2,20 @@
 {% block title %}Archive folder — FirefliesClearer setup{% endblock %}
 {% block layout %}
 <main style="max-width: 640px; margin: 64px auto; padding: 32px;">
-  <h1>Step 2 of 3: Archive folder</h1>
-  <p>Where should FirefliesClearer keep your archived meetings?</p>
-  {% if error %}<p style="color: #b91c1c;">{{ error }}</p>{% endif %}
+  <p class="hint">Setup &middot; Step 2 of 3</p>
+  <h1>Archive folder</h1>
+  <p class="muted">Where should FirefliesClearer keep your archived meetings?</p>
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
   <form method="post" action="/setup/archive-root">
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
     <label>Folder path
       <input type="text" name="archive_root" value="{{ default_root }}" required>
     </label>
     <label><input type="checkbox" name="create" value="yes"> Create this folder if it doesn't exist</label>
-    <button type="submit">Continue</button>
+    <p style="margin-top: 16px;">
+      <button class="btn-primary" type="submit">Continue</button>
+      <a class="cancel-link" href="/setup/api-key" style="margin-left: 12px;">&larr; Back</a>
+    </p>
   </form>
 </main>
 {% endblock %}
