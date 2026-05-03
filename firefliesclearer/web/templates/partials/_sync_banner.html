@@ -16,7 +16,8 @@
       {% set lr = sync_status.last_run %}
       {% if lr.outcome == "partial" %}
         <span class="sync-banner__msg">
-          Sync paused: rate-limited until <strong>{{ lr.next_resume_at }}</strong>.
+          Sync paused: rate-limited until
+          <strong>{{ lr.next_resume_at_local or lr.next_resume_at }}</strong>.
           {{ lr.meetings_added }} added so far.
         </span>
         <form method="post" hx-post="/sync/now"
@@ -39,7 +40,8 @@
         </form>
       {% else %}
         <span class="sync-banner__msg">
-          Last synced: <strong>{{ lr.finished_at or "&mdash;" }}</strong>
+          Last synced:
+          <strong>{{ lr.finished_at_local or lr.finished_at or "&mdash;" }}</strong>
           ({{ lr.mode }}, {{ lr.outcome }})
         </span>
         <form method="post" hx-post="/sync/now"
