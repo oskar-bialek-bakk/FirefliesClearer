@@ -111,13 +111,21 @@ class FirefliesClient:
         api_key: str,
         endpoint: str = "https://api.fireflies.ai/graphql",
         retry_max: int = 3,
+        retry_5xx_max: int = 1,
         retry_base_seconds: float = 1.0,
         page_size: int = 50,
         timeout_seconds: float = 30.0,
     ) -> None:
+        # ``retry_5xx_max`` is intentionally smaller than ``retry_max``:
+        # Fireflies' edge serves 504s in ~15s when their backend is sluggish
+        # (measured), so each 5xx retry burns ~15s for negligible value when
+        # the outage is sustained. One retry covers the single-blip case,
+        # then we surface as ``TransientServerError`` and the sync engine
+        # finalises the run as ``partial`` so the scheduler retries later.
         self._api_key = api_key
         self._endpoint = endpoint
         self._retry_max = retry_max
+        self._retry_5xx_max = retry_5xx_max
         self._retry_base = retry_base_seconds
         self._page_size = page_size
         self._timeout = timeout_seconds
@@ -268,7 +276,7 @@ class FirefliesClient:
                 await self._sleep(attempt, retry_after_seconds=ra_seconds)
                 continue
             if 500 <= resp.status_code < 600:
-                if attempt >= self._retry_max:
+                if attempt >= self._retry_5xx_max:
                     raise TransientServerError(f"server {resp.status_code}")
                 await self._sleep(attempt, retry_after_seconds=None)
                 continue
