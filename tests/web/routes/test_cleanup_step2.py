@@ -256,6 +256,78 @@ def test_select_all_response_includes_oob_toolbar(
     assert "<strong>5</strong> of <strong>5</strong> selected" in r.text
 
 
+def test_select_all_response_includes_oob_continue_form(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Selection-mutating POSTs must also OOB-swap the Continue form so its
+    ``disabled`` attribute reflects the new selected_count. Without this the
+    button stayed disabled even after the user picked rows on later pages,
+    making the wizard impossible to advance (user-reported 2026-05-03)."""
+    _seed_repo_with_meetings(configured_app, 5)
+    sid = _sid_from_client(configured_client)
+    _set_filters_in_session(configured_app, sid, ScanFilters(older_than_days=30))
+    r = configured_client.post(
+        "/cleanup/review/select-all",
+        data={"_csrf": _csrf(configured_client), "page": "1"},
+    )
+    assert r.status_code == 200
+    # Continue form is in the response with the OOB marker so HTMX targets the
+    # existing #continue-form in the page.
+    assert 'id="continue-form"' in r.text
+    assert 'hx-swap-oob="outerHTML"' in r.text
+    # The button is enabled because 5 rows are now selected.
+    assert "disabled" not in _continue_button_html(r.text)
+
+
+def test_continue_form_initially_disabled_when_no_selection(
+    configured_client: TestClient, configured_app
+) -> None:
+    """First page-load: nothing selected -> the Continue button is disabled.
+    Pairs with the OOB-swap test above to lock down both ends of the contract."""
+    _seed_repo_with_meetings(configured_app, 5)
+    sid = _sid_from_client(configured_client)
+    _set_filters_in_session(configured_app, sid, ScanFilters(older_than_days=30))
+    r = configured_client.get("/cleanup/review")
+    assert r.status_code == 200
+    assert "disabled" in _continue_button_html(r.text)
+
+
+def test_get_review_htmx_response_includes_oob_toolbar_and_continue(
+    configured_client: TestClient, configured_app
+) -> None:
+    """HTMX-driven sort-column changes hit GET /cleanup/review with HX-Request.
+    The response must include the OOB toolbar AND continue form, not just the
+    table — otherwise the toolbar's hidden ``sort``/``dir`` inputs go stale
+    and a subsequent "Deselect all on page" click sends the *previous* sort
+    to the server (user-reported 2026-05-03)."""
+    _seed_repo_with_meetings(configured_app, 5)
+    sid = _sid_from_client(configured_client)
+    _set_filters_in_session(configured_app, sid, ScanFilters(older_than_days=30))
+    r = configured_client.get(
+        "/cleanup/review?sort=date&dir=asc",
+        headers={"HX-Request": "true"},
+    )
+    assert r.status_code == 200
+    # Toolbar AND continue form must both be in the HTMX response.
+    assert 'id="review-toolbar"' in r.text
+    assert 'id="continue-form"' in r.text
+    # Toolbar's hidden sort/dir inputs reflect the just-applied sort.
+    assert 'name="sort" value="date"' in r.text
+    assert 'name="dir" value="asc"' in r.text
+
+
+def _continue_button_html(html: str) -> str:
+    """Return only the substring containing the continue button, for targeted
+    assertions about its ``disabled`` attribute. Avoids accidental matches on
+    other ``disabled`` attributes elsewhere in the response."""
+    marker = 'class="continue-btn"'
+    idx = html.find(marker)
+    if idx < 0:
+        return ""
+    end = html.find("</button>", idx)
+    return html[idx : end + len("</button>")] if end >= 0 else html[idx:]
+
+
 # ---------------------------------------------------------------------------
 # POST /cleanup/review/deselect-all
 # ---------------------------------------------------------------------------

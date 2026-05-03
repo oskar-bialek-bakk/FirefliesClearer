@@ -440,6 +440,53 @@ class Manifest:
                 has_transcript=bool(row[6]),
             )
 
+    def list_known_by_ids(self, meeting_ids: Iterable[str]) -> Iterable[Meeting]:
+        """Yield Meeting objects for the given ids in arbitrary order.
+
+        SQL ``IN`` query for the targeted set, no full-table scan. The
+        cleanup wizard's per-step "re-resolve selected ids to Meetings"
+        flow uses this in preference to ``list_known`` because the
+        selection is typically <100 rows even when the manifest holds
+        thousands (Copilot review on PR #19).
+
+        Same snapshot-completeness predicate as ``list_known`` so callers
+        relying on the legacy-row-skipping behaviour keep getting the
+        same shape of results. ``source_state='gone'`` rows are excluded
+        — the wizard never wants to operate on transcripts the user
+        already removed in Fireflies.
+        """
+        ids = list(meeting_ids)
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        sql = (
+            "SELECT meeting_id, title, meeting_date, duration_minutes, host_email, "
+            "       participant_count, has_transcript, tags_json "
+            "FROM meetings "
+            f"WHERE meeting_id IN ({placeholders}) "
+            "  AND source_state = 'live' "
+            "  AND duration_minutes IS NOT NULL "
+            "  AND host_email IS NOT NULL "
+            "  AND participant_count IS NOT NULL "
+            "  AND has_transcript IS NOT NULL"
+        )
+        rows = self._conn.execute(sql, ids).fetchall()
+        for row in rows:
+            meeting_date = _parse_iso(row[2])
+            assert meeting_date is not None
+            tags_raw = row[7]
+            tags = tuple(json.loads(tags_raw)) if tags_raw else ()
+            yield Meeting(
+                meeting_id=row[0],
+                title=row[1],
+                meeting_date=meeting_date,
+                duration_minutes=float(row[3]),
+                host_email=row[4],
+                participant_count=int(row[5]),
+                tags=tags,
+                has_transcript=bool(row[6]),
+            )
+
     def start_sync_run(self, *, mode: str, trigger: str, at: datetime) -> int:
         self._conn.execute(
             "INSERT INTO sync_runs (mode, trigger_source, started_at, outcome) "
@@ -487,7 +534,7 @@ class Manifest:
         run_id: int,
         *,
         at: datetime,
-        next_resume_at: datetime,
+        next_resume_at: datetime | None,
         error_message: str | None = None,
     ) -> None:
         self._conn.execute(

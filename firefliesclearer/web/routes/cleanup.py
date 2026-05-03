@@ -55,7 +55,6 @@ from firefliesclearer.application.scan_service import (
 )
 from firefliesclearer.core.models import Meeting
 from firefliesclearer.infra.config import ScanFiltersModel
-from firefliesclearer.ports.meeting_repository import MeetingFilter
 from firefliesclearer.web import wizard_session
 from firefliesclearer.web.deps import get_deps
 from firefliesclearer.web.operations import (
@@ -535,12 +534,20 @@ async def step2_review(
         direction=direction,
         sync_status=maybe_status_for_template(request, deps),
     )
-    template = (
-        "cleanup/_review_table.html"
-        if request.headers.get("HX-Request") == "true"
-        else "cleanup/step2_review.html"
-    )
-    return _templates(request).TemplateResponse(request, template, ctx)
+    # HTMX request (column-header sort, pagination): emit the same triplet
+    # the POST mutation handlers emit — table + OOB toolbar + OOB continue
+    # form. Returning only the table left the toolbar's hidden ``sort``/``dir``
+    # inputs stale after a sort change, so the next "Deselect all on page"
+    # click sent the *previous* sort to the server and operated on the wrong
+    # rows (user-reported 2026-05-03).
+    if request.headers.get("HX-Request") == "true":
+        templates = _templates(request)
+        render_ctx = {"request": request, **ctx}
+        table_html = templates.get_template("cleanup/_review_table.html").render(render_ctx)
+        toolbar_html = templates.get_template("cleanup/_review_toolbar.html").render(render_ctx)
+        continue_html = templates.get_template("cleanup/_review_continue.html").render(render_ctx)
+        return Response(table_html + toolbar_html + continue_html, media_type="text/html")
+    return _templates(request).TemplateResponse(request, "cleanup/step2_review.html", ctx)
 
 
 @router.post("/cleanup/review/toggle/{meeting_id}")
@@ -758,12 +765,18 @@ async def _render_table_fragment(
     sort: str | None = None,
     direction: str | None = None,
 ) -> Response:
-    """Re-run the scan and render the table + OOB toolbar fragment.
+    """Re-run the scan and render the table + OOB toolbar + OOB continue form.
 
-    Returns the concatenation of ``_review_table.html`` (HTMX primary swap
-    target) and ``_review_toolbar.html`` (out-of-band swap target). This keeps
-    the toolbar's selected-count and "select all N" banner in sync after every
-    selection mutation (toggle / select-all / deselect-all / invert).
+    Returns the concatenation of:
+      - ``_review_table.html`` (HTMX primary swap target — ``.review-table``)
+      - ``_review_toolbar.html`` (out-of-band swap — ``#review-toolbar``)
+      - ``_review_continue.html`` (out-of-band swap — ``#continue-form``)
+
+    All three share state derived from the same selection set, so re-rendering
+    them together avoids drift. In particular, the Continue button's
+    ``disabled`` attribute is computed from ``selected_count``; without the
+    OOB swap it stuck at the initial-render value and prevented the user
+    from advancing even after picking rows (user-reported 2026-05-03).
 
     CSRF for these POST handlers is enforced by the global ``CSRFMiddleware``
     in ``firefliesclearer.web.security``; no per-route check is needed.
@@ -789,13 +802,11 @@ async def _render_table_fragment(
         direction=direction,
     )
     templates = _templates(request)
-    table_html = templates.get_template("cleanup/_review_table.html").render(
-        {"request": request, **ctx}
-    )
-    toolbar_html = templates.get_template("cleanup/_review_toolbar.html").render(
-        {"request": request, **ctx}
-    )
-    return Response(table_html + toolbar_html, media_type="text/html")
+    render_ctx = {"request": request, **ctx}
+    table_html = templates.get_template("cleanup/_review_table.html").render(render_ctx)
+    toolbar_html = templates.get_template("cleanup/_review_toolbar.html").render(render_ctx)
+    continue_html = templates.get_template("cleanup/_review_continue.html").render(render_ctx)
+    return Response(table_html + toolbar_html + continue_html, media_type="text/html")
 
 
 def _safe_page(raw: object) -> int:
@@ -841,20 +852,24 @@ def _estimate_size_mb(meetings: list[Meeting]) -> int:
 # request. Acceptable for personal-scale use; worth caching once we've shipped
 # the 5-min metadata cache referenced in spec § 5.2.
 async def _selected_meetings(deps: SimpleNamespace, selected_ids: list[str]) -> list[Meeting]:
-    """Re-scan and filter to the meetings whose ids are in *selected_ids*.
+    """Re-resolve selected ids back to Meeting objects from the local cache.
 
     Order is preserved from ``selected_ids`` so events stream in the order the
-    user expects to see them. Missing ids (e.g. meeting deleted in Fireflies
+    user expects to see them. Missing ids (e.g. meeting gone-from-source
     between Step 2 and Step 3) are silently dropped.
+
+    Uses ``Manifest.list_known_by_ids`` — a single SQL query for the
+    targeted set, no full-table scan. The previous implementation walked
+    ``manifest.list_known()`` and filtered in Python, which was O(N_total)
+    per step transition; the version before that walked
+    ``deps.client.list_meetings(...)`` (live API) which compounded the
+    problem with network latency. The targeted helper keeps Step 3 / 4
+    start latency bounded by ``len(selected_ids)`` even on large
+    manifests (Copilot review on PR #19).
     """
     if not selected_ids:
         return []
-    selected_set = set(selected_ids)
-    by_id: dict[str, Meeting] = {}
-    # We don't need rule-matching for this step — just walk every meeting.
-    async for meeting in deps.client.list_meetings(MeetingFilter(older_than=None)):
-        if meeting.meeting_id in selected_set:
-            by_id[meeting.meeting_id] = meeting
+    by_id = {m.meeting_id: m for m in deps.manifest.list_known_by_ids(selected_ids)}
     return [by_id[mid] for mid in selected_ids if mid in by_id]
 
 
@@ -874,6 +889,25 @@ def _make_archive_runner(
     async def archive_runner(ctx: _RunnerContext) -> None:
         if not meetings:
             return
+        # Pre-seed every queued row with its title so the in-progress view
+        # shows _which_ meeting is at position N from the moment the page
+        # loads — not just an opaque "queued" status. Without this, only the
+        # currently-processing meeting got a title (via its `fetching` event)
+        # and the rest of the list rendered title-less placeholders, which
+        # the user reported as "next are presenting only statuses like
+        # queued, pending - without meeting names" (2026-05-03).
+        for m in meetings:
+            ctx.emit(
+                Event(
+                    seq=ctx.next_seq(),
+                    kind="meeting_state",
+                    data={
+                        "id": m.meeting_id,
+                        "title": m.title,
+                        "sub_state": "queued",
+                    },
+                )
+            )
         svc = ArchiveService(pipeline=deps.pipeline, manifest=deps.manifest)
         # Iterate one meeting at a time so cancellation can interrupt cleanly
         # and so per-meeting events bracket each pipeline step.
@@ -1172,6 +1206,22 @@ def _make_purge_runner(
     async def purge_runner(ctx: _RunnerContext) -> None:
         if not meetings:
             return
+        # Pre-seed every queued row with its title — same fix as the archive
+        # runner. Without this the in-progress purge view shows only "queued"
+        # next to placeholder rows for every meeting that hasn't reached its
+        # turn yet (user-reported 2026-05-03).
+        for m in meetings:
+            ctx.emit(
+                Event(
+                    seq=ctx.next_seq(),
+                    kind="meeting_state",
+                    data={
+                        "id": m.meeting_id,
+                        "title": m.title,
+                        "sub_state": "queued",
+                    },
+                )
+            )
         svc = PurgeService(pipeline=deps.pipeline, manifest=deps.manifest)
         for meeting in meetings:
             if ctx.cancel_event.is_set():

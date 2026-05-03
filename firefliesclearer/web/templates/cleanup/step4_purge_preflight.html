@@ -39,14 +39,18 @@
 
   <form method="post" action="/cleanup/purge/start" class="purge-start-form">
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
-    <p>
-      <label for="confirm-count">
+    {# Confirm field + actions sit on a single row. The label, input, Back
+       link, and Purge button are all flex children of `.purge-confirm-row`
+       so they share a baseline; the previous markup wrapped the field in a
+       <p> above a separate `.form-actions` div, which produced the visible
+       few-pixel vertical mismatch the user reported (2026-05-03). #}
+    <div class="purge-confirm-row form-actions">
+      <label for="confirm-count" class="purge-confirm-label">
         Type <strong>{{ count }}</strong> to confirm:
       </label>
       <input type="text" id="confirm-count" name="confirmed_count"
+             class="purge-confirm-input"
              inputmode="numeric" pattern="[0-9]+" autocomplete="off" required>
-    </p>
-    <div class="form-actions">
       <a href="/cleanup/archive/done" class="cancel-link">&larr; Back</a>
       <button type="submit" id="purge-btn" class="purge-btn" disabled>
         Purge {{ count }} meetings

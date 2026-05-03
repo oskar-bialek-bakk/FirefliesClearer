@@ -32,6 +32,19 @@
     {% set preset = none %}
     {% include "presets/_filter_fieldsets.html" %}
 
+    {# Reuses the cleanup wizard's preview-count endpoint — same scan path,
+       same filter parsing — so the user can see how many meetings their
+       in-progress preset would match without leaving the editor. #}
+    <div id="preview-count"
+         class="preview-count"
+         hx-post="/cleanup/preview-count"
+         hx-trigger="input changed delay:400ms from:closest form, change from:closest form, load"
+         hx-target="this"
+         hx-swap="outerHTML"
+         hx-include="closest form">
+      Add at least one filter to see a count.
+    </div>
+
     <div class="form-actions">
       <button type="submit" class="btn-primary">Create preset</button>
       <a href="/presets">Cancel</a>

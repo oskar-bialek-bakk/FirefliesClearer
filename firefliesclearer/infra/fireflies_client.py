@@ -34,11 +34,14 @@ query Transcripts($limit: Int, $skip: Int, $toDate: DateTime) {
     organizer_email
     participants
     transcript_url
-    summary { overview action_items keywords }
-    audio_url
   }
 }
 """
+# `audio_url` and `summary { ... }` are intentionally absent: only
+# DETAIL_QUERY (fetch_artifacts) needs them, and Fireflies' nested resolvers
+# for those two fields have been the chief source of per-row 408 timeouts
+# observed against /list when the cluster is under load (probe 2026-05-03).
+# Trimming halves the resolver fan-out on every list call.
 
 DELETE_MUTATION = """
 mutation DeleteTranscript($id: String!) {
@@ -94,12 +97,20 @@ class TransientServerError(FirefliesError):
 
     Distinct from RateLimitedError so callers can pick a different retry
     horizon. The sync engine treats both alike — finalize the run as
-    ``partial`` with ``next_resume_at`` set, so the scheduler picks it up
-    on the next tick instead of leaving the user staring at a 'failed'
-    banner because Fireflies' edge had a flaky minute.
+    ``partial`` so the scheduler picks it up on its next regular tick
+    instead of leaving the user staring at a 'failed' banner because
+    Fireflies' edge had a flaky minute.
+
+    ``retry_after_seconds`` defaults to ``None`` because Fireflies never
+    actually tells us when a 5xx or transport timeout will clear — any
+    fixed number we'd default to is a fabrication, and surfacing a
+    fabricated retry timestamp in the UI ("Next retry around HH:MM
+    (estimated)") is worse UX than admitting we don't know. Real estimates
+    only come from ``Retry-After`` on 429s, which is what RateLimitedError
+    is for.
     """
 
-    def __init__(self, message: str, *, retry_after_seconds: float = 300.0) -> None:
+    def __init__(self, message: str, *, retry_after_seconds: float | None = None) -> None:
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
 
@@ -112,9 +123,10 @@ class FirefliesClient:
         endpoint: str = "https://api.fireflies.ai/graphql",
         retry_max: int = 3,
         retry_5xx_max: int = 1,
+        retry_timeout_max: int = 1,
         retry_base_seconds: float = 1.0,
         page_size: int = 50,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 90.0,
     ) -> None:
         # ``retry_5xx_max`` is intentionally smaller than ``retry_max``:
         # Fireflies' edge serves 504s in ~15s when their backend is sluggish
@@ -122,10 +134,18 @@ class FirefliesClient:
         # the outage is sustained. One retry covers the single-blip case,
         # then we surface as ``TransientServerError`` and the sync engine
         # finalises the run as ``partial`` so the scheduler retries later.
+        #
+        # ``retry_timeout_max`` applies the same logic to ``httpx.TimeoutException``:
+        # each attempt blocks for up to ``timeout_seconds`` (default 30s), so
+        # retrying 3 times burns ~120s for a sustained outage. One retry, then
+        # surface as ``TransientServerError`` so the scheduler can mark the run
+        # partial and back off — instead of every tick logging
+        # "Scheduler tick failed: network:" until the user notices.
         self._api_key = api_key
         self._endpoint = endpoint
         self._retry_max = retry_max
         self._retry_5xx_max = retry_5xx_max
+        self._retry_timeout_max = retry_timeout_max
         self._retry_base = retry_base_seconds
         self._page_size = page_size
         self._timeout = timeout_seconds
@@ -144,7 +164,17 @@ class FirefliesClient:
                 items = payload.get("data", {}).get("transcripts", []) or []
                 if not items:
                     return
+                # Items can contain `null` rows when Fireflies bubbles a
+                # required-field resolver failure up to the row root. Skip
+                # them: an unparseable row is never recoverable, and the
+                # alternative — calling `_meeting_from_raw(None)` — would
+                # crash the whole sync over a single bad row. Pagination
+                # only stops on an empty *items* list — a page of all-null
+                # rows still advances ``skip`` so later pages with valid
+                # rows are reached (Copilot review on PR #19).
                 for raw in items:
+                    if raw is None:
+                        continue
                     yield _meeting_from_raw(raw)
                     emitted += 1
                     if filter.limit and emitted >= filter.limit:
@@ -172,6 +202,8 @@ class FirefliesClient:
             }
             payload = await self._request(client, LIST_QUERY, variables, op="list_meetings_page")
             for raw in payload.get("data", {}).get("transcripts", []) or []:
+                if raw is None:
+                    continue
                 yield _meeting_from_raw(raw)
 
     async def fetch_artifacts(self, meeting_id: str) -> ArtifactBundle:
@@ -255,9 +287,37 @@ class FirefliesClient:
             )
             try:
                 resp = await client.post(self._endpoint, json=body)
+            except httpx.TimeoutException as e:
+                # Transport-level timeouts (ReadTimeout, ConnectTimeout, ...).
+                # Reclassify as ``TransientServerError`` so ``SyncService``
+                # finalises the run as ``partial`` instead of letting the
+                # exception escape to the scheduler as a hard "tick failed".
+                # Cap retries at ``retry_timeout_max`` to avoid burning ~timeout
+                # x retries when Fireflies is sustained-slow.
+                #
+                # Build a self-explanatory message: ``str(e)`` from httpx is
+                # often empty for ReadTimeout, and "timeout: " in the UI tells
+                # the user nothing about who's at fault or what state things
+                # are in.
+                if attempt >= self._retry_timeout_max:
+                    raise TransientServerError(
+                        f"Fireflies didn't respond within {self._timeout:.0f}s. "
+                        "Their service may be slow or unavailable; your local "
+                        "cache is unaffected and the next scheduled sync will "
+                        "retry automatically."
+                    ) from e
+                await self._sleep(attempt, retry_after_seconds=None)
+                continue
             except httpx.HTTPError as e:
+                # Non-timeout transport failures (SSL, DNS, conn refused).
+                # These usually indicate a configuration or infra problem
+                # rather than a transient blip — surface as ``FirefliesError``
+                # so the operator sees it instead of silently retrying.
                 if attempt >= self._retry_max:
-                    raise FirefliesError(f"network: {e}") from e
+                    raise FirefliesError(
+                        f"Network error reaching Fireflies: {e or type(e).__name__}. "
+                        "Check your internet connection or proxy settings."
+                    ) from e
                 await self._sleep(attempt, retry_after_seconds=None)
                 continue
 
@@ -277,7 +337,11 @@ class FirefliesClient:
                 continue
             if 500 <= resp.status_code < 600:
                 if attempt >= self._retry_5xx_max:
-                    raise TransientServerError(f"server {resp.status_code}")
+                    raise TransientServerError(
+                        f"Fireflies returned HTTP {resp.status_code} (server error). "
+                        "This is on their side; your local cache is unaffected and "
+                        "the next scheduled sync will retry automatically."
+                    )
                 await self._sleep(attempt, retry_after_seconds=None)
                 continue
             if 400 <= resp.status_code < 500:
@@ -289,7 +353,44 @@ class FirefliesClient:
                 # detect rate-limit there too so the caller can react.
                 if _errors_indicate_rate_limit(data["errors"]):
                     raise RateLimitedError(f"graphql: {data['errors']}")
-                raise FirefliesError(f"graphql: {data['errors']}")
+                # Field-level resolver timeouts (Fireflies' `participants` and
+                # `audio_url` resolvers intermittently return per-row 408s)
+                # come back as a populated `data` payload alongside the errors
+                # array. Discarding the whole page costs us every successful
+                # row; instead, log + return so downstream sees the reduced
+                # fields. Any error without a recognised tolerable path —
+                # response-level errors, errors targeting required fields —
+                # still surfaces as FirefliesError.
+                if data.get("data") is not None and _errors_are_tolerable_field_failures(
+                    data["errors"]
+                ):
+                    logger.warning(
+                        "fireflies_request op=%s tolerated=%d field-level errors (fields=%s)",
+                        op,
+                        len(data["errors"]),
+                        sorted(_tolerable_error_field_names(data["errors"])),
+                    )
+                    return data
+                # Fireflies sometimes wraps a 5xx as a GraphQL error rather
+                # than an HTTP-level 5xx (observed on deleteTranscript:
+                # ``code: INTERNAL_SERVER_ERROR, extensions.status: 500``).
+                # Treat those exactly like an HTTP 5xx — retry once, then
+                # surface as TransientServerError so the runner can log a
+                # friendly per-meeting failure instead of dumping the raw
+                # dict ``graphql: [{...}]`` to the user.
+                if _errors_indicate_transient_server_error(data["errors"]):
+                    if attempt >= self._retry_5xx_max:
+                        raise TransientServerError(
+                            "Fireflies returned an internal server error. "
+                            "This is on their side and usually clears within "
+                            "a few minutes; retry the operation later."
+                        )
+                    await self._sleep(attempt, retry_after_seconds=None)
+                    continue
+                # Last resort: hoist the first ``message`` for the UI rather
+                # than dumping the whole errors-list dict, which produces
+                # the wall-of-Python-repr the user reported (2026-05-03).
+                raise FirefliesError(_format_graphql_errors(data["errors"]))
             return data
 
         raise FirefliesError("retries exhausted")
@@ -420,3 +521,146 @@ def _errors_indicate_rate_limit(errors: Any) -> bool:
         ):
             return True
     return False
+
+
+# Leaf field names whose absence the Meeting domain model survives. `_meeting_from_raw`
+# defaults each of these to a safe value (None / 0 / empty), so a per-row resolver
+# failure on these fields degrades the row instead of poisoning the page.
+# `id` and `date` are deliberately *excluded* — Meeting cannot be constructed
+# without them, so any error pointing there must surface.
+_TOLERABLE_LEAF_FIELDS = frozenset(
+    {
+        "audio_url",
+        "duration",
+        "host_email",
+        "meeting_attendance",
+        "meeting_attendees",
+        "organizer_email",
+        "participants",
+        "summary",
+        "tags",
+        "title",
+        "transcript_url",
+    }
+)
+
+
+def _errors_are_tolerable_field_failures(errors: Any) -> bool:
+    """True iff every error in the array is a timeout-flavored field failure.
+
+    Two conditions must hold for an error to be tolerable:
+
+    1. ``path`` is non-empty and its final element is a known non-required
+       leaf field (see ``_TOLERABLE_LEAF_FIELDS``). Required fields (id /
+       date) are never tolerable; without them ``_meeting_from_raw`` can't
+       construct a Meeting.
+    2. The error itself is timeout-flavored — ``code`` /
+       ``extensions.code`` is ``request_timeout`` OR ``extensions.status``
+       is 408. This is the failure pattern the 2026-05-03 probe captured.
+       Tightened on Copilot review (PR #19): without this guard, an
+       upstream schema or data regression that happened to produce an
+       error on, say, ``host_email`` would be silently downgraded to a
+       warning + partial data instead of surfacing as an error.
+    """
+    if not isinstance(errors, list) or not errors:
+        return False
+    for entry in errors:
+        if not isinstance(entry, dict):
+            return False
+        path = entry.get("path")
+        if not isinstance(path, list) or not path:
+            return False
+        leaf = path[-1]
+        if not isinstance(leaf, str) or leaf not in _TOLERABLE_LEAF_FIELDS:
+            return False
+        if not _error_is_timeout_flavored(entry):
+            return False
+    return True
+
+
+def _error_is_timeout_flavored(entry: dict[str, Any]) -> bool:
+    """True iff a GraphQL error entry signals a per-field 408 timeout.
+
+    Fireflies' partial-failure shape carries ``code: 'request_timeout'`` at
+    the entry root and again under ``extensions``, with ``status: 408``.
+    Either signal is enough — Fireflies has been inconsistent about which
+    fields they populate.
+    """
+    if entry.get("code") == "request_timeout":
+        return True
+    ext = entry.get("extensions")
+    if isinstance(ext, dict):
+        if ext.get("code") == "request_timeout":
+            return True
+        if ext.get("status") == 408:
+            return True
+    return False
+
+
+def _tolerable_error_field_names(errors: Any) -> set[str]:
+    """Return the set of leaf field names mentioned in ``errors`` for logging."""
+    names: set[str] = set()
+    if not isinstance(errors, list):
+        return names
+    for entry in errors:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if isinstance(path, list) and path and isinstance(path[-1], str):
+            names.add(path[-1])
+    return names
+
+
+def _errors_indicate_transient_server_error(errors: Any) -> bool:
+    """True iff any GraphQL error carries a 5xx status / INTERNAL_SERVER_ERROR.
+
+    Fireflies sometimes wraps backend 5xx as a GraphQL error rather than an
+    HTTP-level 5xx — observed payload shape::
+
+        {"errors": [{"code": "INTERNAL_SERVER_ERROR",
+                     "extensions": {"code": "INTERNAL_SERVER_ERROR",
+                                    "status": 500, "correlationId": "..."}}]}
+
+    We want those handled by the same retry-then-classify-as-transient flow
+    as actual HTTP 5xx responses.
+    """
+    if not isinstance(errors, list):
+        return False
+    for entry in errors:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("code") == "INTERNAL_SERVER_ERROR":
+            return True
+        ext = entry.get("extensions")
+        if isinstance(ext, dict):
+            if ext.get("code") == "INTERNAL_SERVER_ERROR":
+                return True
+            status = ext.get("status")
+            if isinstance(status, int) and 500 <= status < 600:
+                return True
+    return False
+
+
+def _format_graphql_errors(errors: Any) -> str:
+    """Build a human-readable message from a GraphQL ``errors`` array.
+
+    The previous behaviour stringified the whole list, which surfaced
+    ``graphql: [{'friendly': False, 'message': '...', ...}]`` to the user.
+    Lifting the first error's ``message`` (and its operation ``path`` when
+    available) gives a much shorter, action-oriented string that the runner
+    can route into per-meeting failure rows without further processing.
+    """
+    if not isinstance(errors, list) or not errors:
+        return "graphql: <empty errors>"
+    first = errors[0] if isinstance(errors[0], dict) else None
+    if first is None:
+        return f"graphql: {errors[0]!r}"
+    message = first.get("message")
+    if not isinstance(message, str) or not message:
+        return f"graphql: {first!r}"
+    path = first.get("path")
+    if isinstance(path, list) and path:
+        leaf = path[-1] if isinstance(path[-1], str) else None
+        if leaf:
+            return f"{leaf}: {message}"
+    return message

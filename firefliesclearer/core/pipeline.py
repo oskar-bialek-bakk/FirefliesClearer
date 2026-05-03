@@ -100,6 +100,8 @@ class Pipeline:
             pdf = self._renderer.render(
                 bundle.summary_payload or {},
                 meeting_title=meeting.title,
+                meeting=meeting,
+                source_url=bundle.metadata.get("source_url") if bundle.metadata else None,
             )
         except Exception as e:
             self._manifest.transition(

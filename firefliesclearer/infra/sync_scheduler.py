@@ -26,6 +26,17 @@ OnRunStarted = Callable[[str, str, datetime], None]
 OnRunFinished = Callable[[], None]
 """Fired after each tick, success or failure."""
 
+# How long to wait before resuming a partial run when the upstream gave us no
+# explicit retry estimate (the default for 5xx and transport timeouts —
+# Fireflies never actually tells us when transient issues will clear). Long
+# enough not to hammer a degraded backend; short enough that a multi-page
+# sync that paged-out mid-stream doesn't stall for the full
+# ``incremental_interval_hours`` (default 6h). This is a *scheduling* decision
+# only — we deliberately do **not** stamp this onto ``next_resume_at`` for the
+# UI to render, because that would surface a fabricated "next retry around
+# HH:MM" timestamp to the user. The scheduler's tick is silent.
+_PARTIAL_RETRY_INTERVAL = timedelta(seconds=60)
+
 
 def compute_next(
     *,
@@ -39,7 +50,12 @@ def compute_next(
     Rules:
       - Never run if config.enabled is False (caller checks separately).
       - If no runs yet -> fire now.
-      - If last_run is partial -> fire at last_run.next_resume_at.
+      - If last_run is partial:
+          - If next_resume_at is set (came from upstream Retry-After) -> fire then.
+          - Otherwise -> fire ``last_run.finished_at + _PARTIAL_RETRY_INTERVAL``.
+            We don't want to stall a multi-page sync for the full
+            ``incremental_interval_hours`` just because one page timed out —
+            the cursor is preserved on the run, the next tick resumes from it.
       - Else: min(next_incremental, next_full).
         next_incremental = last_run.finished_at + incremental_interval_hours.
         next_full = first 03:00-local-time occurrence >= last_full.finished_at +
@@ -47,8 +63,10 @@ def compute_next(
     """
     if last_run is None:
         return now
-    if last_run.outcome == "partial" and last_run.next_resume_at is not None:
-        return last_run.next_resume_at
+    if last_run.outcome == "partial":
+        if last_run.next_resume_at is not None:
+            return last_run.next_resume_at
+        return (last_run.finished_at or now) + _PARTIAL_RETRY_INTERVAL
 
     next_incremental = (last_run.finished_at or now) + timedelta(
         hours=config.incremental_interval_hours

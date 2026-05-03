@@ -28,9 +28,19 @@
       Retry failed
     </button>
 
-    {# View archive folder — Task 8.6 will wire the file-manager helper. #}
-    {# TODO(phase-8.6): POST /cleanup/archive/open-folder. #}
-    <button type="button" class="view-folder-btn" disabled>View archive folder</button>
+    {# Reuses the existing /settings/open-archive-folder endpoint — same
+       config path, same security model (path comes from config, never user
+       input). Posted via HTMX so the browser tab stays put. #}
+    <form method="post" action="/settings/open-archive-folder"
+          hx-post="/settings/open-archive-folder"
+          hx-swap="none"
+          style="display:inline">
+      <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+      <button type="submit" class="view-folder-btn"
+              {% if archived_count == 0 %}disabled{% endif %}>
+        View archive folder
+      </button>
+    </form>
 
     <form method="post" action="/cleanup/archive/continue" class="continue-purge-form">
       <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">

@@ -233,7 +233,7 @@ async def test_render_failure_records_failed_render(tmp_path: Path) -> None:
     m = _meeting()
     pipeline, repo, manifest, _, renderer = _build(tmp_path, [m])
 
-    def boom(payload: dict[str, Any], *, meeting_title: str) -> bytes:
+    def boom(payload: dict[str, Any], *, meeting_title: str, **_: Any) -> bytes:
         raise RuntimeError("render kaboom")
 
     renderer.render = boom  # type: ignore[method-assign]

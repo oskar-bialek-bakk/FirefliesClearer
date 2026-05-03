@@ -69,7 +69,14 @@ def _seed_meeting(
         participant_count=participant_count,
         tags=tags,
     )
-    manifest.register(meeting, at=NOW)
+    # Seed via ``upsert_known`` so the manifest carries the full snapshot
+    # fields (duration / host / participants / tags). The retry handler now
+    # reads the Meeting from the local cache rather than re-fetching from
+    # the live API; without snapshot fields, ``list_known`` would skip the
+    # row and the retry runner would write a metadata.json with neutral
+    # defaults — a regression silently caught by
+    # ``test_retry_writes_full_metadata_to_archive_directory``.
+    manifest.upsert_known(meeting, at=NOW)
     if repo is not None:
         repo._meetings[meeting_id] = meeting
     if state in {
@@ -78,10 +85,13 @@ def _seed_meeting(
         MeetingState.FAILED_RENDER,
         MeetingState.FAILED_VERIFY,
     }:
+        manifest.transition(meeting_id, to=MeetingState.PENDING, at=NOW)
         manifest.transition(meeting_id, to=state, at=NOW, last_error=last_error)
     elif state is MeetingState.ARCHIVED:
+        manifest.transition(meeting_id, to=MeetingState.PENDING, at=NOW)
         manifest.transition(meeting_id, to=MeetingState.ARCHIVED, at=NOW)
     elif state is MeetingState.DELETED_FAILED:
+        manifest.transition(meeting_id, to=MeetingState.PENDING, at=NOW)
         manifest.transition(meeting_id, to=MeetingState.ARCHIVED, at=NOW)
         manifest.transition(
             meeting_id,
@@ -385,26 +395,58 @@ def test_retry_purge_success_transitions_manifest_to_deleted(
 # ---------------------------------------------------------------------------
 
 
-def test_retry_returns_404_when_meeting_no_longer_in_source(
+def test_retry_returns_404_when_meeting_marked_gone_in_cache(
     configured_client: TestClient, configured_app
 ) -> None:
-    """If the user deletes the meeting from Fireflies between archive failure
-    and retry, the route must 404 instead of writing a stub-metadata archive.
-    """
+    """If the last full sync flagged the meeting as gone-from-source (the
+    user deleted it in Fireflies and a sync run noticed), the retry button
+    must 404 rather than starting a runner that will inevitably 404 against
+    the live API.
+
+    Behaviour change (2026-05-03): this previously detected absence by
+    walking the live API. The retry path now reads the local cache
+    (avoiding the slow + rate-limit-prone API lookup that made the button
+    appear inert under load), so absence detection moves to the cache's
+    ``source_state='gone'`` flag — which sync maintains."""
     manifest = configured_app.state.deps.manifest
-    # Seed manifest only — repo intentionally has no such meeting.
     _seed_meeting(
         manifest,
         meeting_id="m-deleted-upstream",
         state=MeetingState.FAILED_DOWNLOAD,
     )
+    # Mark the row as gone-from-source — this is what a full sync run sets
+    # when the meeting disappears from the upstream listing.
+    manifest.set_source_state("m-deleted-upstream", "gone")
 
     r = configured_client.post(
         "/retry/m-deleted-upstream",
         data={"_csrf": _csrf(configured_client)},
     )
     assert r.status_code == 404
-    assert "no longer" in r.text.lower()
+    # Distinct error message vs the absent-from-cache case — pointing the
+    # user at "run a sync first" would be misleading here because sync
+    # was the very thing that learned the meeting was gone.
+    body = r.text.lower()
+    assert "no longer" in body
+    assert "run a sync" not in body
+
+
+def test_retry_returns_distinct_404_when_meeting_absent_from_cache(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The other 404 path: the meeting id wasn't found at all. Tells the
+    user to sync — that's the action that fixes it. Pairs with the
+    gone-from-source test to lock down the missing-vs-gone distinction
+    Copilot flagged on PR #19."""
+    r = configured_client.post(
+        "/retry/never-seen-this-id",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 404
+    body = r.text.lower()
+    # Falls through the kind/state checks first since manifest.get returns
+    # None — message comes from the "Meeting not found in manifest" path.
+    assert "not found" in body or "not in local cache" in body
 
 
 def test_retry_writes_full_metadata_to_archive_directory(

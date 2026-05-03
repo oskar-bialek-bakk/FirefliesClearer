@@ -90,7 +90,8 @@ def test_dashboard_renders_with_zero_counts(configured_client: TestClient) -> No
     assert r.status_code == 200
     doc = HTMLParser(r.text)
     cards = doc.css(".state-count-card")
-    assert len(cards) == 4
+    # Total + Archived + Pending + Failed + Deleted = 5 cards.
+    assert len(cards) == 5
     # Empty manifest -> all zero
     for card in cards:
         assert "0" in card.text()
@@ -171,3 +172,66 @@ def test_sidebar_status_renders(configured_client: TestClient) -> None:
     doc = HTMLParser(r.text)
     fragment = doc.css_first(".sidebar-status")
     assert fragment is not None
+
+
+def test_dashboard_includes_total_cached_card(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The full dashboard renders the new "Total cached" card so the user has
+    a single number for everything in the manifest after a sync (the bulk of
+    which is in KNOWN state, invisible in the action-oriented cards)."""
+    manifest = configured_app.state.deps.manifest
+    # Two synced rows + one failed row = 3 total.
+    for mid in ("k1", "k2"):
+        manifest.upsert_known(
+            Meeting(
+                meeting_id=mid,
+                title="Synced",
+                meeting_date=NOW,
+                duration_minutes=10.0,
+                host_email="u@x.com",
+                participant_count=1,
+            ),
+            at=NOW,
+        )
+    _seed_failed_meeting(manifest, meeting_id="f1")
+
+    r = configured_client.get("/")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    total_card = doc.css_first('[data-state="total"]')
+    assert total_card is not None, "Total card missing from dashboard"
+    value = total_card.css_first(".state-count-card__value")
+    assert value is not None
+    assert value.text().strip() == "3"
+
+
+def test_dashboard_state_counts_endpoint_returns_polling_fragment(
+    configured_client: TestClient, configured_app
+) -> None:
+    """``GET /dashboard/state-counts`` returns the cards section as a standalone
+    fragment with the self-polling attributes intact, so HTMX keeps refreshing
+    the counters as the sync scheduler adds rows in the background."""
+    manifest = configured_app.state.deps.manifest
+    manifest.upsert_known(
+        Meeting(
+            meeting_id="k1",
+            title="m",
+            meeting_date=NOW,
+            duration_minutes=1.0,
+            host_email="u@x.com",
+            participant_count=0,
+        ),
+        at=NOW,
+    )
+    r = configured_client.get("/dashboard/state-counts")
+    assert r.status_code == 200
+    # Polling attributes survive the round-trip — without them, the swap
+    # would replace the section with a static copy and stop polling.
+    assert 'hx-trigger="every 10s"' in r.text
+    assert 'hx-get="/dashboard/state-counts"' in r.text
+    assert 'data-state="total"' in r.text
+    # Reflects the seeded row.
+    doc = HTMLParser(r.text)
+    total = doc.css_first('[data-state="total"] .state-count-card__value')
+    assert total is not None and total.text().strip() == "1"

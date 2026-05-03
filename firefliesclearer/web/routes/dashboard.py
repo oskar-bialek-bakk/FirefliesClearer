@@ -24,7 +24,6 @@ from starlette.responses import Response
 from firefliesclearer.application.audit_service import AuditService, StateSummary
 from firefliesclearer.core.manifest import Manifest, MeetingRecord
 from firefliesclearer.core.models import Meeting, MeetingState
-from firefliesclearer.ports.meeting_repository import MeetingFilter, MeetingRepository
 from firefliesclearer.web.deps import get_deps
 from firefliesclearer.web.operations import (
     Event,
@@ -91,18 +90,56 @@ def _needs_attention_rows(manifest: Manifest, summary: StateSummary) -> list[Mee
     return rows
 
 
-async def _fetch_meeting_from_source(*, repo: MeetingRepository, meeting_id: str) -> Meeting | None:
-    """Look up the live Meeting metadata from Fireflies.
+class _CacheLookup:
+    """Outcome tagging for ``_fetch_meeting_from_cache``.
 
-    Used by the retry flow to reconstruct the full Meeting (duration, host,
-    participants, tags) needed to write a faithful metadata.json. Returns
-    None if the meeting is no longer present in the source (e.g. the user
-    deleted it from Fireflies between the failed archive and the retry).
+    The retry endpoint needs to distinguish three outcomes so it can return
+    different 404 messages: present-and-usable, marked-gone-by-sync, and
+    truly-absent-from-the-manifest. The previous "return Meeting | None"
+    signature collapsed the latter two into the same "Run a sync first"
+    message even when sync was the last thing that learned the meeting was
+    gone — actively misleading (Copilot review on PR #19).
     """
-    async for meeting in repo.list_meetings(MeetingFilter()):
-        if meeting.meeting_id == meeting_id:
-            return meeting
-    return None
+
+    PRESENT = "present"
+    GONE = "gone"
+    ABSENT = "absent"
+
+
+def _fetch_meeting_from_cache(*, manifest: Manifest, meeting_id: str) -> tuple[str, Meeting | None]:
+    """Look up the Meeting metadata from the local cache.
+
+    Returns ``(_CacheLookup.PRESENT, Meeting)`` when the row is usable,
+    ``(_CacheLookup.GONE, None)`` when the last full sync flagged the row
+    as gone-from-source, and ``(_CacheLookup.ABSENT, None)`` when no row
+    exists at all.
+
+    Lookup goes through ``manifest.get(meeting_id)`` directly — that's an
+    indexed primary-key query, O(log n). Iterating
+    ``manifest.list_known(...)`` for a single id was O(n) Python work over
+    every cached row, which Copilot flagged as a hot-path concern on
+    larger manifests.
+    """
+    rec = manifest.get(meeting_id)
+    if rec is None:
+        return (_CacheLookup.ABSENT, None)
+    if rec.source_state == "gone":
+        return (_CacheLookup.GONE, None)
+    # Default missing snapshot fields to safe sentinels — legacy
+    # ``register()``-only rows lack them until a sync touches the row.
+    # The metadata.json will have empty host/participant info in that
+    # case rather than crashing.
+    meeting = Meeting(
+        meeting_id=rec.meeting_id,
+        title=rec.title,
+        meeting_date=rec.meeting_date,
+        duration_minutes=float(rec.duration_minutes) if rec.duration_minutes is not None else 0.0,
+        host_email=rec.host_email or "",
+        participant_count=int(rec.participant_count) if rec.participant_count is not None else 0,
+        tags=rec.tags or (),
+        has_transcript=bool(rec.has_transcript) if rec.has_transcript is not None else True,
+    )
+    return (_CacheLookup.PRESENT, meeting)
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +186,26 @@ async def sidebar_status(
     )
 
 
+@router.get("/dashboard/state-counts")
+async def dashboard_state_counts(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Return the state-counts cards as a standalone fragment.
+
+    Driven by the ``hx-trigger="every 10s"`` poll on the section so the
+    Total / Archived / Pending / Failed / Deleted numbers stay current
+    while a sync run is adding rows in the background.
+    """
+    audit = AuditService(manifest=deps.manifest)
+    summary = audit.summary()
+    return _templates(request).TemplateResponse(
+        request,
+        "partials/state_counts.html",
+        {"summary": summary, "MeetingState": MeetingState},
+    )
+
+
 @router.post("/retry/{meeting_id}")
 async def retry_meeting(
     request: Request,
@@ -174,11 +231,19 @@ async def retry_meeting(
             detail="Meeting not in a retry-able state.",
         )
 
-    meeting = await _fetch_meeting_from_source(repo=deps.client, meeting_id=meeting_id)
-    if meeting is None:
+    cache_state, meeting = _fetch_meeting_from_cache(manifest=deps.manifest, meeting_id=meeting_id)
+    if cache_state == _CacheLookup.GONE:
+        # Sync has already learned the meeting is no longer in Fireflies —
+        # retrying won't change that. Tell the user the truth instead of
+        # asking them to sync again.
         raise HTTPException(
             status_code=404,
-            detail="Meeting no longer in Fireflies",
+            detail="Meeting is no longer in Fireflies (detected by last sync).",
+        )
+    if cache_state == _CacheLookup.ABSENT or meeting is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Meeting metadata not in local cache. Run a sync first.",
         )
 
     runner = _make_retry_runner(deps=deps, meeting=meeting, kind=kind)

@@ -806,16 +806,25 @@ button:disabled,
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* State-count cards grid */
+/* State-count cards grid: Total + 4 action cards = 5 in one row.
+   Total card spans full width on narrow screens for emphasis as the
+   summary number; action cards collapse to a 2-up grid below it. */
 .state-counts {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 10px;
   margin-bottom: 24px;
 }
 
+@media (max-width: 1100px) {
+  .state-counts { grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap: 8px; }
+  .state-count-card { padding: 12px 14px; }
+  .state-count-card__value { font-size: 26px; }
+}
+
 @media (max-width: 860px) {
   .state-counts { grid-template-columns: repeat(2, 1fr); }
+  .state-count-card--total { grid-column: 1 / -1; }
 }
 
 .state-count-card {
@@ -837,6 +846,16 @@ button:disabled,
 .state-count-card:nth-child(2) { animation-delay: 130ms; }
 .state-count-card:nth-child(3) { animation-delay: 180ms; }
 .state-count-card:nth-child(4) { animation-delay: 230ms; }
+.state-count-card:nth-child(5) { animation-delay: 280ms; }
+
+.state-count-card--total {
+  background-color: color-mix(in oklab, var(--accent) 8%, var(--bg-elevated));
+  border-color: color-mix(in oklab, var(--accent) 30%, var(--border));
+}
+.state-count-card--total .state-count-card__value { color: var(--accent); }
+.state-count-card--total .state-count-card__label {
+  color: color-mix(in oklab, var(--accent) 60%, var(--text-2));
+}
 
 .state-count-card__label {
   font-size: 11px;
@@ -1146,6 +1165,27 @@ button:disabled,
   gap: 12px;
   margin-top: 20px;
   flex-wrap: wrap;
+}
+
+/* Purge confirmation row — label + numeric input + Back + Purge button on
+   one baseline. The label sits above the input on narrow screens via
+   wrap so the layout still works at <600px. */
+.purge-confirm-row {
+  align-items: center;
+}
+.purge-confirm-label {
+  white-space: nowrap;
+  margin: 0;
+}
+.purge-confirm-input {
+  width: 80px;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.purge-confirm-row .cancel-link {
+  margin-left: auto;
 }
 
 .continue-form,
@@ -2112,6 +2152,13 @@ body > main[style*="max-width:640px"] {
   line-height: 1.5;
 }
 .sync-banner__msg strong { color: var(--text); font-weight: 600; }
+.sync-banner__hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-3);
+  font-style: italic;
+}
 
 .sync-banner__btn {
   padding: 5px 11px;

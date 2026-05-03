@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from firefliesclearer.application.sync_service import SyncService
 from firefliesclearer.core.manifest import Manifest, SyncRunRecord
@@ -77,6 +77,28 @@ def test_compute_next_partial_run_blocks_until_resume_window():
     cfg = SyncConfig(enabled=True)
     # When last is partial, compute_next returns next_resume_at
     assert compute_next(last_run=last, last_full=None, config=cfg, now=now) == resume
+
+
+def test_compute_next_partial_without_resume_estimate_retries_quickly():
+    """5xx and transport timeouts produce partial runs with ``next_resume_at=None``
+    (Fireflies never tells us when transient issues will clear, so we don't
+    fabricate a timestamp to surface in the UI). The scheduler must still pick
+    these up promptly — otherwise a multi-page sync that paged-out mid-stream
+    stalls for the full ``incremental_interval_hours`` (default 6h), which
+    leaves the user staring at "Sync paused" with no explanation of why nothing
+    is happening. The scheduling decision (~1 min) is deliberately separate
+    from the UI messaging (no timestamp shown)."""
+    finished = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 5, 2, 12, 0, 30, tzinfo=UTC)  # 30s after finish
+    last = _run(outcome="partial", finished_at=finished, next_resume_at=None)
+    cfg = SyncConfig(enabled=True, incremental_interval_hours=6)
+    nxt = compute_next(last_run=last, last_full=None, config=cfg, now=now)
+    # Must retry well before the regular 6-hour incremental window.
+    assert nxt < finished + timedelta(minutes=5)
+    # And must be based on finished_at, not now — so a partial that finished
+    # several minutes ago fires immediately rather than waiting again.
+    assert nxt >= finished
+    assert nxt <= finished + timedelta(minutes=2)
 
 
 def test_decide_mode_returns_full_when_due():
