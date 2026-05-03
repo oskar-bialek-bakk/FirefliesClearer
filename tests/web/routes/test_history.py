@@ -9,8 +9,19 @@ from fastapi.testclient import TestClient
 from selectolax.parser import HTMLParser
 
 from firefliesclearer.core.models import Meeting, MeetingState
+from tests.fakes.frozen_clock import FrozenClock
 
 NOW = datetime(2026, 4, 29, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _pin_history_clock(configured_app):
+    """Freeze ``deps.clock`` at ``NOW`` so range filters (``last-7d`` etc.)
+    are evaluated relative to the test's seed dates rather than the wall
+    clock. Without this, the suite drifted past the ``last-7d`` boundary
+    and the "recent" row in ``test_history_filter_by_range_last_7d``
+    fell out of the window once enough days passed since 2026-04-29."""
+    configured_app.state.deps.clock = FrozenClock(NOW)
 
 
 # ---------------------------------------------------------------------------

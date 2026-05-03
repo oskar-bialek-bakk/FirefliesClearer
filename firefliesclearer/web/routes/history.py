@@ -91,7 +91,12 @@ async def history(
     # Clamp page to >= 1
     page = max(1, page)
 
-    now = datetime.now(tz=UTC)
+    # Read the current time from the injected clock so tests can pin "now"
+    # instead of racing the wall clock. The previous implementation called
+    # ``datetime.now(tz=UTC)`` directly, which drifted past the
+    # ``last-7d`` boundary in the test suite once enough days passed since
+    # the test's hardcoded ``NOW`` constant.
+    now = deps.clock.now()
     date_from, date_to = _resolve_date_range(range, from_param=from_, to_param=to, now=now)
 
     states = _parse_states(state)
