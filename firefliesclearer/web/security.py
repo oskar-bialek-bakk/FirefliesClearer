@@ -105,6 +105,18 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             except BadData:
                 cookie_is_valid = False
 
+        # On safe methods (GET/HEAD/OPTIONS) with a missing or stale cookie,
+        # mint the new token BEFORE the route handler runs and inject it into
+        # the ASGI scope's ``Cookie`` header so the route's own Request (each
+        # ``BaseHTTPMiddleware`` layer constructs its own ``Request`` from the
+        # shared scope) parses the freshly-minted token. Without this, the
+        # first GET would render forms with an empty _csrf, breaking any POST
+        # the user clicked on the same page (e.g. the sync opt-in banner).
+        new_token: str | None = None
+        if request.method in self.SAFE_METHODS and (not cookie or not cookie_is_valid):
+            new_token = self._serializer.dumps(secrets.token_urlsafe(16))
+            self._inject_cookie_into_scope(request, new_token)
+
         if request.method not in self.SAFE_METHODS:
             if not cookie:
                 return Response(status_code=403, content="CSRF cookie missing")
@@ -137,20 +149,49 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         # stale-signed. The latter case lets a stale browser tab self-heal on
         # any safe-method navigation, instead of requiring the user to clear
         # cookies manually.
-        if not cookie or not cookie_is_valid:
-            self._rotate_csrf_cookie(response)
+        if new_token is not None:
+            self._set_csrf_cookie(response, new_token)
         return response
 
     def _rotate_csrf_cookie(self, response: Response) -> Response:
+        """Mint a fresh token and write it on *response*.
+
+        Used by the unsafe-method path (after a stale-signature 403) where
+        we don't need to expose the new value to a template on this request —
+        the user will refresh and the new GET will go through the safe-method
+        path. For the safe-method path, see :meth:`_set_csrf_cookie`, which
+        receives the already-minted token.
+        """
         new_token = self._serializer.dumps(secrets.token_urlsafe(16))
+        return self._set_csrf_cookie(response, new_token)
+
+    def _set_csrf_cookie(self, response: Response, token: str) -> Response:
         response.set_cookie(
             CSRF_COOKIE,
-            new_token,
+            token,
             httponly=False,  # JS must read this for fetch()-based POSTs
             samesite="strict",
             max_age=24 * 60 * 60,
         )
         return response
+
+    @staticmethod
+    def _inject_cookie_into_scope(request: Request, token: str) -> None:
+        """Replace the ``Cookie`` header in ``request.scope`` with one that
+        carries ``ffc_csrf=<token>``.
+
+        Each ``BaseHTTPMiddleware`` layer constructs its own ``Request`` from
+        the shared ASGI scope; mutating the local ``Request.cookies`` only
+        affects this layer. To propagate the freshly-minted token to the
+        downstream route handler's templates, the scope's raw header bytes
+        must change so the next ``Request`` parses the new value.
+        """
+        existing = dict(request.cookies)
+        existing[CSRF_COOKIE] = token
+        new_cookie_header = "; ".join(f"{k}={v}" for k, v in existing.items())
+        headers = [(k, v) for k, v in request.scope.get("headers", []) if k.lower() != b"cookie"]
+        headers.append((b"cookie", new_cookie_header.encode("latin-1")))
+        request.scope["headers"] = headers
 
 
 def install_security(app: FastAPI, config: SecurityConfig) -> None:
