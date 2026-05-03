@@ -16,9 +16,10 @@
       {% set lr = sync_status.last_run %}
       {% if lr.outcome == "partial" %}
         <span class="sync-banner__msg">
-          Sync paused: rate-limited until
-          <strong>{{ lr.next_resume_at_local or lr.next_resume_at }}</strong>.
-          {{ lr.meetings_added }} added so far.
+          Sync paused: <strong>{{ lr.error_message or "upstream unavailable" }}</strong>.
+          Next retry around
+          <strong>{{ lr.next_resume_at_local or lr.next_resume_at }}</strong>
+          (estimated). {{ lr.meetings_added }} added so far.
         </span>
         <form method="post" hx-post="/sync/now"
               hx-vals='{"mode":"incremental","trigger":"manual_review"}'
