@@ -197,6 +197,73 @@ def test_post_sync_now_wires_snapshot_callback_even_when_service_preset(
     )
 
 
+def test_status_dict_carries_local_time_strings_for_template(
+    configured_app_sync_on,
+) -> None:
+    """Regression: the banner displayed UTC ISO strings ("2026-05-03T07:48:43...")
+    that confused users running in non-UTC timezones. The status dict must
+    expose ``next_resume_at_local`` / ``finished_at_local`` rendered in the
+    server's local timezone (which equals the user's, since serve is
+    loopback-only) so templates can show a friendly value.
+    """
+    from firefliesclearer.core.manifest import Manifest
+
+    # Seed a partial run with a known UTC next_resume_at.
+    manifest: Manifest = configured_app_sync_on.state.deps.manifest
+    started = datetime(2026, 5, 3, 7, 0, tzinfo=UTC)
+    finished = datetime(2026, 5, 3, 7, 30, tzinfo=UTC)
+    next_resume = datetime(2026, 5, 3, 7, 48, 43, tzinfo=UTC)
+    rid = manifest.start_sync_run(mode="incremental", trigger="scheduled", at=started)
+    manifest.mark_sync_run_partial(
+        rid,
+        at=finished,
+        next_resume_at=next_resume,
+        error_message="rate limited",
+    )
+
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        body = client.get("/sync/status").json()
+
+    last = body["last_run"]
+    assert last is not None
+    assert last["next_resume_at"] == "2026-05-03T07:48:43+00:00"  # ISO unchanged
+    assert last["next_resume_at_local"] is not None
+    # The local rendering must NOT contain the "+00:00" UTC suffix nor the "T"
+    # separator — that is the whole point of the friendly format.
+    assert "+00:00" not in last["next_resume_at_local"]
+    assert "T" not in last["next_resume_at_local"]
+    assert last["finished_at_local"] is not None
+
+
+def test_post_sync_now_returns_running_banner_html_for_htmx_client(
+    configured_app_sync_on,
+) -> None:
+    """Regression: when the dashboard / review-toolbar Sync now form (HTMX)
+    POSTs to /sync/now, the response must be the banner partial — not JSON —
+    so HTMX can swap it into ``#sync-banner``. Without this, the form swap
+    inserted ``{"state":"running",...}`` text into the page and the user
+    saw nothing change until they manually refreshed.
+    """
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.post(
+            "/sync/now",
+            data={
+                "_csrf": _csrf(client),
+                "mode": "incremental",
+                "trigger": "manual_review",
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200, r.text
+        assert "text/html" in r.headers.get("content-type", "")
+        # Banner must reflect the running state (id + class wiring is what
+        # HTMX targets / styles).
+        assert 'id="sync-banner"' in r.text
+        assert "sync-banner--running" in r.text
+
+
 def test_post_sync_now_rejects_invalid_mode(configured_app_sync_on) -> None:
     with TestClient(configured_app_sync_on) as client:
         client.get("/?token=T", follow_redirects=False)

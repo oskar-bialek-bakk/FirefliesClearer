@@ -89,6 +89,21 @@ class RateLimitedError(FirefliesError):
         self.retry_after_seconds = retry_after_seconds
 
 
+class TransientServerError(FirefliesError):
+    """Raised after retries are exhausted on a 5xx response from Fireflies.
+
+    Distinct from RateLimitedError so callers can pick a different retry
+    horizon. The sync engine treats both alike — finalize the run as
+    ``partial`` with ``next_resume_at`` set, so the scheduler picks it up
+    on the next tick instead of leaving the user staring at a 'failed'
+    banner because Fireflies' edge had a flaky minute.
+    """
+
+    def __init__(self, message: str, *, retry_after_seconds: float = 300.0) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
 class FirefliesClient:
     def __init__(
         self,
@@ -254,7 +269,7 @@ class FirefliesClient:
                 continue
             if 500 <= resp.status_code < 600:
                 if attempt >= self._retry_max:
-                    raise FirefliesError(f"server {resp.status_code}")
+                    raise TransientServerError(f"server {resp.status_code}")
                 await self._sleep(attempt, retry_after_seconds=None)
                 continue
             if 400 <= resp.status_code < 500:

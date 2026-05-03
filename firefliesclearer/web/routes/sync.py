@@ -136,6 +136,17 @@ def maybe_status_for_template(request: Request, deps: SimpleNamespace) -> dict[s
     return _build_status_dict(request, deps)
 
 
+def _format_local(value: datetime | None) -> str | None:
+    """Render a tz-aware datetime in the server's local timezone for the UI.
+
+    Templates show this string to the user; the JSON API still emits ISO-8601
+    UTC alongside, so machine consumers are unchanged.
+    """
+    if value is None:
+        return None
+    return value.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _build_status_dict(request: Request, deps: SimpleNamespace) -> dict[str, Any]:
     """Build the status payload shared by JSON + HTML banner endpoints."""
     current = getattr(request.app.state, "current_sync", None)
@@ -147,7 +158,9 @@ def _build_status_dict(request: Request, deps: SimpleNamespace) -> dict[str, Any
             "mode": last_run.mode,
             "outcome": last_run.outcome,
             "started_at": last_run.started_at.isoformat(),
+            "started_at_local": _format_local(last_run.started_at),
             "finished_at": (last_run.finished_at.isoformat() if last_run.finished_at else None),
+            "finished_at_local": _format_local(last_run.finished_at),
             "meetings_seen": last_run.meetings_seen,
             "meetings_added": last_run.meetings_added,
             "meetings_updated": last_run.meetings_updated,
@@ -155,6 +168,7 @@ def _build_status_dict(request: Request, deps: SimpleNamespace) -> dict[str, Any
             "next_resume_at": (
                 last_run.next_resume_at.isoformat() if last_run.next_resume_at else None
             ),
+            "next_resume_at_local": _format_local(last_run.next_resume_at),
             "error_message": last_run.error_message,
         }
     if current is not None:
@@ -185,7 +199,7 @@ def _build_status_dict(request: Request, deps: SimpleNamespace) -> dict[str, Any
 async def trigger_sync(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
-) -> JSONResponse:
+) -> Response:
     """Acquire ``sync_lock`` and spawn a background SyncService run.
 
     Returns:
@@ -263,6 +277,19 @@ async def trigger_sync(
     # Park the task on app.state so it isn't GC'd mid-flight.
     task = asyncio.create_task(_runner())
     request.app.state.current_sync_task = task
+
+    # HTMX clients (the dashboard / review-toolbar Sync now button) swap the
+    # response into ``#sync-banner``. Render the banner partial so the user
+    # sees the running state immediately instead of having to refresh the
+    # page. Non-HTMX callers (CLI, scripts, tests) keep the JSON 202 contract.
+    if request.headers.get("HX-Request") == "true":
+        templates: Jinja2Templates = request.app.state.templates
+        sync_status = _build_status_dict(request, deps)
+        return templates.TemplateResponse(
+            request,
+            "partials/_sync_banner.html",
+            {"sync_status": sync_status},
+        )
 
     return JSONResponse(
         {

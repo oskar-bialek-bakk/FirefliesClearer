@@ -25,7 +25,7 @@ from typing import Self
 from firefliesclearer.core.manifest import Manifest
 from firefliesclearer.core.models import Meeting
 from firefliesclearer.core.sync_types import SyncMode, SyncTrigger
-from firefliesclearer.infra.fireflies_client import RateLimitedError
+from firefliesclearer.infra.fireflies_client import RateLimitedError, TransientServerError
 from firefliesclearer.ports.clock import Clock
 
 # Re-exported so existing callers can keep importing SyncMode/SyncTrigger
@@ -226,7 +226,11 @@ class SyncService:
                 if seen_known:
                     break
                 skip += len(page)
-        except RateLimitedError as e:
+        except (RateLimitedError, TransientServerError) as e:
+            # 504/502/503 from Fireflies are treated like rate-limit:
+            # finalize the run as ``partial`` with ``next_resume_at`` so the
+            # scheduler retries automatically instead of leaving the user
+            # with a 'failed' banner over a flaky upstream minute.
             return self._record_rate_limited(
                 run_id=run_id,
                 cursor_skip=skip,
@@ -313,7 +317,7 @@ class SyncService:
                     last_page_size=len(page),
                 )
                 skip += len(page)
-        except RateLimitedError as e:
+        except (RateLimitedError, TransientServerError) as e:
             return self._record_rate_limited(
                 run_id=run_id,
                 cursor_skip=skip,
