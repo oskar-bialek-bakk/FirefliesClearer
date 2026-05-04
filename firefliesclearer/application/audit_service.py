@@ -10,15 +10,31 @@ from types import MappingProxyType
 from firefliesclearer.core.manifest import Manifest, StateLogEntry
 from firefliesclearer.core.models import MeetingState
 
-__all__ = ["AuditService", "HistoryEntry", "HistoryFilter", "StateSummary"]
+__all__ = [
+    "FAILED_STATES",
+    "AuditService",
+    "HistoryEntry",
+    "HistoryFilter",
+    "StateSummary",
+]
 
-_FAILED_STATES: tuple[MeetingState, ...] = (
+# Single source of truth for "needs attention" / "retry-able" states.
+# Anywhere a UI or route enumerates failed states, it should pull from here
+# (or its ``.value`` projection ``FAILED_STATE_VALUES``) so adding a new
+# failed state never silently desyncs the dashboard count, the retry-all
+# eligibility check, the history filter, and the template's "show Retry
+# button" predicate.
+FAILED_STATES: tuple[MeetingState, ...] = (
     MeetingState.FAILED_FETCH,
     MeetingState.FAILED_DOWNLOAD,
     MeetingState.FAILED_RENDER,
     MeetingState.FAILED_VERIFY,
     MeetingState.DELETED_FAILED,
 )
+
+# Backward-compat alias for any downstream code still importing the
+# private name (kept for one release cycle; safe to remove afterwards).
+_FAILED_STATES = FAILED_STATES
 
 
 @dataclass(frozen=True, slots=True)

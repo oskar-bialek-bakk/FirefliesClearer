@@ -167,7 +167,9 @@ class Pipeline:
 
     async def _delete(self, meeting: Meeting, report: RunReport) -> None:
         rec = self._manifest.get(meeting.meeting_id)
-        if rec is None or rec.state is not MeetingState.ARCHIVED:
+        # DELETED_FAILED is a valid retry entry: the archive on disk is intact
+        # and verified, only the upstream API call failed last time.
+        if rec is None or rec.state not in (MeetingState.ARCHIVED, MeetingState.DELETED_FAILED):
             return
         try:
             await self._repo.delete_meeting(meeting.meeting_id)
@@ -225,13 +227,20 @@ class Pipeline:
     async def purge_one(self, meeting: Meeting) -> MeetingState:
         """Delete *meeting* from the source repository; return final state.
 
-        Requires the meeting to be in ARCHIVED state in the manifest. Does NOT
-        re-verify the archive on disk before deletion (deferred to v2.x — tracked
-        as the verify-before-delete gap).
+        Accepts ARCHIVED or DELETED_FAILED as the manifest entry state — the
+        archive on disk is the same in both cases, only the prior delete API
+        call differs. Any other state (PENDING, FAILED_*, DELETED, KNOWN)
+        short-circuits and returns the current state without calling delete.
+
+        Does NOT re-verify the archive on disk before deletion (deferred to
+        v2.x — tracked as the verify-before-delete gap).
         """
         report = RunReport()
         existing = self._manifest.get(meeting.meeting_id)
-        if existing is None or existing.state is not MeetingState.ARCHIVED:
+        if existing is None or existing.state not in (
+            MeetingState.ARCHIVED,
+            MeetingState.DELETED_FAILED,
+        ):
             return existing.state if existing else MeetingState.PENDING
         await self._delete(meeting, report)
         rec = self._manifest.get(meeting.meeting_id)

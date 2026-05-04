@@ -39,8 +39,28 @@
     done: "deleted ✓",
     failed: "failed ✗",
   };
+  // Bulk Retry-all mixes archive- and purge-style retries into one op,
+  // so neutral terminal labels avoid mis-rendering a successful delete
+  // as "archived ✓". Sub-states from both kinds are mapped here.
+  var ATTENTION_LABELS = {
+    queued: "queued",
+    fetching: "fetching",
+    downloading: "downloading audio",
+    rendering: "rendering pdf",
+    verifying: "verifying",
+    deleting: "deleting",
+    done: "done ✓",
+    failed: "failed ✗",
+  };
   var kind = root.dataset.kind || "archive";
-  var labels = (kind === "purge") ? PURGE_LABELS : ARCHIVE_LABELS;
+  var labels;
+  if (kind === "purge") {
+    labels = PURGE_LABELS;
+  } else if (kind === "attention") {
+    labels = ATTENTION_LABELS;
+  } else {
+    labels = ARCHIVE_LABELS;
+  }
 
   function updateRow(data) {
     if (!data || !data.id) return;

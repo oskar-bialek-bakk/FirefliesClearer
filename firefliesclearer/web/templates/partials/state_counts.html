@@ -1,5 +1,15 @@
 {# State count cards: Total / Archived / Pending / Failed / Deleted.
 
+   Each card is a link into /history pre-filtered to the matching state(s).
+   This is the only way to surface the per-card meeting list — the cleanup
+   wizard only shows fresh / pending rows, so failed and deleted meetings
+   would otherwise be unreachable except via the Needs Attention list.
+
+   The Failed link uses ``failed_state_values`` from the route — driven by
+   the canonical ``audit_service.FAILED_STATES`` tuple — so adding a new
+   failed state in one place keeps the count, the link, and the resulting
+   /history filter aligned.
+
    Self-polling: this section refreshes itself every 10s via HTMX. The
    sync scheduler may add freshly-synced rows in the background (KNOWN
    state — bulk of the Total card), and a static dashboard would otherwise
@@ -8,28 +18,34 @@
 {% set archived_count = summary.counts_by_state.get(MeetingState.ARCHIVED, 0) %}
 {% set pending_count = summary.counts_by_state.get(MeetingState.PENDING, 0) %}
 {% set deleted_count = summary.counts_by_state.get(MeetingState.DELETED, 0) %}
+{% set failed_states_qs %}{% for v in failed_state_values %}state={{ v }}{% if not loop.last %}&{% endif %}{% endfor %}{% endset %}
 <section class="state-counts" id="state-counts"
          hx-get="/dashboard/state-counts"
          hx-trigger="every 10s"
          hx-swap="outerHTML">
-  <div class="state-count-card state-count-card--total" data-state="total">
+  <a class="state-count-card state-count-card--total" data-state="total"
+     href="/history?range=all-time">
     <div class="state-count-card__label">Total cached</div>
     <div class="state-count-card__value">{{ summary.total_count }}</div>
-  </div>
-  <div class="state-count-card" data-state="archived">
+  </a>
+  <a class="state-count-card" data-state="archived"
+     href="/history?range=all-time&state=archived">
     <div class="state-count-card__label">Archived</div>
     <div class="state-count-card__value">{{ archived_count }}</div>
-  </div>
-  <div class="state-count-card" data-state="pending">
+  </a>
+  <a class="state-count-card" data-state="pending"
+     href="/history?range=all-time&state=pending">
     <div class="state-count-card__label">Pending</div>
     <div class="state-count-card__value">{{ pending_count }}</div>
-  </div>
-  <div class="state-count-card" data-state="failed">
+  </a>
+  <a class="state-count-card" data-state="failed"
+     href="/history?range=all-time&{{ failed_states_qs }}">
     <div class="state-count-card__label">Failed</div>
     <div class="state-count-card__value">{{ summary.failed_count }}</div>
-  </div>
-  <div class="state-count-card" data-state="deleted">
+  </a>
+  <a class="state-count-card" data-state="deleted"
+     href="/history?range=all-time&state=deleted">
     <div class="state-count-card__label">Deleted</div>
     <div class="state-count-card__value">{{ deleted_count }}</div>
-  </div>
+  </a>
 </section>

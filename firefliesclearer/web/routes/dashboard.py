@@ -17,16 +17,21 @@ import logging
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
-from firefliesclearer.application.audit_service import AuditService, StateSummary
+from firefliesclearer.application.audit_service import (
+    FAILED_STATES,
+    AuditService,
+    StateSummary,
+)
 from firefliesclearer.core.manifest import Manifest, MeetingRecord
 from firefliesclearer.core.models import Meeting, MeetingState
 from firefliesclearer.web.deps import get_deps
 from firefliesclearer.web.operations import (
     Event,
+    MeetingAlreadyInProgress,
     OperationKind,
     OperationRegistry,
     SameKindAlreadyRunning,
@@ -42,18 +47,12 @@ router = APIRouter()
 # Retry kind lookup
 # ---------------------------------------------------------------------------
 
-# States that mean "archive failed" — retry-archive recovers them.
-_FAILED_ARCHIVE_STATES: frozenset[MeetingState] = frozenset(
-    {
-        MeetingState.FAILED_FETCH,
-        MeetingState.FAILED_DOWNLOAD,
-        MeetingState.FAILED_RENDER,
-        MeetingState.FAILED_VERIFY,
-    }
-)
-
-# State that means "delete (purge) failed" — retry-purge recovers it.
+# Per-state routing: archive-side failures map to RETRY_ARCHIVE,
+# delete-side failures to RETRY_PURGE. Derived from the canonical
+# ``FAILED_STATES`` tuple so adding a new failed state in one place
+# stays consistent with the dashboard count and history filter.
 _FAILED_PURGE_STATES: frozenset[MeetingState] = frozenset({MeetingState.DELETED_FAILED})
+_FAILED_ARCHIVE_STATES: frozenset[MeetingState] = frozenset(FAILED_STATES) - _FAILED_PURGE_STATES
 
 
 def _retry_kind_for_state(state: MeetingState) -> OperationKind | None:
@@ -63,6 +62,11 @@ def _retry_kind_for_state(state: MeetingState) -> OperationKind | None:
     if state in _FAILED_PURGE_STATES:
         return OperationKind.RETRY_PURGE
     return None
+
+
+# String projection of FAILED_STATES for templates / query strings — kept
+# next to the routing logic so the two lists never drift.
+FAILED_STATE_VALUES: tuple[str, ...] = tuple(s.value for s in FAILED_STATES)
 
 
 # ---------------------------------------------------------------------------
@@ -157,9 +161,15 @@ async def dashboard(
     audit = AuditService(manifest=deps.manifest)
     summary = audit.summary()
     rows = _needs_attention_rows(deps.manifest, summary)
+    # Retry-all is only useful when at least one row is actually retry-able
+    # (rows whose source_state == "gone" can't progress further; they're
+    # filtered out by the bulk runner and would otherwise produce a 409).
+    retry_eligible = sum(1 for r in rows if r.source_state != "gone")
     ctx: dict[str, object] = {
         "summary": summary,
         "needs_attention": rows,
+        "retry_eligible_count": retry_eligible,
+        "failed_state_values": FAILED_STATE_VALUES,
         "version": request.app.state.version,
         "MeetingState": MeetingState,
         "show_sync_opt_in": (
@@ -202,7 +212,91 @@ async def dashboard_state_counts(
     return _templates(request).TemplateResponse(
         request,
         "partials/state_counts.html",
-        {"summary": summary, "MeetingState": MeetingState},
+        {
+            "summary": summary,
+            "MeetingState": MeetingState,
+            "failed_state_values": FAILED_STATE_VALUES,
+        },
+    )
+
+
+@router.post("/retry/all")
+async def retry_all_attention(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Start a bulk retry op covering every needs-attention meeting.
+
+    The runner walks the manifest's failed rows and routes each one through
+    ``archive_one`` (any ``failed_*`` archive state) or ``purge_one``
+    (``deleted_failed``) in sequence. Sequential dispatch keeps Fireflies
+    rate-limit pressure predictable and matches the existing single-retry
+    code path.
+
+    Status codes:
+      - 409 if there's nothing to retry, or another ``retry-attention`` op
+        is already running.
+      - 200 + an inline progress fragment that replaces the entire
+        ``needs-attention`` section on success.
+    """
+    audit = AuditService(manifest=deps.manifest)
+    summary = audit.summary()
+    failed_ids: list[str] = list(summary.failed_meeting_ids)
+    if not failed_ids:
+        raise HTTPException(status_code=409, detail="Nothing to retry.")
+
+    # Resolve to (meeting, kind) pairs while filtering rows whose cache is
+    # missing — those would only blow up inside the runner with a confusing
+    # per-row error. A row marked source_state == "gone" from a sync run is
+    # also dropped (its archive/delete can't progress further).
+    targets: list[tuple[Meeting, OperationKind]] = []
+    skipped: list[str] = []
+    for mid in failed_ids:
+        rec = deps.manifest.get(mid)
+        if rec is None or rec.source_state == "gone":
+            skipped.append(mid)
+            continue
+        kind = _retry_kind_for_state(rec.state)
+        if kind is None:
+            skipped.append(mid)
+            continue
+        cache_state, meeting = _fetch_meeting_from_cache(manifest=deps.manifest, meeting_id=mid)
+        if cache_state != _CacheLookup.PRESENT or meeting is None:
+            skipped.append(mid)
+            continue
+        targets.append((meeting, kind))
+
+    if not targets:
+        raise HTTPException(
+            status_code=409,
+            detail="No retry-able meetings remain (all are gone-from-source or not cached).",
+        )
+
+    runner = _make_retry_all_runner(deps=deps, targets=targets)
+    try:
+        op = await _registry(request).start(
+            kind=OperationKind.RETRY_ATTENTION,
+            meeting_ids=[m.meeting_id for m, _ in targets],
+            runner=runner,
+        )
+    except MeetingAlreadyInProgress as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "One of these meetings is already in another running operation. "
+                "Wait for it to finish, then retry."
+            ),
+        ) from exc
+    except SameKindAlreadyRunning as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="A retry-all is already running.",
+        ) from exc
+
+    return _templates(request).TemplateResponse(
+        request,
+        "partials/_retry_all_progress.html",
+        {"op": op, "total": len(targets), "skipped": len(skipped)},
     )
 
 
@@ -210,14 +304,25 @@ async def dashboard_state_counts(
 async def retry_meeting(
     request: Request,
     meeting_id: str,
+    ui: str = Form(default=""),
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
     """Start a single-meeting retry op and return the inline progress card.
 
+    Parameters
+    ----------
+    ui:
+        Optional form param identifying the calling surface so the
+        response template matches the click context. ``"history"``
+        returns a ``<tr>`` fragment that swaps into the history table
+        and uses SSE to drive the eventual reload — anything else
+        defaults to the dashboard's ``<li>`` Needs Attention card.
+
     Status codes:
       - 404 if the manifest has no record for *meeting_id*.
       - 409 if the meeting's current state is not retry-able (e.g. PENDING,
-        ARCHIVED, DELETED) or another op of the same retry kind is running.
+        ARCHIVED, DELETED), the meeting is already in a running op, or
+        another op of the same retry kind is running.
       - 200 + HTMX-targetable HTML fragment on success.
     """
     rec = deps.manifest.get(meeting_id)
@@ -253,6 +358,14 @@ async def retry_meeting(
             meeting_ids=[meeting.meeting_id],
             runner=runner,
         )
+    except MeetingAlreadyInProgress as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This meeting is already being processed by another running "
+                "operation (likely a retry-all). Wait for it to finish."
+            ),
+        ) from exc
     except SameKindAlreadyRunning as exc:
         raise HTTPException(
             status_code=409,
@@ -260,10 +373,13 @@ async def retry_meeting(
         ) from exc
 
     sse_kind = "purge" if kind is OperationKind.RETRY_PURGE else "archive"
+    template = (
+        "partials/_retry_history_row.html" if ui == "history" else "partials/_retry_progress.html"
+    )
     return _templates(request).TemplateResponse(
         request,
-        "partials/_retry_progress.html",
-        {"op": op, "meeting": meeting, "kind": sse_kind},
+        template,
+        {"op": op, "meeting": meeting, "kind": sse_kind, "record": rec},
     )
 
 
@@ -365,5 +481,75 @@ def _make_purge_retry_runner(
                     },
                 )
             )
+
+    return runner
+
+
+def _make_retry_all_runner(
+    *,
+    deps: SimpleNamespace,
+    targets: list[tuple[Meeting, OperationKind]],
+) -> Callable[[_RunnerContext], Awaitable[None]]:
+    """Build a runner that walks every needs-attention row sequentially.
+
+    Each (meeting, kind) pair is dispatched through the matching service —
+    ``ArchiveService.archive_meetings`` for any ``failed_*`` archive state,
+    ``PurgeService.purge_meetings`` for ``deleted_failed``. The runner emits
+    one ``meeting_state`` event per row entry/exit so the inline progress
+    card can show running counters.
+    """
+    from firefliesclearer.application.archive_service import ArchiveService
+    from firefliesclearer.application.purge_service import PurgeService
+
+    async def runner(ctx: _RunnerContext) -> None:
+        archive_svc = ArchiveService(pipeline=deps.pipeline, manifest=deps.manifest)
+        purge_svc = PurgeService(pipeline=deps.pipeline, manifest=deps.manifest)
+        for meeting, kind in targets:
+            if ctx.cancel_event.is_set():
+                return
+            entry_sub_state = "deleting" if kind is OperationKind.RETRY_PURGE else "fetching"
+            ctx.emit(
+                Event(
+                    seq=ctx.next_seq(),
+                    kind="meeting_state",
+                    data={
+                        "id": meeting.meeting_id,
+                        "title": meeting.title,
+                        "sub_state": entry_sub_state,
+                    },
+                )
+            )
+            if kind is OperationKind.RETRY_PURGE:
+                async for purge_outcome in purge_svc.purge_meetings([meeting]):
+                    sub_state = "done" if purge_outcome.state.value == "deleted" else "failed"
+                    ctx.emit(
+                        Event(
+                            seq=ctx.next_seq(),
+                            kind="meeting_state",
+                            data={
+                                "id": purge_outcome.meeting_id,
+                                "title": purge_outcome.title or meeting.title,
+                                "sub_state": sub_state,
+                                "error": purge_outcome.error,
+                            },
+                        )
+                    )
+            else:
+                async for archive_outcome in archive_svc.archive_meetings([meeting]):
+                    sub_state = (
+                        "failed" if archive_outcome.state.value.startswith("failed_") else "done"
+                    )
+                    ctx.emit(
+                        Event(
+                            seq=ctx.next_seq(),
+                            kind="meeting_state",
+                            data={
+                                "id": archive_outcome.meeting_id,
+                                "title": archive_outcome.title or meeting.title,
+                                "sub_state": sub_state,
+                                "error": archive_outcome.error,
+                            },
+                        )
+                    )
 
     return runner

@@ -449,6 +449,273 @@ def test_retry_returns_distinct_404_when_meeting_absent_from_cache(
     assert "not found" in body or "not in local cache" in body
 
 
+# ---------------------------------------------------------------------------
+# POST /retry/all — bulk retry from the dashboard's "Retry all" button
+# ---------------------------------------------------------------------------
+
+
+def test_retry_all_returns_409_when_no_failed_meetings(
+    configured_client: TestClient,
+) -> None:
+    r = configured_client.post(
+        "/retry/all",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 409
+    assert "nothing to retry" in r.text.lower()
+
+
+def test_retry_all_starts_bulk_op_covering_all_failed_rows(
+    configured_client: TestClient, configured_app
+) -> None:
+    """One POST starts a single ``retry-attention`` op for every failed row,
+    mixing archive- and purge-style retries together."""
+    manifest = configured_app.state.deps.manifest
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m-fetch", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
+    _seed_meeting(manifest, meeting_id="m-render", state=MeetingState.FAILED_RENDER, repo=repo)
+    _seed_meeting(manifest, meeting_id="m-delete", state=MeetingState.DELETED_FAILED, repo=repo)
+
+    class MixedPipeline:
+        async def archive_one(self, meeting):
+            manifest.transition(meeting.meeting_id, to=MeetingState.PENDING, at=NOW)
+            manifest.transition(meeting.meeting_id, to=MeetingState.ARCHIVED, at=NOW)
+            return MeetingState.ARCHIVED
+
+        async def purge_one(self, meeting):
+            manifest.transition(meeting.meeting_id, to=MeetingState.DELETED, at=NOW)
+            return MeetingState.DELETED
+
+    configured_app.state.deps.pipeline = MixedPipeline()
+
+    r = configured_client.post(
+        "/retry/all",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 200, r.text
+
+    doc = HTMLParser(r.text)
+    root = doc.css_first("[data-operation-id]")
+    assert root is not None
+    op_id = root.attributes.get("data-operation-id")
+    assert op_id is not None
+
+    op = configured_app.state.operation_registry.get(op_id)
+    assert op.kind == OperationKind.RETRY_ATTENTION
+    # All three failed meeting ids are slotted into the bulk op.
+    assert {slot.meeting_id for slot in op.meetings} == {"m-fetch", "m-render", "m-delete"}
+
+    _wait_for_op(configured_client, configured_app, op_id)
+
+    # Each row reached its terminal good state via the matched pipeline path.
+    assert manifest.get("m-fetch").state is MeetingState.ARCHIVED
+    assert manifest.get("m-render").state is MeetingState.ARCHIVED
+    assert manifest.get("m-delete").state is MeetingState.DELETED
+
+
+def test_retry_all_skips_gone_from_source_meetings(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Rows whose last sync flagged them gone-from-source must NOT count
+    toward the bulk op — retrying them would always 404 against Fireflies."""
+    manifest = configured_app.state.deps.manifest
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m-good", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
+    _seed_meeting(manifest, meeting_id="m-gone", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
+    manifest.set_source_state("m-gone", "gone")
+
+    class NoopPipeline:
+        async def archive_one(self, meeting):
+            return MeetingState.FAILED_DOWNLOAD
+
+        async def purge_one(self, meeting):
+            return MeetingState.DELETED_FAILED
+
+    configured_app.state.deps.pipeline = NoopPipeline()
+
+    r = configured_client.post(
+        "/retry/all",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 200, r.text
+    doc = HTMLParser(r.text)
+    root = doc.css_first("[data-operation-id]")
+    op_id = root.attributes["data-operation-id"]
+    op = configured_app.state.operation_registry.get(op_id)
+    # Only the live row is in the bulk op.
+    assert {slot.meeting_id for slot in op.meetings} == {"m-good"}
+    _wait_for_op(configured_client, configured_app, op_id)
+
+
+def test_retry_all_409s_when_meeting_already_in_single_retry(
+    configured_client: TestClient, configured_app
+) -> None:
+    """A live single-meeting RETRY_ARCHIVE blocks retry-all from starting if
+    the bulk batch would include that same meeting.
+
+    Locks down C2 from PR #20 review: without per-meeting interlocks, a user
+    with /history open can launch a row-level retry on top of an already-
+    running retry-all and double-fire archive/delete work."""
+    manifest = configured_app.state.deps.manifest
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m-busy", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
+
+    async def _start_blocking_op() -> str:
+        async def runner(ctx):
+            await asyncio.Event().wait()
+
+        op = await configured_app.state.operation_registry.start(
+            kind=OperationKind.RETRY_ARCHIVE,
+            meeting_ids=["m-busy"],
+            runner=runner,
+        )
+        return op.id
+
+    assert configured_client.portal is not None
+    blocking_id = configured_client.portal.call(_start_blocking_op)
+
+    r = configured_client.post(
+        "/retry/all",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 409
+    assert "already in another running operation" in r.text.lower()
+
+    async def _cancel_blocking() -> None:
+        configured_app.state.operation_registry.get(blocking_id).task.cancel()
+
+    configured_client.portal.call(_cancel_blocking)
+
+
+def test_single_retry_409s_when_meeting_in_running_retry_all(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The mirror of the above: a live RETRY_ATTENTION batch blocks a
+    later /retry/{id} on any of its meetings (cross-kind interlock)."""
+    manifest = configured_app.state.deps.manifest
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m-busy", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
+
+    async def _start_blocking_op() -> str:
+        async def runner(ctx):
+            await asyncio.Event().wait()
+
+        op = await configured_app.state.operation_registry.start(
+            kind=OperationKind.RETRY_ATTENTION,
+            meeting_ids=["m-busy", "other"],
+            runner=runner,
+        )
+        return op.id
+
+    assert configured_client.portal is not None
+    blocking_id = configured_client.portal.call(_start_blocking_op)
+
+    r = configured_client.post(
+        "/retry/m-busy",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 409
+    assert "already being processed" in r.text.lower()
+
+    async def _cancel_blocking() -> None:
+        configured_app.state.operation_registry.get(blocking_id).task.cancel()
+
+    configured_client.portal.call(_cancel_blocking)
+
+
+def test_retry_from_history_returns_row_fragment(
+    configured_client: TestClient, configured_app
+) -> None:
+    """When the form posts ``ui=history``, the route returns a ``<tr>``
+    fragment so HTMX swaps it cleanly into the history table — and the
+    fragment carries the SSE wiring that drives the eventual reload.
+
+    Locks down C3 from PR #20: the previous version reloaded on a fixed
+    setTimeout, racing long-running retries."""
+    manifest = configured_app.state.deps.manifest
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
+
+    r = configured_client.post(
+        "/retry/m1",
+        data={"_csrf": _csrf(configured_client), "ui": "history"},
+    )
+    assert r.status_code == 200, r.text
+
+    # Response is a <tr> fragment — selectolax parses bare table fragments
+    # awkwardly, so wrap it in a synthetic table before querying.
+    doc = HTMLParser(f"<table><tbody>{r.text}</tbody></table>")
+    tr = doc.css_first("tr.history-row--retrying")
+    assert tr is not None, f"history retry should return a <tr> fragment; got: {r.text[:300]}"
+    assert tr.attributes.get("data-meeting-id") == "m1"
+    op_id = tr.attributes.get("data-operation-id")
+    assert op_id is not None
+    _wait_for_op(configured_client, configured_app, op_id)
+
+
+def test_retry_all_returns_409_when_already_running(
+    configured_client: TestClient, configured_app
+) -> None:
+    manifest = configured_app.state.deps.manifest
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
+
+    async def _start_blocking_op() -> str:
+        async def runner(ctx):
+            await asyncio.Event().wait()
+
+        op = await configured_app.state.operation_registry.start(
+            kind=OperationKind.RETRY_ATTENTION,
+            meeting_ids=["other"],
+            runner=runner,
+        )
+        return op.id
+
+    assert configured_client.portal is not None
+    blocking_id = configured_client.portal.call(_start_blocking_op)
+
+    r = configured_client.post(
+        "/retry/all",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 409
+    assert "already running" in r.text.lower()
+
+    async def _cancel_blocking() -> None:
+        configured_app.state.operation_registry.get(blocking_id).task.cancel()
+
+    configured_client.portal.call(_cancel_blocking)
+
+
+def test_retry_all_button_renders_when_failed_rows_present(
+    configured_client: TestClient, configured_app
+) -> None:
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD)
+    _seed_meeting(manifest, meeting_id="m2", state=MeetingState.DELETED_FAILED)
+
+    r = configured_client.get("/")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    form = doc.css_first("form.needs-attention__retry-all")
+    assert form is not None
+    assert form.attributes.get("hx-post") == "/retry/all"
+    assert form.attributes.get("hx-target") == "closest .needs-attention"
+    button = form.css_first("button.retry-btn--all")
+    assert button is not None
+    # The button surfaces the count so the user knows what they're committing to.
+    assert "(2)" in button.text(strip=True)
+
+
+def test_retry_all_button_absent_when_nothing_failed(
+    configured_client: TestClient,
+) -> None:
+    r = configured_client.get("/")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    assert doc.css_first("form.needs-attention__retry-all") is None
+
+
 def test_retry_writes_full_metadata_to_archive_directory(
     configured_client: TestClient, configured_app
 ) -> None:

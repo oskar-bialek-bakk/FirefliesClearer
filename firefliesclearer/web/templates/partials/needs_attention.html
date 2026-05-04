@@ -6,9 +6,31 @@
    replaces this row (hx-target="closest .needs-attention-row",
    hx-swap="outerHTML"). The fragment then opens an SSE stream and reloads
    the page on terminal state, so the dashboard re-renders with the updated
-   manifest state. #}
+   manifest state.
+
+   The "Retry all" button at the top fans the same logic across every
+   needs-attention row in one shot — POST /retry/all returns a single
+   inline progress card that replaces this whole section. #}
 <section class="needs-attention">
-  <h2>Needs attention</h2>
+  <div class="needs-attention__header">
+    <h2>Needs attention</h2>
+    {# Only render the bulk button when at least one row is actually
+       retry-able. Rows whose source_state == "gone" are filtered out by
+       the runner; showing them in the count would put a button on the
+       page whose only outcome is a 409 toast. #}
+    {% if retry_eligible_count and retry_eligible_count > 0 %}
+      <form class="needs-attention__retry-all" method="post"
+            hx-post="/retry/all"
+            hx-target="closest .needs-attention"
+            hx-swap="outerHTML"
+            hx-on::response-error="alert(event.detail.xhr.responseText || 'Retry-all failed');">
+        <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+        <button type="submit" class="retry-btn retry-btn--all">
+          Retry all ({{ retry_eligible_count }})
+        </button>
+      </form>
+    {% endif %}
+  </div>
   {% if needs_attention %}
     <ul class="needs-attention__list">
       {% for rec in needs_attention %}

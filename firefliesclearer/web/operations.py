@@ -29,6 +29,10 @@ class OperationKind(StrEnum):
     PURGE = "purge"
     RETRY_ARCHIVE = "retry-archive"
     RETRY_PURGE = "retry-purge"
+    # Bulk "Retry all" from the dashboard's needs-attention list. Mixes
+    # archive- and purge-style retries in a single op so a busy user can
+    # clear the whole list with one click.
+    RETRY_ATTENTION = "retry-attention"
 
 
 class SameKindAlreadyRunning(RuntimeError):  # noqa: N818
@@ -36,6 +40,22 @@ class SameKindAlreadyRunning(RuntimeError):  # noqa: N818
 
     def __init__(self, existing_op_id: str) -> None:
         super().__init__(f"Operation {existing_op_id} already running for this kind.")
+        self.existing_op_id = existing_op_id
+
+
+class MeetingAlreadyInProgress(RuntimeError):  # noqa: N818
+    """Raised when a new op would overlap an in-flight op on the same meeting.
+
+    Without this guard, a user with /history open could click Retry on a row
+    that the dashboard's Retry-all has already queued — the registry's
+    same-kind check doesn't catch this because RETRY_ATTENTION is a
+    different kind from RETRY_ARCHIVE / RETRY_PURGE. Two coroutines then
+    race the manifest state machine for one meeting.
+    """
+
+    def __init__(self, meeting_id: str, existing_op_id: str) -> None:
+        super().__init__(f"Meeting {meeting_id} is already in operation {existing_op_id}.")
+        self.meeting_id = meeting_id
         self.existing_op_id = existing_op_id
 
 
@@ -141,9 +161,19 @@ class OperationRegistry:
         runner: Callable[[_RunnerContext], Awaitable[None]],
     ) -> Operation:
         async with self._lock:
+            requested = set(meeting_ids)
             for existing in self._ops.values():
-                if existing.kind == kind and existing.state == "running":
+                if existing.state != "running":
+                    continue
+                if existing.kind == kind:
                     raise SameKindAlreadyRunning(existing.id)
+                # Per-meeting interlock: if any existing running op shares a
+                # meeting id with this one, refuse. Catches the cross-kind
+                # race (RETRY_ATTENTION batch vs. a single RETRY_ARCHIVE /
+                # RETRY_PURGE on the same meeting).
+                overlap = requested.intersection(s.meeting_id for s in existing.meetings)
+                if overlap:
+                    raise MeetingAlreadyInProgress(next(iter(overlap)), existing.id)
             op_id = f"op_{self._clock.now().strftime('%Y-%m-%dT%H-%M-%S')}_{secrets.token_hex(2)}"
             # create_task schedules the runner; it cannot run until we yield
             # back to the loop, so the dict write below is visible to it.
