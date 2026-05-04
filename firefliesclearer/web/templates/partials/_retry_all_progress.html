@@ -1,0 +1,31 @@
+{# Inline progress fragment for the dashboard's "Retry all" button.
+
+   Replaces the entire ``.needs-attention`` section via HTMX outerHTML
+   swap. Reuses the same SSE wiring as the per-meeting retry card so the
+   counters update live and the page reloads on the terminal
+   ``operation_state`` event.
+
+   Required context: ``op`` (Operation), ``total`` (int — meetings being
+   retried), ``skipped`` (int — needs-attention rows omitted because they
+   were marked gone-from-source or missing from the local cache). #}
+<section class="needs-attention retry-all-progress"
+         data-operation-id="{{ op.id }}"
+         data-kind="archive">
+  <h2>Retrying {{ total }} meeting{{ 's' if total != 1 else '' }}&hellip;</h2>
+  {% if skipped %}
+    <p class="retry-all-skipped">
+      Skipped {{ skipped }} row{{ 's' if skipped != 1 else '' }} that can no longer be retried
+      (gone from Fireflies or not in the local cache).
+    </p>
+  {% endif %}
+  <div class="retry-all-progress__rows">
+    {% for slot in op.meetings %}
+    <div class="retry-all-row" data-meeting-id="{{ slot.meeting_id }}" data-sub-state="queued">
+      <code class="retry-all-row__id">{{ slot.meeting_id }}</code>
+      <span class="row-sub-state">queued</span>
+      <span class="row-error"></span>
+    </div>
+    {% endfor %}
+  </div>
+  {% include "cleanup/_progress_sse.html" %}
+</section>

@@ -20,6 +20,7 @@ class InMemoryMeetingRepository:
         self.deleted: list[str] = []
         self.fail_fetch_for: set[str] = set()
         self.fail_delete_for: set[str] = set()
+        self.delete_error_message: str | None = None
         self._api_key: str | None = api_key
         self._key_to_email: dict[str, str] = {}
 
@@ -40,7 +41,8 @@ class InMemoryMeetingRepository:
 
     async def delete_meeting(self, meeting_id: str) -> None:
         if meeting_id in self.fail_delete_for:
-            raise RuntimeError(f"forced delete failure: {meeting_id}")
+            msg = self.delete_error_message or f"forced delete failure: {meeting_id}"
+            raise RuntimeError(msg)
         if meeting_id not in self._meetings:
             return
         self.deleted.append(meeting_id)

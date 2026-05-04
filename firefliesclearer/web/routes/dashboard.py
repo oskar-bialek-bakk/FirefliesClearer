@@ -206,6 +206,78 @@ async def dashboard_state_counts(
     )
 
 
+@router.post("/retry/all")
+async def retry_all_attention(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Start a bulk retry op covering every needs-attention meeting.
+
+    The runner walks the manifest's failed rows and routes each one through
+    ``archive_one`` (any ``failed_*`` archive state) or ``purge_one``
+    (``deleted_failed``) in sequence. Sequential dispatch keeps Fireflies
+    rate-limit pressure predictable and matches the existing single-retry
+    code path.
+
+    Status codes:
+      - 409 if there's nothing to retry, or another ``retry-attention`` op
+        is already running.
+      - 200 + an inline progress fragment that replaces the entire
+        ``needs-attention`` section on success.
+    """
+    audit = AuditService(manifest=deps.manifest)
+    summary = audit.summary()
+    failed_ids: list[str] = list(summary.failed_meeting_ids)
+    if not failed_ids:
+        raise HTTPException(status_code=409, detail="Nothing to retry.")
+
+    # Resolve to (meeting, kind) pairs while filtering rows whose cache is
+    # missing — those would only blow up inside the runner with a confusing
+    # per-row error. A row marked source_state == "gone" from a sync run is
+    # also dropped (its archive/delete can't progress further).
+    targets: list[tuple[Meeting, OperationKind]] = []
+    skipped: list[str] = []
+    for mid in failed_ids:
+        rec = deps.manifest.get(mid)
+        if rec is None or rec.source_state == "gone":
+            skipped.append(mid)
+            continue
+        kind = _retry_kind_for_state(rec.state)
+        if kind is None:
+            skipped.append(mid)
+            continue
+        cache_state, meeting = _fetch_meeting_from_cache(manifest=deps.manifest, meeting_id=mid)
+        if cache_state != _CacheLookup.PRESENT or meeting is None:
+            skipped.append(mid)
+            continue
+        targets.append((meeting, kind))
+
+    if not targets:
+        raise HTTPException(
+            status_code=409,
+            detail="No retry-able meetings remain (all are gone-from-source or not cached).",
+        )
+
+    runner = _make_retry_all_runner(deps=deps, targets=targets)
+    try:
+        op = await _registry(request).start(
+            kind=OperationKind.RETRY_ATTENTION,
+            meeting_ids=[m.meeting_id for m, _ in targets],
+            runner=runner,
+        )
+    except SameKindAlreadyRunning as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="A retry-all is already running.",
+        ) from exc
+
+    return _templates(request).TemplateResponse(
+        request,
+        "partials/_retry_all_progress.html",
+        {"op": op, "total": len(targets), "skipped": len(skipped)},
+    )
+
+
 @router.post("/retry/{meeting_id}")
 async def retry_meeting(
     request: Request,
@@ -365,5 +437,75 @@ def _make_purge_retry_runner(
                     },
                 )
             )
+
+    return runner
+
+
+def _make_retry_all_runner(
+    *,
+    deps: SimpleNamespace,
+    targets: list[tuple[Meeting, OperationKind]],
+) -> Callable[[_RunnerContext], Awaitable[None]]:
+    """Build a runner that walks every needs-attention row sequentially.
+
+    Each (meeting, kind) pair is dispatched through the matching service —
+    ``ArchiveService.archive_meetings`` for any ``failed_*`` archive state,
+    ``PurgeService.purge_meetings`` for ``deleted_failed``. The runner emits
+    one ``meeting_state`` event per row entry/exit so the inline progress
+    card can show running counters.
+    """
+    from firefliesclearer.application.archive_service import ArchiveService
+    from firefliesclearer.application.purge_service import PurgeService
+
+    async def runner(ctx: _RunnerContext) -> None:
+        archive_svc = ArchiveService(pipeline=deps.pipeline, manifest=deps.manifest)
+        purge_svc = PurgeService(pipeline=deps.pipeline, manifest=deps.manifest)
+        for meeting, kind in targets:
+            if ctx.cancel_event.is_set():
+                return
+            entry_sub_state = "deleting" if kind is OperationKind.RETRY_PURGE else "fetching"
+            ctx.emit(
+                Event(
+                    seq=ctx.next_seq(),
+                    kind="meeting_state",
+                    data={
+                        "id": meeting.meeting_id,
+                        "title": meeting.title,
+                        "sub_state": entry_sub_state,
+                    },
+                )
+            )
+            if kind is OperationKind.RETRY_PURGE:
+                async for purge_outcome in purge_svc.purge_meetings([meeting]):
+                    sub_state = "done" if purge_outcome.state.value == "deleted" else "failed"
+                    ctx.emit(
+                        Event(
+                            seq=ctx.next_seq(),
+                            kind="meeting_state",
+                            data={
+                                "id": purge_outcome.meeting_id,
+                                "title": purge_outcome.title or meeting.title,
+                                "sub_state": sub_state,
+                                "error": purge_outcome.error,
+                            },
+                        )
+                    )
+            else:
+                async for archive_outcome in archive_svc.archive_meetings([meeting]):
+                    sub_state = (
+                        "failed" if archive_outcome.state.value.startswith("failed_") else "done"
+                    )
+                    ctx.emit(
+                        Event(
+                            seq=ctx.next_seq(),
+                            kind="meeting_state",
+                            data={
+                                "id": archive_outcome.meeting_id,
+                                "title": archive_outcome.title or meeting.title,
+                                "sub_state": sub_state,
+                                "error": archive_outcome.error,
+                            },
+                        )
+                    )
 
     return runner

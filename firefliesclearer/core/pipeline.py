@@ -167,7 +167,9 @@ class Pipeline:
 
     async def _delete(self, meeting: Meeting, report: RunReport) -> None:
         rec = self._manifest.get(meeting.meeting_id)
-        if rec is None or rec.state is not MeetingState.ARCHIVED:
+        # DELETED_FAILED is a valid retry entry: the archive on disk is intact
+        # and verified, only the upstream API call failed last time.
+        if rec is None or rec.state not in (MeetingState.ARCHIVED, MeetingState.DELETED_FAILED):
             return
         try:
             await self._repo.delete_meeting(meeting.meeting_id)
@@ -231,7 +233,10 @@ class Pipeline:
         """
         report = RunReport()
         existing = self._manifest.get(meeting.meeting_id)
-        if existing is None or existing.state is not MeetingState.ARCHIVED:
+        if existing is None or existing.state not in (
+            MeetingState.ARCHIVED,
+            MeetingState.DELETED_FAILED,
+        ):
             return existing.state if existing else MeetingState.PENDING
         await self._delete(meeting, report)
         rec = self._manifest.get(meeting.meeting_id)

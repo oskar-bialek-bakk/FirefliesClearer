@@ -56,6 +56,7 @@
 
 <div class="history-layout">
 {% if rows %}
+{% set retryable = ["failed_fetch", "failed_download", "failed_render", "failed_verify", "deleted_failed"] %}
 <table class="history-table">
   <thead>
     <tr>
@@ -64,6 +65,7 @@
       <th>State</th>
       <th>Archived at</th>
       <th>Deleted at</th>
+      <th>Action</th>
     </tr>
   </thead>
   <tbody>
@@ -74,6 +76,19 @@
       <td>{{ row.state.value }}</td>
       <td>{{ row.archived_at.strftime("%Y-%m-%d %H:%M") if row.archived_at else "-" }}</td>
       <td>{{ row.deleted_at.strftime("%Y-%m-%d %H:%M") if row.deleted_at else "-" }}</td>
+      <td>
+        {% if row.state.value in retryable %}
+        <form method="post"
+              hx-post="/retry/{{ row.meeting_id }}"
+              hx-swap="none"
+              hx-on::after-request="if(event.detail.successful){this.querySelector('button').textContent='Retrying…';setTimeout(()=>location.reload(),900);}else{alert(event.detail.xhr.responseText||'Retry failed');}">
+          <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+          <button type="submit" class="retry-btn">Retry</button>
+        </form>
+        {% else %}
+        &mdash;
+        {% endif %}
+      </td>
     </tr>
     {% endfor %}
   </tbody>

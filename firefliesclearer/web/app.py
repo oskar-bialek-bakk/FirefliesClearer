@@ -19,6 +19,7 @@ from firefliesclearer.ports.clock import Clock
 from firefliesclearer.ports.meeting_repository import MeetingRepository
 from firefliesclearer.web.lifecycle import HeartbeatTracker, ShutdownCoordinator
 from firefliesclearer.web.operations import OperationRegistry
+from firefliesclearer.web.proactor_fix import install_proactor_connection_reset_handler
 from firefliesclearer.web.routes import (
     _heartbeat,
     _quit,
@@ -108,5 +109,9 @@ def create_app(
 
     # install_security must come AFTER the @app.middleware decoration above.
     install_security(app, SecurityConfig(session_token=session_token, csrf_secret=csrf_secret))
+
+    @app.on_event("startup")
+    async def _silence_proactor_connection_reset() -> None:
+        install_proactor_connection_reset_handler()
 
     return app

@@ -29,6 +29,10 @@ class OperationKind(StrEnum):
     PURGE = "purge"
     RETRY_ARCHIVE = "retry-archive"
     RETRY_PURGE = "retry-purge"
+    # Bulk "Retry all" from the dashboard's needs-attention list. Mixes
+    # archive- and purge-style retries in a single op so a busy user can
+    # clear the whole list with one click.
+    RETRY_ATTENTION = "retry-attention"
 
 
 class SameKindAlreadyRunning(RuntimeError):  # noqa: N818

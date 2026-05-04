@@ -420,3 +420,37 @@ async def test_archive_one_retries_failed_state(tmp_path: Path) -> None:
     repo.fail_fetch_for = set()
     state2 = await pipeline.archive_one(m)
     assert state2 is MeetingState.ARCHIVED
+
+
+async def test_purge_one_retries_from_deleted_failed_on_success(tmp_path: Path) -> None:
+    """purge_one on a DELETED_FAILED meeting reattempts and reaches DELETED on success."""
+    m = _meeting()
+    pipeline, repo, manifest, _, _ = _build(tmp_path, [m], fail_delete_for=[m.meeting_id])
+    await pipeline.run([m], mode=PipelineMode.APPLY)
+    assert manifest.get(m.meeting_id).state is MeetingState.DELETED_FAILED
+
+    repo.fail_delete_for = set()
+    state = await pipeline.purge_one(m)
+    assert state is MeetingState.DELETED
+    assert repo.deleted == [m.meeting_id]
+
+
+async def test_purge_one_retries_from_deleted_failed_records_new_error(tmp_path: Path) -> None:
+    """purge_one on DELETED_FAILED that fails again updates last_error and stays DELETED_FAILED."""
+    m = _meeting()
+    pipeline, repo, manifest, _, _ = _build(tmp_path, [m], fail_delete_for=[m.meeting_id])
+    await pipeline.run([m], mode=PipelineMode.APPLY)
+    rec1 = manifest.get(m.meeting_id)
+    assert rec1 is not None and rec1.state is MeetingState.DELETED_FAILED
+    first_error = rec1.last_error
+
+    # Make the next failure produce a different error message so we can verify
+    # last_error was overwritten by the retry, not just left from the first run.
+    repo.delete_error_message = "second-attempt boom"
+    state = await pipeline.purge_one(m)
+    assert state is MeetingState.DELETED_FAILED
+    rec2 = manifest.get(m.meeting_id)
+    assert rec2 is not None
+    assert rec2.last_error is not None
+    assert rec2.last_error != first_error
+    assert "second-attempt boom" in rec2.last_error

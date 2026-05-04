@@ -30,7 +30,9 @@ LEGAL_TRANSITIONS: Mapping[MeetingState | None, frozenset[MeetingState]] = {
         }
     ),
     MeetingState.ARCHIVED: frozenset({MeetingState.DELETED, MeetingState.DELETED_FAILED}),
-    MeetingState.DELETED_FAILED: frozenset({MeetingState.DELETED}),
+    # Self-loop on DELETED_FAILED lets a retry that fails again refresh
+    # last_error / state_log without raising IllegalStateTransition.
+    MeetingState.DELETED_FAILED: frozenset({MeetingState.DELETED, MeetingState.DELETED_FAILED}),
     MeetingState.FAILED_FETCH: frozenset({MeetingState.PENDING}),
     MeetingState.FAILED_DOWNLOAD: frozenset({MeetingState.PENDING}),
     MeetingState.FAILED_RENDER: frozenset({MeetingState.PENDING}),
