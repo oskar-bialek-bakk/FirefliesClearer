@@ -5,6 +5,11 @@
    wizard only shows fresh / pending rows, so failed and deleted meetings
    would otherwise be unreachable except via the Needs Attention list.
 
+   The Failed link uses ``failed_state_values`` from the route — driven by
+   the canonical ``audit_service.FAILED_STATES`` tuple — so adding a new
+   failed state in one place keeps the count, the link, and the resulting
+   /history filter aligned.
+
    Self-polling: this section refreshes itself every 10s via HTMX. The
    sync scheduler may add freshly-synced rows in the background (KNOWN
    state — bulk of the Total card), and a static dashboard would otherwise
@@ -13,7 +18,7 @@
 {% set archived_count = summary.counts_by_state.get(MeetingState.ARCHIVED, 0) %}
 {% set pending_count = summary.counts_by_state.get(MeetingState.PENDING, 0) %}
 {% set deleted_count = summary.counts_by_state.get(MeetingState.DELETED, 0) %}
-{% set failed_states_qs = "state=failed_fetch&state=failed_download&state=failed_render&state=failed_verify&state=deleted_failed" %}
+{% set failed_states_qs %}{% for v in failed_state_values %}state={{ v }}{% if not loop.last %}&{% endif %}{% endfor %}{% endset %}
 <section class="state-counts" id="state-counts"
          hx-get="/dashboard/state-counts"
          hx-trigger="every 10s"

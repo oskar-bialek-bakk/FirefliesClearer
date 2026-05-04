@@ -227,9 +227,13 @@ class Pipeline:
     async def purge_one(self, meeting: Meeting) -> MeetingState:
         """Delete *meeting* from the source repository; return final state.
 
-        Requires the meeting to be in ARCHIVED state in the manifest. Does NOT
-        re-verify the archive on disk before deletion (deferred to v2.x — tracked
-        as the verify-before-delete gap).
+        Accepts ARCHIVED or DELETED_FAILED as the manifest entry state — the
+        archive on disk is the same in both cases, only the prior delete API
+        call differs. Any other state (PENDING, FAILED_*, DELETED, KNOWN)
+        short-circuits and returns the current state without calling delete.
+
+        Does NOT re-verify the archive on disk before deletion (deferred to
+        v2.x — tracked as the verify-before-delete gap).
         """
         report = RunReport()
         existing = self._manifest.get(meeting.meeting_id)

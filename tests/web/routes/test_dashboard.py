@@ -235,3 +235,85 @@ def test_dashboard_state_counts_endpoint_returns_polling_fragment(
     doc = HTMLParser(r.text)
     total = doc.css_first('[data-state="total"] .state-count-card__value')
     assert total is not None and total.text().strip() == "1"
+
+
+def test_state_count_cards_link_to_filtered_history(
+    configured_client: TestClient,
+) -> None:
+    """Each card is an anchor into /history pre-filtered by the matching state.
+
+    Locks down C5 from the PR #20 review: a typo in any of these hrefs would
+    otherwise ship unnoticed because the existing tests only check counts."""
+    r = configured_client.get("/")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+
+    expected: dict[str, str] = {
+        "total": "/history?range=all-time",
+        "archived": "/history?range=all-time&state=archived",
+        "pending": "/history?range=all-time&state=pending",
+        "deleted": "/history?range=all-time&state=deleted",
+    }
+    for state, href in expected.items():
+        card = doc.css_first(f'a.state-count-card[data-state="{state}"]')
+        assert card is not None, f"missing {state} card"
+        assert card.attributes.get("href") == href, (
+            f"{state} card href = {card.attributes.get('href')!r} (expected {href!r})"
+        )
+
+    failed_card = doc.css_first('a.state-count-card[data-state="failed"]')
+    assert failed_card is not None
+    failed_href = failed_card.attributes.get("href") or ""
+    # Failed link uses the canonical FAILED_STATES tuple from audit_service.
+    # Each state must appear as its own state= param so /history's
+    # multi-select filter accepts them all.
+    for s in (
+        "failed_fetch",
+        "failed_download",
+        "failed_render",
+        "failed_verify",
+        "deleted_failed",
+    ):
+        assert f"state={s}" in failed_href, f"failed card href missing state={s}: {failed_href!r}"
+
+
+def test_retry_all_button_hidden_when_only_gone_from_source_rows_remain(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The Retry-all button must not render when every needs-attention row
+    is flagged gone-from-source — the runner would just 409 and the user
+    is left with an actionable button whose only outcome is an alert.
+
+    Locks down C9 from the PR #20 review."""
+    manifest = configured_app.state.deps.manifest
+    _seed_failed_meeting(manifest, meeting_id="m-gone-1")
+    _seed_failed_meeting(manifest, meeting_id="m-gone-2")
+    manifest.set_source_state("m-gone-1", "gone")
+    manifest.set_source_state("m-gone-2", "gone")
+
+    r = configured_client.get("/")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    # Section still renders the rows (so the user sees the failure history),
+    # but the bulk action is hidden.
+    rows = doc.css(".needs-attention-row")
+    assert len(rows) == 2
+    assert doc.css_first("form.needs-attention__retry-all") is None
+
+
+def test_retry_all_button_count_excludes_gone_from_source_rows(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Mixed case — the button shows, but its (N) reflects only the rows
+    that the runner will actually attempt."""
+    manifest = configured_app.state.deps.manifest
+    _seed_failed_meeting(manifest, meeting_id="m-live")
+    _seed_failed_meeting(manifest, meeting_id="m-gone")
+    manifest.set_source_state("m-gone", "gone")
+
+    r = configured_client.get("/")
+    doc = HTMLParser(r.text)
+    button = doc.css_first("button.retry-btn--all")
+    assert button is not None
+    # Live row counts; gone-from-source row does not.
+    assert "(1)" in button.text(strip=True)

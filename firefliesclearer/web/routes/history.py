@@ -10,7 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
-from firefliesclearer.application.audit_service import AuditService, HistoryFilter
+from firefliesclearer.application.audit_service import (
+    FAILED_STATES,
+    AuditService,
+    HistoryFilter,
+)
 from firefliesclearer.core.models import MeetingState
 from firefliesclearer.web.deps import get_deps
 
@@ -129,6 +133,11 @@ async def history(
 
     all_states = list(MeetingState)
 
+    # Drive the per-row Retry button off the canonical FAILED_STATES tuple
+    # so adding a new failed state automatically grows the action surface
+    # without a template edit. Projected to .value to make the check a
+    # cheap string-equality in Jinja.
+    retryable_state_values = tuple(s.value for s in FAILED_STATES)
     ctx = {
         "request": request,
         "rows": rows,
@@ -139,6 +148,7 @@ async def history(
         "state": state or [],
         "q": q,
         "all_states": all_states,
+        "retryable_state_values": retryable_state_values,
         "date_from": from_,
         "date_to": to,
         "version": str(request.app.state.version),

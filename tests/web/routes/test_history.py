@@ -60,6 +60,11 @@ def _seed_meeting(
         # Must go PENDING → ARCHIVED → DELETED
         manifest.transition(meeting_id, to=MeetingState.ARCHIVED, at=archived_at or NOW)
         manifest.transition(meeting_id, to=MeetingState.DELETED, at=deleted_at or NOW)
+    elif state == MeetingState.DELETED_FAILED:
+        # Must go PENDING → ARCHIVED → DELETED_FAILED — there's no direct
+        # PENDING → DELETED_FAILED transition in the FSM.
+        manifest.transition(meeting_id, to=MeetingState.ARCHIVED, at=archived_at or NOW)
+        manifest.transition(meeting_id, to=MeetingState.DELETED_FAILED, at=NOW)
     elif state == MeetingState.ARCHIVED:
         manifest.transition(meeting_id, to=MeetingState.ARCHIVED, at=archived_at or NOW)
     elif state != MeetingState.PENDING:
@@ -453,6 +458,73 @@ def test_history_panel_renders_state_log(configured_client: TestClient, configur
     assert "archived" in item_texts[1]
     # Third entry: DELETED
     assert "deleted" in item_texts[2]
+
+
+def test_history_renders_retry_button_for_failed_states(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Each retryable row gets a Retry form pointing at /retry/{id}, with
+    ``ui=history`` so the route returns the row-shaped progress fragment.
+    Locks down C10 from PR #20 review."""
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting(manifest, meeting_id="f-fetch", state=MeetingState.FAILED_FETCH)
+    _seed_meeting(manifest, meeting_id="f-render", state=MeetingState.FAILED_RENDER)
+    _seed_meeting(manifest, meeting_id="f-purge", state=MeetingState.DELETED_FAILED)
+
+    r = configured_client.get("/history?range=all-time")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+
+    for mid in ("f-fetch", "f-render", "f-purge"):
+        row = doc.css_first(f'tr[data-meeting-id="{mid}"]')
+        assert row is not None, f"row {mid} missing"
+        form = row.css_first("form")
+        assert form is not None, f"row {mid} has no Retry form"
+        assert form.attributes.get("hx-post") == f"/retry/{mid}"
+        # Row-shaped target so the table structure survives the swap.
+        assert form.attributes.get("hx-target") == "closest tr"
+        # ui=history flag is what makes the route return _retry_history_row.html
+        # — the only fragment that uses SSE for the eventual reload, fixing
+        # the racy setTimeout pattern called out in C3.
+        ui_input = form.css_first('input[name="ui"]')
+        assert ui_input is not None
+        assert ui_input.attributes.get("value") == "history"
+        button = form.css_first("button.retry-btn")
+        assert button is not None
+        assert button.text(strip=True) == "Retry"
+
+
+def test_history_omits_retry_button_for_non_retryable_states(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Archived / Pending / Deleted rows must NOT render a Retry form —
+    those states aren't actionable from history. Locks down C10 from PR #20."""
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting(
+        manifest,
+        meeting_id="ok-archived",
+        state=MeetingState.ARCHIVED,
+        archived_at=NOW,
+    )
+    _seed_meeting(
+        manifest,
+        meeting_id="ok-deleted",
+        state=MeetingState.DELETED,
+        archived_at=NOW,
+        deleted_at=NOW,
+    )
+    _seed_meeting(manifest, meeting_id="ok-pending", state=MeetingState.PENDING)
+
+    r = configured_client.get("/history?range=all-time")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+
+    for mid in ("ok-archived", "ok-deleted", "ok-pending"):
+        row = doc.css_first(f'tr[data-meeting-id="{mid}"]')
+        assert row is not None, f"row {mid} missing"
+        assert row.css_first("form") is None, (
+            f"row {mid} has unexpected Retry form (state is not retryable)"
+        )
 
 
 def test_history_panel_renders_last_error_when_present(

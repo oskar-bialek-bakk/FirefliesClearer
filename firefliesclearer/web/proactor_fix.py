@@ -21,6 +21,13 @@ from typing import Any
 
 _LOST_MARKER = "_call_connection_lost"
 
+# Windows ECONNRESET — the WinError code raised when the remote half abruptly
+# tears the socket down, exactly what we want to suppress. Any other
+# ConnectionResetError (different errno, different message) keeps flowing
+# through the default handler so we don't accidentally hide unrelated
+# transport problems that an operator should see.
+_WSAECONNRESET = 10054
+
 
 def install_proactor_connection_reset_handler() -> None:
     """Install the cosmetic-error filter on the running event loop.
@@ -38,7 +45,11 @@ def install_proactor_connection_reset_handler() -> None:
     def _handler(loop_obj: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
         exc = context.get("exception")
         message = context.get("message", "")
-        if isinstance(exc, ConnectionResetError) and _LOST_MARKER in message:
+        if (
+            isinstance(exc, ConnectionResetError)
+            and _LOST_MARKER in message
+            and getattr(exc, "winerror", None) == _WSAECONNRESET
+        ):
             return
         if previous is not None:
             previous(loop_obj, context)

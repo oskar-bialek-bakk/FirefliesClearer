@@ -22,9 +22,23 @@ async def test_handler_swallows_proactor_connection_reset() -> None:
     # The handler delegates to the previous handler (or default) for things
     # it doesn't suppress. Replace default by wrapping it via a sentinel-based
     # check — we just call our handler directly with synthetic contexts.
+    # WinError 10054 ConnectionResetError raised from
+    # _ProactorBasePipeTransport._call_connection_lost — the only case we
+    # want to suppress. ConnectionResetError doesn't accept ``winerror=`` as
+    # a kwarg on construction, so we set the attribute after the fact.
+    cosmetic_exc = ConnectionResetError("abrupt close")
+    cosmetic_exc.winerror = 10054
     cosmetic_ctx: dict[str, Any] = {
         "message": "Exception in callback _ProactorBasePipeTransport._call_connection_lost(None)",
-        "exception": ConnectionResetError(10054, "abrupt close"),
+        "exception": cosmetic_exc,
+    }
+    # Same callback, but a different OS errno — must NOT be swallowed; an
+    # operator should still see this. Mirrors C8 in the PR review.
+    other_winerror_exc = ConnectionResetError("not the one we hide")
+    other_winerror_exc.winerror = 10053
+    other_winerror_ctx: dict[str, Any] = {
+        "message": "Exception in callback _ProactorBasePipeTransport._call_connection_lost(None)",
+        "exception": other_winerror_exc,
     }
     real_ctx: dict[str, Any] = {
         "message": "Some other failure",
@@ -40,12 +54,16 @@ async def test_handler_swallows_proactor_connection_reset() -> None:
     loop.default_exception_handler = _spy  # type: ignore[method-assign]
     try:
         handler(loop, cosmetic_ctx)
+        handler(loop, other_winerror_ctx)
         handler(loop, real_ctx)
     finally:
         loop.default_exception_handler = original_default  # type: ignore[method-assign]
 
-    assert len(captured) == 1
-    assert captured[0]["exception"] is real_ctx["exception"]
+    # Cosmetic 10054 swallowed; non-10054 reset and unrelated error both
+    # reach the default handler.
+    assert len(captured) == 2
+    assert captured[0]["exception"] is other_winerror_ctx["exception"]
+    assert captured[1]["exception"] is real_ctx["exception"]
 
 
 async def test_handler_noop_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:

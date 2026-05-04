@@ -56,7 +56,6 @@
 
 <div class="history-layout">
 {% if rows %}
-{% set retryable = ["failed_fetch", "failed_download", "failed_render", "failed_verify", "deleted_failed"] %}
 <table class="history-table">
   <thead>
     <tr>
@@ -70,19 +69,29 @@
   </thead>
   <tbody>
     {% for row in rows %}
-    <tr>
+    <tr data-meeting-id="{{ row.meeting_id }}">
       <td><a hx-get="/history/{{ row.meeting_id }}/panel" hx-target="#history-panel" hx-push-url="false">{{ row.title }}</a></td>
       <td>{{ row.meeting_date.strftime("%Y-%m-%d") }}</td>
       <td>{{ row.state.value }}</td>
       <td>{{ row.archived_at.strftime("%Y-%m-%d %H:%M") if row.archived_at else "-" }}</td>
       <td>{{ row.deleted_at.strftime("%Y-%m-%d %H:%M") if row.deleted_at else "-" }}</td>
       <td>
-        {% if row.state.value in retryable %}
+        {# Retry button visibility tracks audit_service.FAILED_STATES via
+           the route's retryable_state_values context — single source of
+           truth so a new failed state becomes retryable everywhere at
+           once. #}
+        {% if row.state.value in retryable_state_values %}
         <form method="post"
               hx-post="/retry/{{ row.meeting_id }}"
-              hx-swap="none"
-              hx-on::after-request="if(event.detail.successful){this.querySelector('button').textContent='Retrying…';setTimeout(()=>location.reload(),900);}else{alert(event.detail.xhr.responseText||'Retry failed');}">
+              hx-target="closest tr"
+              hx-swap="outerHTML"
+              hx-on::response-error="alert(event.detail.xhr.responseText || 'Retry failed');">
           <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+          {# ui=history flag tells the route to return a <tr> fragment.
+             That fragment carries the SSE wiring which reloads the page
+             on the terminal operation_state event — not on a fixed
+             setTimeout, which used to race long-running retries. #}
+          <input type="hidden" name="ui" value="history">
           <button type="submit" class="retry-btn">Retry</button>
         </form>
         {% else %}

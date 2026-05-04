@@ -547,6 +547,112 @@ def test_retry_all_skips_gone_from_source_meetings(
     _wait_for_op(configured_client, configured_app, op_id)
 
 
+def test_retry_all_409s_when_meeting_already_in_single_retry(
+    configured_client: TestClient, configured_app
+) -> None:
+    """A live single-meeting RETRY_ARCHIVE blocks retry-all from starting if
+    the bulk batch would include that same meeting.
+
+    Locks down C2 from PR #20 review: without per-meeting interlocks, a user
+    with /history open can launch a row-level retry on top of an already-
+    running retry-all and double-fire archive/delete work."""
+    manifest = configured_app.state.deps.manifest
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m-busy", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
+
+    async def _start_blocking_op() -> str:
+        async def runner(ctx):
+            await asyncio.Event().wait()
+
+        op = await configured_app.state.operation_registry.start(
+            kind=OperationKind.RETRY_ARCHIVE,
+            meeting_ids=["m-busy"],
+            runner=runner,
+        )
+        return op.id
+
+    assert configured_client.portal is not None
+    blocking_id = configured_client.portal.call(_start_blocking_op)
+
+    r = configured_client.post(
+        "/retry/all",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 409
+    assert "already in another running operation" in r.text.lower()
+
+    async def _cancel_blocking() -> None:
+        configured_app.state.operation_registry.get(blocking_id).task.cancel()
+
+    configured_client.portal.call(_cancel_blocking)
+
+
+def test_single_retry_409s_when_meeting_in_running_retry_all(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The mirror of the above: a live RETRY_ATTENTION batch blocks a
+    later /retry/{id} on any of its meetings (cross-kind interlock)."""
+    manifest = configured_app.state.deps.manifest
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m-busy", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
+
+    async def _start_blocking_op() -> str:
+        async def runner(ctx):
+            await asyncio.Event().wait()
+
+        op = await configured_app.state.operation_registry.start(
+            kind=OperationKind.RETRY_ATTENTION,
+            meeting_ids=["m-busy", "other"],
+            runner=runner,
+        )
+        return op.id
+
+    assert configured_client.portal is not None
+    blocking_id = configured_client.portal.call(_start_blocking_op)
+
+    r = configured_client.post(
+        "/retry/m-busy",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 409
+    assert "already being processed" in r.text.lower()
+
+    async def _cancel_blocking() -> None:
+        configured_app.state.operation_registry.get(blocking_id).task.cancel()
+
+    configured_client.portal.call(_cancel_blocking)
+
+
+def test_retry_from_history_returns_row_fragment(
+    configured_client: TestClient, configured_app
+) -> None:
+    """When the form posts ``ui=history``, the route returns a ``<tr>``
+    fragment so HTMX swaps it cleanly into the history table — and the
+    fragment carries the SSE wiring that drives the eventual reload.
+
+    Locks down C3 from PR #20: the previous version reloaded on a fixed
+    setTimeout, racing long-running retries."""
+    manifest = configured_app.state.deps.manifest
+    repo = configured_app.state.deps.client
+    _seed_meeting(manifest, meeting_id="m1", state=MeetingState.FAILED_DOWNLOAD, repo=repo)
+
+    r = configured_client.post(
+        "/retry/m1",
+        data={"_csrf": _csrf(configured_client), "ui": "history"},
+    )
+    assert r.status_code == 200, r.text
+
+    # Response is a <tr> fragment — selectolax parses bare table fragments
+    # awkwardly, so wrap it in a synthetic table before querying.
+    doc = HTMLParser(f"<table><tbody>{r.text}</tbody></table>")
+    tr = doc.css_first("tr.history-row--retrying")
+    assert tr is not None, f"history retry should return a <tr> fragment; got: {r.text[:300]}"
+    assert tr.attributes.get("data-meeting-id") == "m1"
+    op_id = tr.attributes.get("data-operation-id")
+    assert op_id is not None
+    _wait_for_op(configured_client, configured_app, op_id)
+
+
 def test_retry_all_returns_409_when_already_running(
     configured_client: TestClient, configured_app
 ) -> None:

@@ -17,16 +17,21 @@ import logging
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
-from firefliesclearer.application.audit_service import AuditService, StateSummary
+from firefliesclearer.application.audit_service import (
+    FAILED_STATES,
+    AuditService,
+    StateSummary,
+)
 from firefliesclearer.core.manifest import Manifest, MeetingRecord
 from firefliesclearer.core.models import Meeting, MeetingState
 from firefliesclearer.web.deps import get_deps
 from firefliesclearer.web.operations import (
     Event,
+    MeetingAlreadyInProgress,
     OperationKind,
     OperationRegistry,
     SameKindAlreadyRunning,
@@ -42,18 +47,12 @@ router = APIRouter()
 # Retry kind lookup
 # ---------------------------------------------------------------------------
 
-# States that mean "archive failed" — retry-archive recovers them.
-_FAILED_ARCHIVE_STATES: frozenset[MeetingState] = frozenset(
-    {
-        MeetingState.FAILED_FETCH,
-        MeetingState.FAILED_DOWNLOAD,
-        MeetingState.FAILED_RENDER,
-        MeetingState.FAILED_VERIFY,
-    }
-)
-
-# State that means "delete (purge) failed" — retry-purge recovers it.
+# Per-state routing: archive-side failures map to RETRY_ARCHIVE,
+# delete-side failures to RETRY_PURGE. Derived from the canonical
+# ``FAILED_STATES`` tuple so adding a new failed state in one place
+# stays consistent with the dashboard count and history filter.
 _FAILED_PURGE_STATES: frozenset[MeetingState] = frozenset({MeetingState.DELETED_FAILED})
+_FAILED_ARCHIVE_STATES: frozenset[MeetingState] = frozenset(FAILED_STATES) - _FAILED_PURGE_STATES
 
 
 def _retry_kind_for_state(state: MeetingState) -> OperationKind | None:
@@ -63,6 +62,11 @@ def _retry_kind_for_state(state: MeetingState) -> OperationKind | None:
     if state in _FAILED_PURGE_STATES:
         return OperationKind.RETRY_PURGE
     return None
+
+
+# String projection of FAILED_STATES for templates / query strings — kept
+# next to the routing logic so the two lists never drift.
+FAILED_STATE_VALUES: tuple[str, ...] = tuple(s.value for s in FAILED_STATES)
 
 
 # ---------------------------------------------------------------------------
@@ -157,9 +161,15 @@ async def dashboard(
     audit = AuditService(manifest=deps.manifest)
     summary = audit.summary()
     rows = _needs_attention_rows(deps.manifest, summary)
+    # Retry-all is only useful when at least one row is actually retry-able
+    # (rows whose source_state == "gone" can't progress further; they're
+    # filtered out by the bulk runner and would otherwise produce a 409).
+    retry_eligible = sum(1 for r in rows if r.source_state != "gone")
     ctx: dict[str, object] = {
         "summary": summary,
         "needs_attention": rows,
+        "retry_eligible_count": retry_eligible,
+        "failed_state_values": FAILED_STATE_VALUES,
         "version": request.app.state.version,
         "MeetingState": MeetingState,
         "show_sync_opt_in": (
@@ -202,7 +212,11 @@ async def dashboard_state_counts(
     return _templates(request).TemplateResponse(
         request,
         "partials/state_counts.html",
-        {"summary": summary, "MeetingState": MeetingState},
+        {
+            "summary": summary,
+            "MeetingState": MeetingState,
+            "failed_state_values": FAILED_STATE_VALUES,
+        },
     )
 
 
@@ -265,6 +279,14 @@ async def retry_all_attention(
             meeting_ids=[m.meeting_id for m, _ in targets],
             runner=runner,
         )
+    except MeetingAlreadyInProgress as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "One of these meetings is already in another running operation. "
+                "Wait for it to finish, then retry."
+            ),
+        ) from exc
     except SameKindAlreadyRunning as exc:
         raise HTTPException(
             status_code=409,
@@ -282,14 +304,25 @@ async def retry_all_attention(
 async def retry_meeting(
     request: Request,
     meeting_id: str,
+    ui: str = Form(default=""),
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
     """Start a single-meeting retry op and return the inline progress card.
 
+    Parameters
+    ----------
+    ui:
+        Optional form param identifying the calling surface so the
+        response template matches the click context. ``"history"``
+        returns a ``<tr>`` fragment that swaps into the history table
+        and uses SSE to drive the eventual reload — anything else
+        defaults to the dashboard's ``<li>`` Needs Attention card.
+
     Status codes:
       - 404 if the manifest has no record for *meeting_id*.
       - 409 if the meeting's current state is not retry-able (e.g. PENDING,
-        ARCHIVED, DELETED) or another op of the same retry kind is running.
+        ARCHIVED, DELETED), the meeting is already in a running op, or
+        another op of the same retry kind is running.
       - 200 + HTMX-targetable HTML fragment on success.
     """
     rec = deps.manifest.get(meeting_id)
@@ -325,6 +358,14 @@ async def retry_meeting(
             meeting_ids=[meeting.meeting_id],
             runner=runner,
         )
+    except MeetingAlreadyInProgress as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This meeting is already being processed by another running "
+                "operation (likely a retry-all). Wait for it to finish."
+            ),
+        ) from exc
     except SameKindAlreadyRunning as exc:
         raise HTTPException(
             status_code=409,
@@ -332,10 +373,13 @@ async def retry_meeting(
         ) from exc
 
     sse_kind = "purge" if kind is OperationKind.RETRY_PURGE else "archive"
+    template = (
+        "partials/_retry_history_row.html" if ui == "history" else "partials/_retry_progress.html"
+    )
     return _templates(request).TemplateResponse(
         request,
-        "partials/_retry_progress.html",
-        {"op": op, "meeting": meeting, "kind": sse_kind},
+        template,
+        {"op": op, "meeting": meeting, "kind": sse_kind, "record": rec},
     )
 
 

@@ -1,0 +1,29 @@
+{# Inline progress fragment swapped into a History table row when the
+   user clicks Retry from /history. Replaces the original ``<tr>`` so the
+   table layout is preserved.
+
+   The fragment carries the standard ``data-operation-id`` /
+   ``data-kind`` / ``data-meeting-id`` triple so the shared
+   ``cleanup/_progress_sse.html`` script latches on, drives sub-state
+   updates, and reloads the page on the terminal ``operation_state``
+   event. That reload is the authoritative "the op is done" signal —
+   not the HTTP response, which only confirms the runner started.
+
+   Required context: ``op`` (Operation), ``kind`` ("archive" | "purge"),
+   ``meeting`` (Meeting), ``record`` (MeetingRecord — for state strings
+   we don't get from ``meeting``). #}
+<tr class="history-row history-row--retrying"
+    data-operation-id="{{ op.id }}"
+    data-kind="{{ kind }}"
+    data-meeting-id="{{ meeting.meeting_id }}">
+  <td>{{ meeting.title }}</td>
+  <td>{{ meeting.meeting_date.strftime("%Y-%m-%d") }}</td>
+  <td>{{ record.state.value }}</td>
+  <td>{{ record.archived_at.strftime("%Y-%m-%d %H:%M") if record.archived_at else "-" }}</td>
+  <td>{{ record.deleted_at.strftime("%Y-%m-%d %H:%M") if record.deleted_at else "-" }}</td>
+  <td class="history-row__action">
+    <span class="row-sub-state">queued</span>
+    <span class="row-error"></span>
+  </td>
+  {% include "cleanup/_progress_sse.html" %}
+</tr>
