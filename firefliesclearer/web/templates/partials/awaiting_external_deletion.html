@@ -1,0 +1,59 @@
+{# Awaiting external deletion: meetings archived locally that the user can
+   bulk-delete in Fireflies' web UI.
+
+   Why this exists: Fireflies' Pro plan caps total GraphQL ops at 50/day
+   (across list, fetch, delete combined). Bulk-deleting via the FF web UI
+   bypasses this cap entirely. After the user does that, this section's
+   bulk button reconciles the local manifest by transitioning every row
+   in ARCHIVED or DELETED_FAILED to DELETED. No API call burned.
+
+   Visibility: rendered only when ``awaiting_external_deletion_count > 0``
+   (the wrapping ``_dashboard_main.html`` does the gate). #}
+<section class="awaiting-external-deletion">
+  <div class="awaiting-external-deletion__header">
+    <h2>Awaiting deletion in Fireflies</h2>
+    <p class="awaiting-external-deletion__lede">
+      {{ awaiting_external_deletion_count }} meeting{% if awaiting_external_deletion_count != 1 %}s{% endif %}
+      archived locally, ready to delete in Fireflies.
+    </p>
+  </div>
+
+  <ol class="awaiting-external-deletion__steps">
+    <li>
+      <a href="https://app.fireflies.ai/notebook/mine"
+         target="_blank" rel="noopener noreferrer"
+         class="awaiting-external-deletion__open-btn">
+        Open Fireflies → My Meetings
+      </a>
+    </li>
+    <li>Select rows (or use the day-level checkboxes), then click <strong>Bulk Delete</strong>.</li>
+    <li>Come back here and click the button below to mark them as deleted in your local manifest.</li>
+  </ol>
+
+  <details class="awaiting-external-deletion__details">
+    <summary>Show {{ awaiting_external_deletion_count }} meeting{% if awaiting_external_deletion_count != 1 %}s{% endif %}</summary>
+    <ul class="awaiting-external-deletion__list">
+      {% for rec in awaiting_external_deletion %}
+        <li class="awaiting-external-deletion-row" data-meeting-id="{{ rec.meeting_id }}">
+          <span class="awaiting-external-deletion-row__title">{{ rec.title }}</span>
+          <span class="awaiting-external-deletion-row__date">
+            {{ rec.meeting_date.date().isoformat() }}
+          </span>
+          <span class="awaiting-external-deletion-row__state">{{ rec.state.value }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  </details>
+
+  <form class="awaiting-external-deletion__bulk" method="post"
+        hx-post="/mark-deleted/all"
+        hx-target="#dashboard-main"
+        hx-swap="outerHTML"
+        hx-confirm="Mark all {{ awaiting_external_deletion_count }} meetings as deleted in Fireflies? This is a manifest-only action — make sure you've already deleted them in the Fireflies web UI."
+        hx-on::response-error="alert(event.detail.xhr.responseText || 'Mark-deleted failed');">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+    <button type="submit" class="mark-deleted-btn mark-deleted-btn--all">
+      I deleted these in Fireflies — mark as deleted ({{ awaiting_external_deletion_count }})
+    </button>
+  </form>
+</section>

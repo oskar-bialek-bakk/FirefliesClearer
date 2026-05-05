@@ -19,6 +19,14 @@ class ConfigError(Exception):
 
 class FirefliesConfig(BaseModel):
     api_key: str = Field(min_length=1)
+    # Authenticated user's email address (the value of ``user.email`` from
+    # Fireflies' GraphQL API). Used by the pipeline to skip API delete on
+    # meetings the user is not the host of — Fireflies' deleteTranscript
+    # mutation rejects non-host calls, so attempting them just burns daily
+    # quota for no benefit. Optional + nullable so existing configs keep
+    # working; SetupService writes it after a successful ``ping_user`` and
+    # web/deps lazy-resolves it on first build for upgrades.
+    user_email: str | None = None
 
 
 class ArchiveConfig(BaseModel):
@@ -59,6 +67,13 @@ class RunConfig(BaseModel):
     delete_confirmation_threshold: int = Field(default=10, ge=0)
     default_age_days: int = Field(default=180, ge=1, le=3650)
     log_retention_days: int = Field(default=30, ge=1, le=3650)
+    # Daily cap for the background API-purge trickle. 0 disables the trickle
+    # entirely (recommended for users who exclusively bulk-delete via the
+    # Fireflies web UI). Capped at 50 because Fireflies' Pro plan limits
+    # total daily GraphQL ops to 50 — leaving zero headroom for sync would
+    # be self-defeating. The default 5 keeps comfortable headroom for sync,
+    # archive, and a few wizard scans on a Pro account.
+    api_purge_per_day: int = Field(default=5, ge=0, le=50)
 
 
 class SyncConfig(BaseModel):
@@ -162,7 +177,11 @@ def load_config(
 
 def write_config(cfg: AppConfig, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload: dict[str, Any] = cfg.model_dump(mode="json")
+    # ``exclude_none`` is mandatory: tomli_w cannot serialize Python None
+    # (see CLAUDE.md "Common gotchas"). Phase 6 added a nullable
+    # ``[fireflies] user_email`` which is the immediate trigger, but the
+    # rule applies to any current or future Optional field.
+    payload: dict[str, Any] = cfg.model_dump(mode="json", exclude_none=True)
     payload["archive"]["root_dir"] = str(payload["archive"]["root_dir"])
     if payload.get("presets"):
         payload["presets"] = [p.model_dump(mode="json", exclude_none=True) for p in cfg.presets]

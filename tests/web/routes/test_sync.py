@@ -295,6 +295,75 @@ def test_post_sync_now_rejects_invalid_trigger(configured_app_sync_on) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 5: manual sync cooldown
+# ---------------------------------------------------------------------------
+
+
+def test_post_sync_now_returns_429_during_cooldown(configured_app_sync_on) -> None:
+    """When the most recent sync finished less than MANUAL_SYNC_COOLDOWN ago,
+    POST /sync/now is rejected with 429 + Retry-After. Without this gate a
+    user click-spamming the Sync now button would burn pages of API quota
+    for the same answer."""
+    manifest = configured_app_sync_on.state.deps.manifest
+    rid = manifest.start_sync_run(
+        mode="incremental",
+        trigger="manual_review",
+        at=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+    )
+    manifest.finalize_sync_run(
+        rid,
+        outcome="success",
+        # Finished 30 seconds ago — well within the 5-minute cooldown.
+        at=datetime.now(UTC),
+    )
+
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.post(
+            "/sync/now",
+            data={
+                "_csrf": _csrf(client),
+                "mode": "incremental",
+                "trigger": "manual_review",
+            },
+        )
+        assert r.status_code == 429
+        assert "Retry-After" in r.headers
+        body = r.json()
+        assert body["error"] == "cooldown"
+        assert body["retry_after_seconds"] > 0
+
+
+def test_post_sync_now_proceeds_after_cooldown_window(configured_app_sync_on) -> None:
+    """A sync that finished long enough ago (well past the 5-minute cooldown)
+    is allowed through normally."""
+    manifest = configured_app_sync_on.state.deps.manifest
+    rid = manifest.start_sync_run(
+        mode="incremental",
+        trigger="manual_review",
+        at=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+    )
+    manifest.finalize_sync_run(
+        rid,
+        outcome="success",
+        at=datetime(2026, 5, 2, 12, 5, tzinfo=UTC),  # ~ a year ago vs SystemClock.now()
+    )
+
+    with TestClient(configured_app_sync_on) as client:
+        client.get("/?token=T", follow_redirects=False)
+        r = client.post(
+            "/sync/now",
+            data={
+                "_csrf": _csrf(client),
+                "mode": "incremental",
+                "trigger": "manual_review",
+            },
+        )
+        # 202 = run started; the cooldown gate didn't trip.
+        assert r.status_code == 202
+
+
+# ---------------------------------------------------------------------------
 # GET /sync/status/banner — HTML partial render
 # ---------------------------------------------------------------------------
 

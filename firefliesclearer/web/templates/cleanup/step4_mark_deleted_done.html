@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Cleanup Step 4 — Marked deleted — FirefliesClearer{% endblock %}
+{% block page %}
+{% include "cleanup/_stepper.html" %}
+
+<section class="cleanup-step cleanup-step-purge cleanup-step-purge-done">
+  <h1>Step 4 — Marked as deleted</h1>
+
+  <p class="purge-summary">
+    {% if skipped_count == 0 %}
+      <strong>{{ marked_count }} meeting{% if marked_count != 1 %}s{% endif %}
+      marked as deleted in your local manifest.</strong>
+    {% else %}
+      <strong>{{ marked_count }} marked as deleted</strong>,
+      <strong>{{ skipped_count }} skipped</strong>
+      (state changed since the wizard started — typically reconciled by sync).
+    {% endif %}
+  </p>
+
+  <p class="purge-summary-secondary">
+    Their archive files are kept on disk. Run <code>history</code> to find
+    them, or check the <a href="/history">history page</a>.
+  </p>
+
+  <div class="form-actions purge-done-actions">
+    <form method="post" action="/cleanup/purge/finalize" class="purge-finalize-form">
+      <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+      <button type="submit" class="purge-done-btn continue-btn">Done</button>
+    </form>
+    <form method="post" action="/cleanup/purge/restart" class="purge-restart-form">
+      <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+      <button type="submit" class="purge-restart-btn">Cleanup another batch</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

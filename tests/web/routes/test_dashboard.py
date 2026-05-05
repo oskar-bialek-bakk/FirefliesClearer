@@ -32,6 +32,44 @@ def _seed_failed_meeting(manifest, meeting_id: str = "m1", title: str = "Test St
     )
 
 
+def _seed_meeting_in_state(
+    manifest,
+    *,
+    meeting_id: str,
+    state: MeetingState,
+    title: str = "Test",
+) -> None:
+    """Seed a meeting and walk it through the FSM to *state*.
+
+    Supports ARCHIVED and DELETED_FAILED — the two terminal-ish states the
+    "Mark as deleted in Fireflies" action operates on. Other states are
+    rejected to keep the helper small and intent-clear.
+    """
+    meeting = Meeting(
+        meeting_id=meeting_id,
+        title=title,
+        meeting_date=NOW,
+        duration_minutes=15.0,
+        host_email="u@x.com",
+        participant_count=2,
+    )
+    manifest.register(meeting, at=NOW)
+    if state is MeetingState.PENDING:
+        return
+    manifest.transition(meeting_id, to=MeetingState.ARCHIVED, at=NOW)
+    if state is MeetingState.ARCHIVED:
+        return
+    if state is MeetingState.DELETED_FAILED:
+        manifest.transition(
+            meeting_id,
+            to=MeetingState.DELETED_FAILED,
+            at=NOW,
+            last_error="Too many requests",
+        )
+        return
+    raise ValueError(f"_seed_meeting_in_state does not support {state}")
+
+
 @pytest.fixture
 def configured_client(configured_app) -> TestClient:
     """A client where setup is already complete (configured_app from conftest)."""
@@ -317,3 +355,290 @@ def test_retry_all_button_count_excludes_gone_from_source_rows(
     assert button is not None
     # Live row counts; gone-from-source row does not.
     assert "(1)" in button.text(strip=True)
+
+
+# ---------------------------------------------------------------------------
+# Mark-as-deleted-in-Fireflies action (Phase 1)
+#
+# Two new POST routes let the user reconcile the manifest after they bulk-
+# delete meetings in the Fireflies web UI (which the API quota makes the
+# cheapest path on Pro plan):
+#   - POST /mark-deleted/{meeting_id}: single row, ARCHIVED|DELETED_FAILED -> DELETED.
+#   - POST /mark-deleted/all: every row currently in those two states.
+# Both record the transition with details={"reason": "manual_external_delete"}
+# in state_log so the audit trail keeps the manual provenance.
+# ---------------------------------------------------------------------------
+
+
+def _csrf(client: TestClient) -> str:
+    return client.cookies.get("ffc_csrf", "") or ""
+
+
+def test_mark_deleted_single_archived_transitions_to_deleted(
+    configured_client: TestClient, configured_app
+) -> None:
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="a1", state=MeetingState.ARCHIVED)
+
+    r = configured_client.post(
+        "/mark-deleted/a1",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 200, r.text
+    rec = manifest.get("a1")
+    assert rec is not None
+    assert rec.state is MeetingState.DELETED
+
+
+def test_mark_deleted_single_failed_transitions_to_deleted(
+    configured_client: TestClient, configured_app
+) -> None:
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="f1", state=MeetingState.DELETED_FAILED)
+
+    r = configured_client.post(
+        "/mark-deleted/f1",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 200, r.text
+    rec = manifest.get("f1")
+    assert rec is not None
+    assert rec.state is MeetingState.DELETED
+
+
+def test_mark_deleted_single_records_reason_in_state_log(
+    configured_client: TestClient, configured_app
+) -> None:
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="a1", state=MeetingState.ARCHIVED)
+
+    configured_client.post("/mark-deleted/a1", data={"_csrf": _csrf(configured_client)})
+
+    log = manifest.state_log("a1")
+    last = log[-1]
+    assert last.from_state is MeetingState.ARCHIVED
+    assert last.to_state is MeetingState.DELETED
+    assert last.details == {"reason": "manual_external_delete"}
+
+
+def test_mark_deleted_single_rejects_pending(configured_client: TestClient, configured_app) -> None:
+    """A meeting that hasn't been archived locally must not be markable as
+    externally-deleted — the manifest would lose its claim that we have a
+    verified copy on disk."""
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="p1", state=MeetingState.PENDING)
+
+    r = configured_client.post(
+        "/mark-deleted/p1",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 409
+    rec = manifest.get("p1")
+    assert rec is not None
+    assert rec.state is MeetingState.PENDING
+
+
+def test_mark_deleted_single_rejects_already_deleted(
+    configured_client: TestClient, configured_app
+) -> None:
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="a1", state=MeetingState.ARCHIVED)
+    manifest.transition("a1", to=MeetingState.DELETED, at=NOW)
+
+    r = configured_client.post(
+        "/mark-deleted/a1",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 409
+
+
+def test_mark_deleted_single_unknown_id_returns_404(
+    configured_client: TestClient,
+) -> None:
+    r = configured_client.post(
+        "/mark-deleted/missing",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 404
+
+
+def test_mark_deleted_all_transitions_archived_and_failed_only(
+    configured_client: TestClient, configured_app
+) -> None:
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="a1", state=MeetingState.ARCHIVED)
+    _seed_meeting_in_state(manifest, meeting_id="a2", state=MeetingState.ARCHIVED)
+    _seed_meeting_in_state(manifest, meeting_id="f1", state=MeetingState.DELETED_FAILED)
+    _seed_meeting_in_state(manifest, meeting_id="p1", state=MeetingState.PENDING)
+    _seed_failed_meeting(manifest, meeting_id="dl1")  # FAILED_DOWNLOAD — not eligible
+
+    r = configured_client.post(
+        "/mark-deleted/all",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 200, r.text
+
+    expected = {
+        "a1": MeetingState.DELETED,
+        "a2": MeetingState.DELETED,
+        "f1": MeetingState.DELETED,
+        "p1": MeetingState.PENDING,
+        "dl1": MeetingState.FAILED_DOWNLOAD,
+    }
+    for mid, state in expected.items():
+        rec = manifest.get(mid)
+        assert rec is not None and rec.state is state, f"{mid} = {rec and rec.state}"
+
+
+def test_mark_deleted_all_returns_409_when_nothing_eligible(
+    configured_client: TestClient, configured_app
+) -> None:
+    manifest = configured_app.state.deps.manifest
+    _seed_failed_meeting(manifest, meeting_id="dl1")  # FAILED_DOWNLOAD — not eligible
+
+    r = configured_client.post(
+        "/mark-deleted/all",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 409
+
+
+def test_mark_deleted_all_writes_reason_to_state_log(
+    configured_client: TestClient, configured_app
+) -> None:
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="a1", state=MeetingState.ARCHIVED)
+
+    configured_client.post("/mark-deleted/all", data={"_csrf": _csrf(configured_client)})
+
+    last = manifest.state_log("a1")[-1]
+    assert last.to_state is MeetingState.DELETED
+    assert last.details == {"reason": "manual_external_delete"}
+
+
+def test_dashboard_shows_awaiting_external_deletion_section(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The dashboard renders a dedicated 'awaiting external deletion' panel
+    with a single bulk button when at least one meeting is in ARCHIVED or
+    DELETED_FAILED. The button POSTs to /mark-deleted/all."""
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="a1", state=MeetingState.ARCHIVED)
+    _seed_meeting_in_state(manifest, meeting_id="f1", state=MeetingState.DELETED_FAILED)
+
+    r = configured_client.get("/")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    section = doc.css_first("section.awaiting-external-deletion")
+    assert section is not None, "awaiting-external-deletion section missing"
+    button = section.css_first("button.mark-deleted-btn--all")
+    assert button is not None
+    # Count reflects archived + deleted_failed total.
+    assert "(2)" in button.text(strip=True)
+
+
+def test_dashboard_hides_awaiting_external_deletion_when_empty(
+    configured_client: TestClient,
+) -> None:
+    r = configured_client.get("/")
+    doc = HTMLParser(r.text)
+    assert doc.css_first("section.awaiting-external-deletion") is None
+
+
+def test_needs_attention_row_has_per_row_mark_deleted_button_for_failed(
+    configured_client: TestClient, configured_app
+) -> None:
+    """DELETED_FAILED rows show a secondary 'Mark deleted in Fireflies' action
+    next to Retry — used after the user did the bulk-delete in FF web."""
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="f1", state=MeetingState.DELETED_FAILED)
+
+    r = configured_client.get("/")
+    doc = HTMLParser(r.text)
+    row = doc.css_first('.needs-attention-row[data-meeting-id="f1"]')
+    assert row is not None
+    form = row.css_first("form.needs-attention-row__mark-deleted")
+    assert form is not None
+    assert form.attributes.get("hx-post") == "/mark-deleted/f1"
+
+
+def test_needs_attention_row_buttons_are_split_left_and_right(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Mis-click safety: 'I deleted in Fireflies' must come BEFORE the row
+    title in source order (so it renders at the left edge), and 'Retry'
+    must come AFTER the title (rendered at the right edge). The two
+    actions are different in consequence — Retry burns one API call,
+    mark-deleted promotes the row to DELETED — so the layout must keep
+    them physically separated rather than stacked together where a
+    fast click could hit the wrong one."""
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="f1", state=MeetingState.DELETED_FAILED)
+
+    r = configured_client.get("/")
+    doc = HTMLParser(r.text)
+    row = doc.css_first('.needs-attention-row[data-meeting-id="f1"]')
+    assert row is not None
+
+    # Walk direct children and capture the source order of (mark-deleted,
+    # title, retry) — we only care about their relative ordering.
+    children = list(row.iter())
+    order: list[str] = []
+    for child in children:
+        cls = (child.attributes.get("class") or "").split()
+        if "needs-attention-row__mark-deleted" in cls:
+            order.append("mark-deleted")
+        elif "needs-attention-row__title" in cls:
+            order.append("title")
+        elif "needs-attention-row__retry" in cls:
+            order.append("retry")
+    assert order == ["mark-deleted", "title", "retry"], (
+        f"expected mark-deleted before title before retry, got {order}"
+    )
+
+
+def test_needs_attention_row_mark_deleted_uses_confirm_modal(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The per-row mark-deleted action goes through hx-confirm — second
+    safety net beyond the left/right separation in case the user does
+    misclick."""
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="f1", state=MeetingState.DELETED_FAILED)
+
+    r = configured_client.get("/")
+    doc = HTMLParser(r.text)
+    form = doc.css_first(
+        '.needs-attention-row[data-meeting-id="f1"] form.needs-attention-row__mark-deleted'
+    )
+    assert form is not None
+    confirm = form.attributes.get("hx-confirm") or ""
+    assert confirm  # non-empty
+    # Mention Fireflies so the user understands this is the manifest
+    # reconciliation action, not an API delete retry.
+    assert "Fireflies" in confirm
+
+
+def test_mark_deleted_all_returns_dashboard_partial_with_updated_state_counts(
+    configured_client: TestClient, configured_app
+) -> None:
+    """After a successful bulk mark-deleted, the response is the refreshed
+    state-counts fragment so HTMX can swap the dashboard cards in place
+    (deleted counter goes up, archived/failed go down)."""
+    manifest = configured_app.state.deps.manifest
+    _seed_meeting_in_state(manifest, meeting_id="a1", state=MeetingState.ARCHIVED)
+    _seed_meeting_in_state(manifest, meeting_id="f1", state=MeetingState.DELETED_FAILED)
+
+    r = configured_client.post(
+        "/mark-deleted/all",
+        data={"_csrf": _csrf(configured_client)},
+        headers={"HX-Request": "true"},
+    )
+    assert r.status_code == 200
+    # The bulk action returns the dashboard "main" fragment so the cards,
+    # awaiting-external-deletion section, and needs-attention all refresh
+    # together. Smoke-check that the deleted counter is now 2.
+    doc = HTMLParser(r.text)
+    deleted_card = doc.css_first('[data-state="deleted"] .state-count-card__value')
+    assert deleted_card is not None
+    assert deleted_card.text().strip() == "2"

@@ -1,0 +1,15 @@
+{# Dashboard main content fragment.
+
+   Wrapped in a stable id so HTMX bulk-action responses (currently only
+   POST /mark-deleted/all and POST /mark-deleted/{id}) can swap the whole
+   content area in one shot — keeping state-counts, awaiting-external-
+   deletion, and needs-attention in sync. The full GET / response embeds
+   this same fragment inside the base.html chrome. #}
+<div id="dashboard-main">
+  {% include "partials/state_counts.html" %}
+  {% include "partials/last_activity.html" %}
+  {% if awaiting_external_deletion_count and awaiting_external_deletion_count > 0 %}
+    {% include "partials/awaiting_external_deletion.html" %}
+  {% endif %}
+  {% include "partials/needs_attention.html" %}
+</div>

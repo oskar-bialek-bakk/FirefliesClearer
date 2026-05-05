@@ -160,6 +160,10 @@ async def defaults_submit(
     state = _store(request).get(sid)
     api_key: str | None = state.get("api_key")
     archive_root: str | None = state.get("archive_root")
+    # ``email`` was captured during the api-key step from the same
+    # ``ping_user`` call that validated the key. Persisting it here means
+    # the runtime never has to refetch — see Phase 6 in CLAUDE.md.
+    email: str | None = state.get("email")
     if not api_key or not archive_root:
         raise HTTPException(
             status_code=400, detail="Setup state lost. Restart from /setup/welcome."
@@ -179,6 +183,7 @@ async def defaults_submit(
             archive_root=Path(archive_root),
             default_age_days=age_days,
             concurrency=concurrency,
+            user_email=email,
         ),
         force=False,
     )

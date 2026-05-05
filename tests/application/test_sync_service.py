@@ -14,7 +14,7 @@ from firefliesclearer.application.sync_service import (
     estimate_total,
 )
 from firefliesclearer.core.manifest import Manifest
-from firefliesclearer.core.models import Meeting
+from firefliesclearer.core.models import Meeting, MeetingState
 from firefliesclearer.infra.system_clock import SystemClock
 from tests.fakes.controllable_repository import ControllableMeetingRepository
 
@@ -208,6 +208,193 @@ async def test_full_sync_walks_all_pages_and_marks_missing_as_gone(manifest_db):
     assert manifest_db.get("m2").source_state == "gone"
     assert manifest_db.get("m0").source_state == "live"
     assert manifest_db.get("m1").source_state == "live"
+
+
+def _walk_to_archived(manifest, meeting_id: str) -> None:
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    manifest.transition(meeting_id, to=MeetingState.PENDING, at=started)
+    manifest.transition(meeting_id, to=MeetingState.ARCHIVED, at=started)
+
+
+async def test_full_sync_auto_reconciles_archived_to_deleted_when_missing_upstream(
+    manifest_db,
+):
+    """Archived rows missing from upstream auto-promote to DELETED.
+
+    Why this exists: Fireflies' Pro plan caps total daily GraphQL ops at 50,
+    so the sustainable cleanup workflow is "archive locally, bulk-delete in
+    FF web UI, let sync reconcile". Without this auto-promote, a user who
+    bulk-deletes 100 meetings in FF web sees them all stuck in the
+    'archived' state forever — sync only soft-marks source_state='gone'.
+    """
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    # m0: archived locally then bulk-deleted upstream by the user.
+    manifest_db.upsert_known(_meeting("m0"), at=started)
+    _walk_to_archived(manifest_db, "m0")
+    # m1: still live, both locally and upstream — should not be touched.
+    manifest_db.upsert_known(_meeting("m1"), at=started)
+
+    # Upstream returns only m1.
+    repo = ControllableMeetingRepository(meetings=[_meeting("m1")], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    outcome = await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    assert outcome.outcome == "success"
+    rec0 = manifest_db.get("m0")
+    assert rec0 is not None
+    assert rec0.state is MeetingState.DELETED
+    assert rec0.source_state == "gone"
+    rec1 = manifest_db.get("m1")
+    assert rec1 is not None
+    assert rec1.state is MeetingState.KNOWN
+    assert rec1.source_state == "live"
+
+
+async def test_full_sync_reconciles_deleted_failed_to_deleted(manifest_db):
+    """A row stuck in DELETED_FAILED (API delete tripped on rate limit) that
+    the user later bulk-deleted in FF web should also auto-reconcile."""
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    manifest_db.upsert_known(_meeting("m0"), at=started)
+    _walk_to_archived(manifest_db, "m0")
+    manifest_db.transition(
+        "m0",
+        to=MeetingState.DELETED_FAILED,
+        at=started,
+        last_error="Too many requests",
+    )
+
+    repo = ControllableMeetingRepository(meetings=[], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    rec = manifest_db.get("m0")
+    assert rec is not None
+    assert rec.state is MeetingState.DELETED
+
+
+async def test_full_sync_does_not_promote_known_to_deleted_when_missing(manifest_db):
+    """Safety invariant #1: never mark a meeting as DELETED unless its
+    archive is verified on disk. KNOWN-but-missing-from-upstream stays
+    in KNOWN with source_state='gone' — the user might want to know
+    they had it before they have a chance to archive it."""
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    manifest_db.upsert_known(_meeting("m0"), at=started)  # stays KNOWN
+
+    repo = ControllableMeetingRepository(meetings=[], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    rec = manifest_db.get("m0")
+    assert rec is not None
+    assert rec.state is MeetingState.KNOWN
+    assert rec.source_state == "gone"
+
+
+async def test_full_sync_does_not_touch_archived_rows_still_present_upstream(manifest_db):
+    """Archive that's still in upstream (user hasn't deleted it yet) stays
+    ARCHIVED — only the *missing* archived rows promote to DELETED."""
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    manifest_db.upsert_known(_meeting("m0"), at=started)
+    _walk_to_archived(manifest_db, "m0")
+
+    repo = ControllableMeetingRepository(meetings=[_meeting("m0")], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    rec = manifest_db.get("m0")
+    assert rec is not None
+    assert rec.state is MeetingState.ARCHIVED
+    assert rec.source_state == "live"
+
+
+async def test_full_sync_records_reconcile_reason_in_state_log(manifest_db):
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    manifest_db.upsert_known(_meeting("m0"), at=started)
+    _walk_to_archived(manifest_db, "m0")
+
+    repo = ControllableMeetingRepository(meetings=[], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+    await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    last = manifest_db.state_log("m0")[-1]
+    assert last.from_state is MeetingState.ARCHIVED
+    assert last.to_state is MeetingState.DELETED
+    assert last.details == {"reason": "reconciled_external_delete"}
+
+
+async def test_full_sync_promotes_legacy_already_gone_archived_rows(manifest_db):
+    """Upgrade path: pre-Phase-3 deployments only flipped source_state for
+    missing-from-upstream rows; the FSM state stayed at ARCHIVED. The first
+    full sync after upgrade must pick those rows up and promote them to
+    DELETED — otherwise an upgraded user with hundreds of archived+gone
+    rows would have to mark each one manually. Regression for Copilot
+    review item on PR #21."""
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    # Simulate the legacy state: row is ARCHIVED locally, but a previous
+    # sync already learned it's gone from upstream and flipped
+    # source_state. With the original Phase 3 code, ``include_gone=False``
+    # would skip it on every subsequent full sync.
+    manifest_db.upsert_known(_meeting("m_legacy"), at=started)
+    _walk_to_archived(manifest_db, "m_legacy")
+    manifest_db.set_source_state("m_legacy", "gone")
+    # And a fresh row that's still live + missing — exercises the normal
+    # path on the same sync run.
+    manifest_db.upsert_known(_meeting("m_fresh"), at=started)
+    _walk_to_archived(manifest_db, "m_fresh")
+
+    repo = ControllableMeetingRepository(meetings=[], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+    outcome = await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    # Both rows end up DELETED.
+    assert manifest_db.get("m_legacy").state is MeetingState.DELETED
+    assert manifest_db.get("m_fresh").state is MeetingState.DELETED
+    # But only ``m_fresh`` counts toward ``meetings_gone`` — the legacy
+    # row was already gone; counting it would inflate the metric.
+    assert outcome.meetings_gone == 1
+
+
+async def test_full_sync_skips_already_deleted_rows(manifest_db):
+    """Don't waste cycles re-iterating DELETED rows on every full sync —
+    they are terminal. Verified by checking no extra state_log entry
+    accumulates across successive runs."""
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    manifest_db.upsert_known(_meeting("m_done"), at=started)
+    _walk_to_archived(manifest_db, "m_done")
+    manifest_db.transition("m_done", to=MeetingState.DELETED, at=started)
+    log_len_before = len(manifest_db.state_log("m_done"))
+
+    repo = ControllableMeetingRepository(meetings=[], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+    await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    assert len(manifest_db.state_log("m_done")) == log_len_before
+
+
+async def test_incremental_sync_does_not_reconcile_missing_meetings(manifest_db):
+    """Incremental sync stops at the first known meeting and is *not* a full
+    walk of upstream — so it can't tell whether m1 is missing or just on a
+    later page. The auto-reconcile only fires from full sync."""
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    manifest_db.upsert_known(_meeting("m0"), at=started)  # cached as KNOWN
+    manifest_db.upsert_known(_meeting("m1"), at=started)
+    _walk_to_archived(manifest_db, "m1")
+
+    # Upstream still returns m0 (so incremental halts at it). m1 isn't in
+    # the response, but incremental wouldn't have walked far enough to know.
+    repo = ControllableMeetingRepository(meetings=[_meeting("m0")], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+
+    await svc.run(mode=SyncMode.INCREMENTAL, trigger=SyncTrigger.SCHEDULED)
+
+    # m1 must still be ARCHIVED — incremental sync isn't a reconciliation.
+    rec = manifest_db.get("m1")
+    assert rec is not None
+    assert rec.state is MeetingState.ARCHIVED
 
 
 async def test_full_sync_counts_updates_separately_from_seen(manifest_db):

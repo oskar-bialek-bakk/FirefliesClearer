@@ -454,3 +454,171 @@ async def test_purge_one_retries_from_deleted_failed_records_new_error(tmp_path:
     assert rec2.last_error is not None
     assert rec2.last_error != first_error
     assert "second-attempt boom" in rec2.last_error
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — non-host auto-mark.
+# Fireflies' ``deleteTranscript`` mutation rejects calls from non-hosts, so
+# attempting them just burns daily quota for guaranteed failure. Pipeline
+# auto-promotes ARCHIVED → DELETED for non-host meetings post-archive,
+# bypassing the API call entirely.
+# ---------------------------------------------------------------------------
+
+
+def _meeting_with_host(mid: str, host: str) -> Meeting:
+    return Meeting(
+        meeting_id=mid,
+        title=f"Meeting {mid}",
+        meeting_date=NOW,
+        duration_minutes=10.0,
+        host_email=host,
+        participant_count=2,
+        tags=(),
+        has_transcript=True,
+    )
+
+
+def _build_with_user(
+    tmp_path: Path,
+    meetings: list[Meeting],
+    *,
+    user_email: str | None,
+) -> tuple[Pipeline, InMemoryMeetingRepository, Manifest]:
+    repo = InMemoryMeetingRepository(
+        meetings=list(meetings),
+        artifacts={m.meeting_id: _bundle() for m in meetings},
+    )
+    manifest = Manifest.open(tmp_path / "manifest.db")
+    archiver = Archiver(archive_root=tmp_path)
+    renderer = FakeSummaryRenderer()
+    clock = FrozenClock(NOW)
+    pipeline = Pipeline(
+        repository=repo,
+        manifest=manifest,
+        archiver=archiver,
+        renderer=renderer,
+        clock=clock,
+        user_email=user_email,
+    )
+    return pipeline, repo, manifest
+
+
+async def test_archive_auto_promotes_non_host_to_deleted(tmp_path: Path) -> None:
+    """Non-host meeting: archive succeeds, then auto-promotes to DELETED
+    without an API delete call. The archive on disk is preserved."""
+    m = _meeting_with_host("mh", host="other@example.com")
+    pipeline, repo, manifest = _build_with_user(tmp_path, [m], user_email="me@example.com")
+
+    report = await pipeline.run([m], mode=PipelineMode.APPLY)
+
+    assert report.archived == 1
+    assert report.deleted == 1
+    rec = manifest.get(m.meeting_id)
+    assert rec is not None
+    assert rec.state is MeetingState.DELETED
+    assert rec.archive_path is not None  # archive stays on disk
+    # No API delete fired.
+    assert repo.deleted == []
+
+
+async def test_archive_records_non_host_reason_in_state_log(tmp_path: Path) -> None:
+    m = _meeting_with_host("mh", host="other@example.com")
+    pipeline, _repo, manifest = _build_with_user(tmp_path, [m], user_email="me@example.com")
+
+    await pipeline.run([m], mode=PipelineMode.APPLY)
+
+    log = manifest.state_log(m.meeting_id)
+    last = log[-1]
+    assert last.from_state is MeetingState.ARCHIVED
+    assert last.to_state is MeetingState.DELETED
+    assert last.details == {"reason": "non_host_no_api_delete"}
+
+
+async def test_archive_does_not_promote_when_host_matches(tmp_path: Path) -> None:
+    """Host meeting follows the normal archive → API delete flow; the
+    Phase 6 short-circuit must not fire."""
+    m = _meeting_with_host("mh", host="me@example.com")
+    pipeline, repo, manifest = _build_with_user(tmp_path, [m], user_email="me@example.com")
+
+    await pipeline.run([m], mode=PipelineMode.APPLY)
+
+    rec = manifest.get(m.meeting_id)
+    assert rec is not None
+    assert rec.state is MeetingState.DELETED
+    # The DELETED state came from the API delete, not the auto-promote.
+    assert repo.deleted == [m.meeting_id]
+
+
+async def test_archive_host_match_is_case_insensitive(tmp_path: Path) -> None:
+    """Email normalization — host_email and user_email should match
+    case-insensitively. Fireflies normalises addresses inconsistently
+    (organizer_email is sometimes lowercased, sometimes not)."""
+    m = _meeting_with_host("mh", host="Me@Example.COM")
+    pipeline, repo, manifest = _build_with_user(tmp_path, [m], user_email="me@example.com")
+
+    await pipeline.run([m], mode=PipelineMode.APPLY)
+
+    rec = manifest.get(m.meeting_id)
+    assert rec is not None and rec.state is MeetingState.DELETED
+    # Treated as host → API delete fired (not the non-host shortcut).
+    assert repo.deleted == [m.meeting_id]
+
+
+async def test_archive_does_not_promote_when_user_email_none(tmp_path: Path) -> None:
+    """Backward compat: when Pipeline has no user_email (legacy callers,
+    or when web/deps couldn't resolve it), behaviour falls back to the
+    pre-Phase-6 path — archive then API delete attempt."""
+    m = _meeting_with_host("mh", host="other@example.com")
+    pipeline, repo, manifest = _build_with_user(tmp_path, [m], user_email=None)
+
+    await pipeline.run([m], mode=PipelineMode.APPLY)
+
+    rec = manifest.get(m.meeting_id)
+    assert rec is not None
+    # No host check ran, so the API delete fired and (on the in-memory
+    # repo without a configured failure) succeeded.
+    assert repo.deleted == [m.meeting_id]
+
+
+async def test_archive_does_not_promote_when_meeting_host_email_empty(tmp_path: Path) -> None:
+    """Defensive: a meeting whose host_email is empty (Fireflies sometimes
+    returns ``""`` for shared/imported meetings) must NOT be auto-promoted
+    — we'd rather attempt and fail than silently promote a meeting we
+    can't be sure we're not the host of."""
+    m = _meeting_with_host("mh", host="")
+    pipeline, repo, manifest = _build_with_user(tmp_path, [m], user_email="me@example.com")
+
+    await pipeline.run([m], mode=PipelineMode.APPLY)
+
+    rec = manifest.get(m.meeting_id)
+    assert rec is not None and rec.state is MeetingState.DELETED
+    # Normal path took the API delete.
+    assert repo.deleted == [m.meeting_id]
+
+
+async def test_archive_only_mode_still_auto_promotes_non_host(tmp_path: Path) -> None:
+    """ARCHIVE_ONLY mode is the cleanup wizard's archive step. Even though
+    it normally stops after archive (delete is the wizard's separate
+    purge step), the non-host short-circuit must still fire — otherwise
+    the wizard's Step 4 would propose API-deleting non-host meetings
+    that are guaranteed to fail."""
+    m = _meeting_with_host("mh", host="other@example.com")
+    pipeline, repo, manifest = _build_with_user(tmp_path, [m], user_email="me@example.com")
+
+    await pipeline.run([m], mode=PipelineMode.ARCHIVE_ONLY)
+
+    rec = manifest.get(m.meeting_id)
+    assert rec is not None and rec.state is MeetingState.DELETED
+    assert repo.deleted == []
+
+
+async def test_archive_one_helper_also_auto_promotes(tmp_path: Path) -> None:
+    """``archive_one`` (used by single-meeting retry routes) must apply
+    the same non-host short-circuit as the bulk run path."""
+    m = _meeting_with_host("mh", host="other@example.com")
+    pipeline, repo, _manifest = _build_with_user(tmp_path, [m], user_email="me@example.com")
+
+    final = await pipeline.archive_one(m)
+
+    assert final is MeetingState.DELETED
+    assert repo.deleted == []

@@ -59,6 +59,7 @@ def build_deps(*, config_override: Path | None = None) -> Deps:
         archiver=archiver,
         renderer=renderer,
         clock=clock,
+        user_email=cfg.fireflies.user_email,
     )
     # Phase 6: cache adapter is unconditional; the [sync] flag now only
     # controls whether the scheduler runs.

@@ -51,6 +51,12 @@ class SetupValues:
     archive_root: Path
     default_age_days: int
     concurrency: int
+    # Optional — populated by the setup wizard from the same ``ping_user``
+    # call that validated the API key. Persisting it here means the runtime
+    # never has to re-fetch it (Fireflies' Pro plan caps total daily ops at
+    # 50, so saving one is real). Used by Pipeline to skip API delete on
+    # non-host meetings (Phase 6).
+    user_email: str | None = None
 
 
 class SetupService:
@@ -161,8 +167,11 @@ class SetupService:
 
     @staticmethod
     def _build_payload(values: SetupValues) -> dict[str, Any]:
+        fireflies_block: dict[str, Any] = {"api_key": values.api_key}
+        if values.user_email:
+            fireflies_block["user_email"] = values.user_email
         return {
-            "fireflies": {"api_key": values.api_key},
+            "fireflies": fireflies_block,
             "archive": {
                 "root_dir": str(values.archive_root),
                 "summary_format": "pdf",

@@ -17,16 +17,28 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Self
 
-from firefliesclearer.core.manifest import Manifest
-from firefliesclearer.core.models import Meeting
+from firefliesclearer.core.manifest import IllegalStateTransition, Manifest
+from firefliesclearer.core.models import Meeting, MeetingState
 from firefliesclearer.core.sync_types import SyncMode, SyncTrigger
 from firefliesclearer.infra.fireflies_client import RateLimitedError, TransientServerError
 from firefliesclearer.ports.clock import Clock
+
+# States from which a missing-from-upstream row may auto-promote to DELETED.
+# Restricted to those where we have a verified archive on disk, per safety
+# invariant #1 in CLAUDE.md ("never delete unless archive is verified").
+# KNOWN/PENDING/FAILED_* rows stay where they are with source_state='gone'.
+_RECONCILE_TO_DELETED_FROM: frozenset[MeetingState] = frozenset(
+    {MeetingState.ARCHIVED, MeetingState.DELETED_FAILED}
+)
+_RECONCILE_DELETE_REASON = "reconciled_external_delete"
+
+logger = logging.getLogger(__name__)
 
 # Re-exported so existing callers can keep importing SyncMode/SyncTrigger
 # from this module. The canonical home is now ``core.sync_types`` so the
@@ -329,13 +341,70 @@ class SyncService:
                 error=str(e),
             )
 
-        # Reconciliation
+        # Reconciliation. Two-step:
+        #   1. Mark every cached-but-missing row as ``source_state='gone'``
+        #      (the established soft signal — historic behaviour).
+        #   2. For rows that already had a verified archive on disk
+        #      (state ARCHIVED or DELETED_FAILED), additionally transition
+        #      them to DELETED with reason ``reconciled_external_delete``.
+        #      This closes the loop for the documented "archive locally,
+        #      bulk-delete in Fireflies' web UI, let sync clean up" workflow
+        #      that Pro-tier users have to follow because the API caps
+        #      total daily ops at 50.
+        #
+        # Iteration scope is ``include_gone=True`` so the upgrade path
+        # works: pre-Phase-3 deployments left ARCHIVED+gone rows behind
+        # (sync used to only flip ``source_state``, never the FSM state),
+        # and those need to be picked up on the *next* full sync after
+        # the upgrade. Filtering by ``include_gone=False`` would make
+        # those rows invisible forever (Copilot review on PR #21).
         gone = 0
+        reconciled = 0
         seen_set = set(seen_ids)
-        for cached in self._manifest.list_known(include_archived=True, include_gone=False):
-            if cached.meeting_id not in seen_set:
+        now = self._clock.now()
+        for cached in self._manifest.list_known(include_archived=True, include_gone=True):
+            if cached.meeting_id in seen_set:
+                continue
+            rec = self._manifest.get(cached.meeting_id)
+            if rec is None:
+                continue
+            # Already-terminal rows: skip. Re-iterating every DELETED row
+            # on every full sync would thrash for no gain.
+            if rec.state is MeetingState.DELETED:
+                continue
+            # The ``gone`` metric is "rows that crossed live→gone on THIS
+            # run". Don't inflate it with the upgrade-path backlog — those
+            # rows were marked ``source_state='gone'`` by an earlier sync
+            # already, and the user has seen that count before.
+            if rec.source_state != "gone":
                 self._manifest.set_source_state(cached.meeting_id, "gone")
                 gone += 1
+            if rec.state not in _RECONCILE_TO_DELETED_FROM:
+                continue
+            try:
+                self._manifest.transition(
+                    cached.meeting_id,
+                    to=MeetingState.DELETED,
+                    at=now,
+                    details={"reason": _RECONCILE_DELETE_REASON},
+                )
+                reconciled += 1
+            except IllegalStateTransition:
+                # Defensive: the FSM allows ARCHIVED→DELETED and
+                # DELETED_FAILED→DELETED, so this branch only fires on a
+                # genuine race (another caller transitioned the row
+                # between our get() and transition()). Drop quietly —
+                # the state we end up at is the other caller's, which
+                # is fine.
+                pass
+        if reconciled:
+            # Surface in the run log so an operator scrolling the
+            # Last Activity panel sees what happened. Not added to
+            # SyncOutcome to keep the public dataclass stable for now.
+            logger.info(
+                "sync_full reconciled %d archived/delete-failed row(s) to DELETED",
+                reconciled,
+            )
 
         self._manifest.record_sync_progress(
             run_id,

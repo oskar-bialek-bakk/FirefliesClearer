@@ -18,6 +18,7 @@ from starlette.responses import Response
 
 from firefliesclearer.application.sync_service import SyncMode, SyncService, SyncTrigger
 from firefliesclearer.infra.atomic_toml import write_atomic_toml
+from firefliesclearer.infra.sync_scheduler import MANUAL_SYNC_COOLDOWN
 from firefliesclearer.web.deps import get_deps
 
 # Manual triggers permitted from the public POST /sync/now endpoint.
@@ -227,6 +228,31 @@ async def trigger_sync(
             {"current_run_id": current.run_id if current else None},
             status_code=409,
         )
+
+    # Phase 5: cooldown — prevent click-spamming the manual sync button
+    # from burning daily API quota. The scheduler already paces background
+    # ticks; this only affects user-initiated syncs. Trigger ``bootstrap``
+    # is exempt because it's the first-run population flow that the user
+    # cannot retrigger casually.
+    if sync_trigger != SyncTrigger.BOOTSTRAP:
+        last_run = deps.manifest.get_last_sync_run()
+        if last_run is not None and last_run.finished_at is not None:
+            now = deps.clock.now()
+            elapsed = now - last_run.finished_at
+            if elapsed < MANUAL_SYNC_COOLDOWN:
+                remaining = MANUAL_SYNC_COOLDOWN - elapsed
+                return JSONResponse(
+                    {
+                        "error": "cooldown",
+                        "message": (
+                            f"Last sync finished {int(elapsed.total_seconds())}s ago. "
+                            f"Wait {int(remaining.total_seconds())}s and try again."
+                        ),
+                        "retry_after_seconds": int(remaining.total_seconds()),
+                    },
+                    status_code=429,
+                    headers={"Retry-After": str(int(remaining.total_seconds()))},
+                )
 
     await sync_lock.acquire()
     snapshot = CurrentSyncSnapshot(

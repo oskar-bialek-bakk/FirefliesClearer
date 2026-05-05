@@ -20,6 +20,7 @@ def _run(
     outcome: str = "success",
     finished_at: datetime | None = None,
     next_resume_at: datetime | None = None,
+    meetings_added: int = 0,
 ) -> SyncRunRecord:
     return SyncRunRecord(
         id=1,
@@ -29,7 +30,7 @@ def _run(
         finished_at=finished_at,
         outcome=outcome,
         meetings_seen=0,
-        meetings_added=0,
+        meetings_added=meetings_added,
         meetings_updated=0,
         meetings_gone=0,
         cursor_skip=None,
@@ -47,11 +48,59 @@ def test_compute_next_no_runs_returns_now():
 
 def test_compute_next_after_incremental_returns_finished_plus_interval():
     now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
-    last = _run(finished_at=datetime(2026, 5, 2, 6, 0, tzinfo=UTC))
+    # Set meetings_added=1 so the skip-empty-tick backoff doesn't apply.
+    last = _run(finished_at=datetime(2026, 5, 2, 6, 0, tzinfo=UTC), meetings_added=1)
     cfg = SyncConfig(enabled=True, incremental_interval_hours=6)
     assert compute_next(last_run=last, last_full=None, config=cfg, now=now) == datetime(
         2026, 5, 2, 12, 0, tzinfo=UTC
     )
+
+
+def test_compute_next_doubles_interval_after_empty_incremental_tick():
+    """Phase 5: when an incremental sync yields zero new meetings, the
+    schedule doubles the next interval to free up API quota for archive/
+    delete on a quiet account."""
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    finished = datetime(2026, 5, 2, 6, 0, tzinfo=UTC)
+    last = _run(finished_at=finished, meetings_added=0)  # empty tick
+    cfg = SyncConfig(enabled=True, incremental_interval_hours=6)
+    nxt = compute_next(last_run=last, last_full=None, config=cfg, now=now)
+    # 6h * 2 = 12h after the previous finish.
+    assert nxt == finished + timedelta(hours=12)
+
+
+def test_compute_next_caps_doubled_interval_at_24h():
+    """A 16h interval would double to 32h — capped at 24h so a quiet
+    weekend doesn't roll into Tuesday before noticing new meetings."""
+    finished = datetime(2026, 5, 2, 6, 0, tzinfo=UTC)
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    last = _run(finished_at=finished, meetings_added=0)
+    cfg = SyncConfig(enabled=True, incremental_interval_hours=16)
+    nxt = compute_next(last_run=last, last_full=None, config=cfg, now=now)
+    assert nxt == finished + timedelta(hours=24)
+
+
+def test_compute_next_does_not_double_when_last_yielded_meetings():
+    """A non-empty tick uses the normal interval — the backoff resets
+    as soon as new meetings show up upstream."""
+    finished = datetime(2026, 5, 2, 6, 0, tzinfo=UTC)
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    last = _run(finished_at=finished, meetings_added=3)
+    cfg = SyncConfig(enabled=True, incremental_interval_hours=6)
+    nxt = compute_next(last_run=last, last_full=None, config=cfg, now=now)
+    assert nxt == finished + timedelta(hours=6)
+
+
+def test_compute_next_does_not_double_after_full_run_with_no_adds():
+    """Skip-empty-tick is scoped to incremental — a full sync that walks
+    every page and finds no new meetings is doing real work (it might
+    still be marking rows gone) and shouldn't trigger backoff."""
+    finished = datetime(2026, 5, 2, 6, 0, tzinfo=UTC)
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    last = _run(mode="full", finished_at=finished, meetings_added=0)
+    cfg = SyncConfig(enabled=True, incremental_interval_hours=6)
+    nxt = compute_next(last_run=last, last_full=None, config=cfg, now=now)
+    assert nxt == finished + timedelta(hours=6)
 
 
 def test_compute_next_picks_earlier_of_full_or_incremental():
