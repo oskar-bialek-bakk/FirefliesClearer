@@ -107,6 +107,40 @@ def serve(
             @fastapi_app.on_event("shutdown")
             async def _stop_sync_scheduler() -> None:
                 shutdown_event.set()
+
+        # Phase 4: start the API-purge trickle scheduler.
+        # Disabled by default for upgrades (api_purge_per_day defaults to 5
+        # which IS enabled — but if the user has set it to 0 they opted out
+        # entirely). This runs independently of the sync scheduler so users
+        # who keep [sync] disabled still get the trickle benefit.
+        if _cfg.run.api_purge_per_day > 0:
+            import asyncio as _asyncio_purge
+
+            from firefliesclearer.application.purge_service import PurgeService
+            from firefliesclearer.infra.purge_scheduler import run_purge_scheduler
+
+            purge_service = PurgeService(
+                pipeline=deps.pipeline,
+                manifest=deps.manifest,
+            )
+            purge_shutdown = _asyncio_purge.Event()
+            fastapi_app.state.purge_shutdown_event = purge_shutdown
+
+            @fastapi_app.on_event("startup")
+            async def _start_purge_scheduler() -> None:
+                fastapi_app.state.purge_scheduler_task = _asyncio_purge.create_task(
+                    run_purge_scheduler(
+                        purge_service=purge_service,
+                        manifest=deps.manifest,
+                        config=_cfg.run,
+                        clock=deps.clock,
+                        shutdown_event=purge_shutdown,
+                    )
+                )
+
+            @fastapi_app.on_event("shutdown")
+            async def _stop_purge_scheduler() -> None:
+                purge_shutdown.set()
     else:
         fastapi_app.state.deps = None
 

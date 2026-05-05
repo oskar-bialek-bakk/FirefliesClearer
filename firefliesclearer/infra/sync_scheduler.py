@@ -37,6 +37,24 @@ OnRunFinished = Callable[[], None]
 # HH:MM" timestamp to the user. The scheduler's tick is silent.
 _PARTIAL_RETRY_INTERVAL = timedelta(seconds=60)
 
+# Phase 5: when the last incremental sync yielded zero new meetings, the
+# scheduler doubles the next interval (capped at 24h) to free up daily
+# API quota for archive/delete on a quiet account. Single-step doubling
+# rather than exponential — the next non-empty tick resets it, so a quiet
+# Sunday pulling 0/0/0 through Monday morning doesn't stretch into a
+# multi-day stall. Scoped to incremental because full sync's "empty"
+# semantic differs (a full sync that finds no new rows still walked
+# every page).
+_EMPTY_TICK_BACKOFF_FACTOR = 2
+_EMPTY_TICK_BACKOFF_CAP = timedelta(hours=24)
+
+# Phase 5: minimum gap between manual ``/sync/now`` triggers. A click-happy
+# user firing the button five times in a minute would otherwise burn five
+# pages of API budget for the same answer. Five minutes is short enough to
+# stay non-annoying for legitimate "I just added a meeting, sync now" use
+# cases, long enough to absorb the typical refresh-spam pattern.
+MANUAL_SYNC_COOLDOWN = timedelta(minutes=5)
+
 
 def compute_next(
     *,
@@ -68,9 +86,18 @@ def compute_next(
             return last_run.next_resume_at
         return (last_run.finished_at or now) + _PARTIAL_RETRY_INTERVAL
 
-    next_incremental = (last_run.finished_at or now) + timedelta(
-        hours=config.incremental_interval_hours
-    )
+    # Phase 5: skip-empty-tick. When the last incremental yielded 0 new
+    # meetings, the schedule doubles up to 24h. The cap makes sure a
+    # multi-tick streak of empty syncs doesn't stretch the next pass past
+    # a day (where Fireflies' daily-quota window would have reset anyway).
+    interval = timedelta(hours=config.incremental_interval_hours)
+    if (
+        last_run.mode == "incremental"
+        and last_run.outcome == "success"
+        and last_run.meetings_added == 0
+    ):
+        interval = min(interval * _EMPTY_TICK_BACKOFF_FACTOR, _EMPTY_TICK_BACKOFF_CAP)
+    next_incremental = (last_run.finished_at or now) + interval
 
     if config.full_interval_days == 0 or last_full is None:
         return next_incremental
