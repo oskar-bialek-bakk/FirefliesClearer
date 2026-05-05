@@ -39,12 +39,18 @@ class Pipeline:
         archiver: Archiver,
         renderer: SummaryRenderer,
         clock: Clock,
+        user_email: str | None = None,
     ) -> None:
         self._repo = repository
         self._manifest = manifest
         self._archiver = archiver
         self._renderer = renderer
         self._clock = clock
+        # Lower-cased copy used for case-insensitive comparison in
+        # ``_archive``. None means "skip the host check" — both for backward
+        # compatibility with existing call sites that don't know the user's
+        # email and as the safe default when the value can't be resolved.
+        self._user_email_lc = user_email.lower() if user_email else None
 
     async def run(self, meetings: Sequence[Meeting], *, mode: PipelineMode) -> RunReport:
         report = RunReport()
@@ -163,7 +169,32 @@ class Pipeline:
             sha256s=result.sha256s,
         )
         report.archived += 1
+        # Auto-mark non-host meetings as DELETED. Fireflies' deleteTranscript
+        # mutation rejects calls from non-hosts (the user "does not have
+        # admin privileges to delete"), so an API attempt would just burn
+        # one of today's 50 GraphQL ops on a guaranteed failure. We have a
+        # verified archive on disk, so the local manifest can claim DELETED
+        # honestly — the row's ``deleted_at`` makes the provenance clear in
+        # state_log: ``reason='non_host_no_api_delete'``.
+        if self._user_email_lc and self._is_non_host(meeting):
+            self._manifest.transition(
+                meeting.meeting_id,
+                to=MeetingState.DELETED,
+                at=now,
+                details={"reason": "non_host_no_api_delete"},
+            )
+            report.deleted += 1
         return True
+
+    def _is_non_host(self, meeting: Meeting) -> bool:
+        """True when the meeting's host_email is set and differs from the
+        configured user_email (case-insensitive). Returns False when either
+        value is empty so we never falsely promote a row missing host data."""
+        if not self._user_email_lc:
+            return False
+        if not meeting.host_email:
+            return False
+        return meeting.host_email.lower() != self._user_email_lc
 
     async def _delete(self, meeting: Meeting, report: RunReport) -> None:
         rec = self._manifest.get(meeting.meeting_id)
