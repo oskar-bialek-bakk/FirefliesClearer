@@ -53,7 +53,8 @@ from firefliesclearer.application.scan_service import (
     ScanResult,
     ScanService,
 )
-from firefliesclearer.core.models import Meeting
+from firefliesclearer.core.manifest import IllegalStateTransition
+from firefliesclearer.core.models import Meeting, MeetingState
 from firefliesclearer.infra.config import ScanFiltersModel
 from firefliesclearer.web import wizard_session
 from firefliesclearer.web.deps import get_deps
@@ -1450,6 +1451,81 @@ async def step4_done(
             "meetings": rows,
             "deleted_count": deleted,
             "failed_count": failed,
+        },
+    )
+
+
+@router.post("/cleanup/mark-deleted")
+async def step4_mark_deleted(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Reconcile the wizard's archived meetings as deleted-in-Fireflies.
+
+    The Step 4 handoff design assumes the user has bulk-deleted the
+    selected meetings via Fireflies' web UI (the only path that bypasses
+    the per-account API daily-quota cap). This route walks the wizard's
+    ``selected_ids``, transitions each row currently in ARCHIVED or
+    DELETED_FAILED to DELETED with reason ``manual_external_delete_via_wizard``
+    in state_log, and renders a summary page.
+
+    Skipped rows: any selected_id whose state is no longer ARCHIVED /
+    DELETED_FAILED is counted as skipped rather than failed — the most
+    common cause is a sync tick reconciling the row before this POST,
+    which is benign.
+
+    Status codes:
+      - 303 (redirect to /cleanup/archive/done) when the wizard has no
+        selected_ids — the user navigated here directly.
+      - 303 (redirect to /cleanup/review?error=empty-selection) when the
+        selected meetings have all vanished from the cache between
+        archive and now.
+      - 200 + the mark-deleted summary page on success.
+    """
+    state = wizard_session.get_state(_store(request), _sid(request))
+    selected_ids = list(state.get("selected_ids") or [])
+    if not selected_ids:
+        return _redirect("/cleanup/archive/done")
+
+    meetings = await _selected_meetings(deps, selected_ids)
+    if not meetings:
+        return _redirect("/cleanup/review?error=empty-selection")
+
+    eligible_states = {MeetingState.ARCHIVED, MeetingState.DELETED_FAILED}
+    now = deps.clock.now()
+    marked = 0
+    skipped = 0
+    for meeting in meetings:
+        rec = deps.manifest.get(meeting.meeting_id)
+        if rec is None or rec.state not in eligible_states:
+            skipped += 1
+            continue
+        try:
+            deps.manifest.transition(
+                meeting.meeting_id,
+                to=MeetingState.DELETED,
+                at=now,
+                details={"reason": "manual_external_delete_via_wizard"},
+            )
+        except IllegalStateTransition:
+            # Race window — sync may have reconciled this row between our
+            # ``get`` and the transition. Treat as skipped, not an error.
+            logger.warning(
+                "step4_mark_deleted: skipped %s (state changed mid-run)",
+                meeting.meeting_id,
+            )
+            skipped += 1
+            continue
+        marked += 1
+
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step4_mark_deleted_done.html",
+        {
+            "step": "purge",
+            "marked_count": marked,
+            "skipped_count": skipped,
+            "total_count": len(meetings),
         },
     )
 

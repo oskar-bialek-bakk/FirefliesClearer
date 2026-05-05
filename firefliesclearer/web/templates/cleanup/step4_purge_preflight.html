@@ -1,71 +1,86 @@
 {% extends "base.html" %}
-{% block title %}Cleanup Step 4 — Purge — FirefliesClearer{% endblock %}
+{% block title %}Cleanup Step 4 — Delete in Fireflies — FirefliesClearer{% endblock %}
 {% block page %}
 {% include "cleanup/_stepper.html" %}
 
+{# Step 4 — Delete in Fireflies (handoff design).
+
+   Why this isn't an API delete: Fireflies' Pro plan caps total daily
+   GraphQL ops at 50, which means a typical 25-meeting cleanup batch
+   can't archive AND delete in one session (archive alone burns half
+   the daily budget on `fetch_artifacts` calls). The web-UI Bulk Delete
+   uses a different (relaxed) quota path on Fireflies' side, so the
+   sustainable workflow is: archive locally here, bulk-delete in the FF
+   web UI, then click the button below to reconcile our manifest.
+
+   The previous design (typed-count + API purge) is preserved at
+   /cleanup/purge/start for callers that still want the API path
+   (Phase 4 trickle scheduler will reuse the runner). #}
 <section class="cleanup-step cleanup-step-purge cleanup-step-purge-preflight">
-  <h1>Step 4 — Purge</h1>
+  <h1>Step 4 — Delete in Fireflies</h1>
 
   {% if error %}
     <p class="error-banner" role="alert">{{ error }}</p>
   {% endif %}
 
   <p class="purge-preflight-summary">
-    About to <strong>permanently delete {{ count }} meetings</strong> from Fireflies.
+    <strong>{{ count }} meeting{% if count != 1 %}s{% endif %}</strong>
+    archived locally and ready to delete in Fireflies.
   </p>
 
-  {# Numbered list of titles. Collapsed inside <details> when N > 10. #}
+  <ol class="cleanup-handoff-steps">
+    <li>
+      <a href="https://app.fireflies.ai/notebook/mine"
+         target="_blank" rel="noopener noreferrer"
+         class="cleanup-handoff-open-btn">
+        Open Fireflies → My Meetings
+      </a>
+    </li>
+    <li>
+      Use the day-level checkboxes (or shift-click to select a range), then click
+      <strong>Bulk Delete</strong>. Fireflies' web UI is the only path that
+      bypasses the API daily-quota cap.
+    </li>
+    <li>
+      Come back here and click <strong>Mark these as deleted</strong> to
+      reconcile your local manifest.
+    </li>
+  </ol>
+
+  {# Numbered list of titles + dates so the user can cross-reference what
+     they're about to delete in Fireflies' UI. Collapsed for >10 to keep the
+     scannable summary above the fold. #}
   {% if count > 10 %}
     <details class="purge-meeting-list-collapse">
       <summary>Show {{ count }} meeting titles</summary>
       <ol class="purge-meeting-list">
         {% for m in meetings %}
-          <li>{{ m.title }}</li>
+          <li>{{ m.title }} <span class="meeting-date">{{ m.meeting_date.date().isoformat() }}</span></li>
         {% endfor %}
       </ol>
     </details>
   {% else %}
     <ol class="purge-meeting-list">
       {% for m in meetings %}
-        <li>{{ m.title }}</li>
+        <li>{{ m.title }} <span class="meeting-date">{{ m.meeting_date.date().isoformat() }}</span></li>
       {% endfor %}
     </ol>
   {% endif %}
 
-  <p class="destructive-notice" role="alert">
-    <strong>This cannot be undone.</strong>
-    Archived files on disk are kept; only Fireflies' copies are removed.
+  <p class="cleanup-handoff-safety" role="note">
+    <strong>Safe by design:</strong> this button does not call the Fireflies
+    API. It only updates the local manifest to record that you've deleted
+    these meetings externally. Your archive files on disk are kept either way.
   </p>
 
-  <form method="post" action="/cleanup/purge/start" class="purge-start-form">
+  <form method="post" action="/cleanup/mark-deleted" class="purge-start-form">
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
-    {# Confirm field + actions sit on a single row. The label, input, Back
-       link, and Purge button are all flex children of `.purge-confirm-row`
-       so they share a baseline; the previous markup wrapped the field in a
-       <p> above a separate `.form-actions` div, which produced the visible
-       few-pixel vertical mismatch the user reported (2026-05-03). #}
     <div class="purge-confirm-row form-actions">
-      <label for="confirm-count" class="purge-confirm-label">
-        Type <strong>{{ count }}</strong> to confirm:
-      </label>
-      <input type="text" id="confirm-count" name="confirmed_count"
-             class="purge-confirm-input"
-             inputmode="numeric" pattern="[0-9]+" autocomplete="off" required>
       <a href="/cleanup/archive/done" class="cancel-link">&larr; Back</a>
-      <button type="submit" id="purge-btn" class="purge-btn" disabled>
-        Purge {{ count }} meetings
+      <button type="submit" id="mark-deleted-btn" class="purge-btn">
+        Mark these as deleted ({{ count }})
       </button>
     </div>
   </form>
-
-  <script>
-    (function () {
-      var input = document.getElementById("confirm-count");
-      var btn = document.getElementById("purge-btn");
-      input.addEventListener("input", function () {
-        btn.disabled = input.value.trim() !== "{{ count }}";
-      });
-    })();
-  </script>
 </section>
 {% endblock %}

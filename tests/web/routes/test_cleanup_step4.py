@@ -58,6 +58,23 @@ def _seed_repo(app, count: int) -> list[Meeting]:
     return meetings
 
 
+def _walk_to_archived(manifest, meeting_id: str) -> None:
+    """Walk a freshly upserted manifest row through PENDING -> ARCHIVED."""
+    manifest.transition(meeting_id, to=MeetingState.PENDING, at=NOW)
+    manifest.transition(meeting_id, to=MeetingState.ARCHIVED, at=NOW)
+
+
+def _walk_to_deleted_failed(manifest, meeting_id: str) -> None:
+    """Walk a row through PENDING -> ARCHIVED -> DELETED_FAILED."""
+    _walk_to_archived(manifest, meeting_id)
+    manifest.transition(
+        meeting_id,
+        to=MeetingState.DELETED_FAILED,
+        at=NOW,
+        last_error="Too many requests",
+    )
+
+
 def _sid(c: TestClient) -> str:
     return c.cookies.get("ffc_session", "") or ""
 
@@ -106,9 +123,15 @@ def test_get_purge_redirects_to_archive_done_when_no_selection(
     assert r.headers["location"] == "/cleanup/archive/done"
 
 
-def test_get_purge_renders_preflight_with_count_and_short_list(
+def test_get_purge_renders_handoff_with_count_and_open_button(
     configured_client: TestClient, configured_app
 ) -> None:
+    """Step 4 preflight is a handoff page, not an API-delete confirmation.
+
+    The new design tells the user: archive is done, the destructive op
+    happens in Fireflies' web UI (which has a separate quota), come
+    back here to reconcile the manifest.
+    """
     _seed_repo(configured_app, 5)
     sid = _sid(configured_client)
     _set_wizard(configured_app, sid, step="purge", selected=["m0", "m1", "m2"])
@@ -116,25 +139,33 @@ def test_get_purge_renders_preflight_with_count_and_short_list(
     assert r.status_code == 200
     doc = HTMLParser(r.text)
     text = doc.text()
-    # Destructive headline + count.
-    assert "permanently delete" in text.lower()
-    assert "3" in text
-    # Stepper says step 4 (purge) is active.
+    # New headline (no "permanently delete" framing).
+    assert "delete in fireflies" in text.lower()
+    assert "3 meetings" in text or " 3 " in text
+    # Stepper still says step 4.
     active = doc.css_first("nav.wizard-stepper li.step.active[data-step='purge']")
     assert active is not None
-    # Numbered list of titles is visible (not collapsed).
+    # Open-Fireflies deep link to the canonical My Meetings URL.
+    open_link = doc.css_first("a.cleanup-handoff-open-btn")
+    assert open_link is not None
+    assert open_link.attributes.get("href") == "https://app.fireflies.ai/notebook/mine"
+    assert open_link.attributes.get("target") == "_blank"
+    assert "noopener" in (open_link.attributes.get("rel") or "")
+    # The 3-step inline how-to.
+    steps = doc.css("ol.cleanup-handoff-steps li")
+    assert len(steps) == 3
+    # Numbered list of titles + dates (visible, not collapsed for ≤10).
     items = doc.css(".purge-meeting-list li")
     assert len(items) == 3
-    # No <details> wrapper for short lists (≤10).
-    details = doc.css_first("details.purge-meeting-list-collapse")
-    assert details is None
-    # Yellow/destructive notice present.
-    assert "cannot be undone" in text.lower()
-    # Typed-count input + Purge button present.
-    assert doc.css_first("input#confirm-count") is not None
-    btn = doc.css_first("button#purge-btn")
+    assert doc.css_first("details.purge-meeting-list-collapse") is None
+    # The form posts to the new manifest-only mark-deleted endpoint.
+    form = doc.css_first("form.purge-start-form")
+    assert form is not None
+    assert form.attributes.get("action") == "/cleanup/mark-deleted"
+    btn = doc.css_first("button#mark-deleted-btn")
     assert btn is not None
-    assert "disabled" in btn.attributes
+    # No typed-count gate anymore — the action is non-destructive (manifest only).
+    assert doc.css_first("input#confirm-count") is None
 
 
 def test_get_purge_renders_collapsible_list_when_more_than_ten(
@@ -614,6 +645,166 @@ def test_purge_preflight_with_no_archived_redirects(
     r = configured_client.get("/cleanup/purge", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/cleanup/review?error=empty-selection"
+
+
+# ---------------------------------------------------------------------------
+# POST /cleanup/mark-deleted (Phase 2 handoff)
+#
+# After the user bulk-deletes selected meetings via Fireflies' web UI, this
+# route reconciles the manifest: each ARCHIVED / DELETED_FAILED row in
+# wizard.selected_ids transitions to DELETED with reason
+# 'manual_external_delete_via_wizard'. No API call.
+# ---------------------------------------------------------------------------
+
+
+def test_post_mark_deleted_redirects_when_empty_selection(
+    configured_client: TestClient, configured_app
+) -> None:
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="purge", selected=[])
+    r = configured_client.post(
+        "/cleanup/mark-deleted",
+        data={"_csrf": _csrf(configured_client)},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/archive/done"
+
+
+def test_post_mark_deleted_redirects_when_meetings_vanished(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Manifest no longer has the selected_ids — bounce back to review with
+    the same error hint the GET preflight uses."""
+    _seed_repo(configured_app, 0)
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="purge", selected=["gone1"])
+    r = configured_client.post(
+        "/cleanup/mark-deleted",
+        data={"_csrf": _csrf(configured_client)},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/review?error=empty-selection"
+
+
+def test_post_mark_deleted_transitions_archived_to_deleted(
+    configured_client: TestClient, configured_app
+) -> None:
+    _seed_repo(configured_app, 3)
+    manifest = configured_app.state.deps.manifest
+    for mid in ("m0", "m1", "m2"):
+        _walk_to_archived(manifest, mid)
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="purge", selected=["m0", "m1", "m2"])
+
+    r = configured_client.post(
+        "/cleanup/mark-deleted",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 200, r.text
+
+    for mid in ("m0", "m1", "m2"):
+        rec = manifest.get(mid)
+        assert rec is not None and rec.state is MeetingState.DELETED, f"{mid}={rec and rec.state}"
+
+
+def test_post_mark_deleted_handles_deleted_failed_alongside_archived(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The cascade in today's incident left some rows in DELETED_FAILED and
+    some still in ARCHIVED — the route must mark both."""
+    _seed_repo(configured_app, 3)
+    manifest = configured_app.state.deps.manifest
+    _walk_to_archived(manifest, "m0")
+    _walk_to_deleted_failed(manifest, "m1")
+    _walk_to_archived(manifest, "m2")
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="purge", selected=["m0", "m1", "m2"])
+
+    r = configured_client.post(
+        "/cleanup/mark-deleted",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 200
+    for mid in ("m0", "m1", "m2"):
+        rec = manifest.get(mid)
+        assert rec is not None and rec.state is MeetingState.DELETED
+
+
+def test_post_mark_deleted_skips_rows_in_unexpected_state(
+    configured_client: TestClient, configured_app
+) -> None:
+    """A row whose state has changed since the wizard's archive step (e.g.
+    a sync tick reconciled it) is counted as skipped, not failed. The
+    summary shows ``X marked, Y skipped`` rather than treating it as an
+    error."""
+    _seed_repo(configured_app, 3)
+    manifest = configured_app.state.deps.manifest
+    _walk_to_archived(manifest, "m0")
+    # m1 stays in KNOWN — the user may have added it to selected_ids out
+    # of band, or sync moved it back. Either way, mark-deleted should skip.
+    _walk_to_archived(manifest, "m2")
+    manifest.transition("m2", to=MeetingState.DELETED, at=NOW)  # already deleted
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="purge", selected=["m0", "m1", "m2"])
+
+    r = configured_client.post(
+        "/cleanup/mark-deleted",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 200
+    text = r.text
+    assert "1 marked" in text
+    assert "2 skipped" in text
+    # m0 was the only one promoted; the others kept their state.
+    assert manifest.get("m0").state is MeetingState.DELETED
+    assert manifest.get("m1").state is MeetingState.KNOWN
+    assert manifest.get("m2").state is MeetingState.DELETED  # was already
+
+
+def test_post_mark_deleted_records_wizard_reason_in_state_log(
+    configured_client: TestClient, configured_app
+) -> None:
+    _seed_repo(configured_app, 1)
+    manifest = configured_app.state.deps.manifest
+    _walk_to_archived(manifest, "m0")
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="purge", selected=["m0"])
+
+    configured_client.post(
+        "/cleanup/mark-deleted",
+        data={"_csrf": _csrf(configured_client)},
+    )
+
+    last = manifest.state_log("m0")[-1]
+    assert last.from_state is MeetingState.ARCHIVED
+    assert last.to_state is MeetingState.DELETED
+    assert last.details == {"reason": "manual_external_delete_via_wizard"}
+
+
+def test_mark_deleted_done_page_offers_finalize_and_restart(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The summary page mirrors the old purge-done UX: Done → dashboard,
+    Cleanup another batch → Step 1."""
+    _seed_repo(configured_app, 1)
+    manifest = configured_app.state.deps.manifest
+    _walk_to_archived(manifest, "m0")
+    sid = _sid(configured_client)
+    _set_wizard(configured_app, sid, step="purge", selected=["m0"])
+
+    r = configured_client.post(
+        "/cleanup/mark-deleted",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    doc = HTMLParser(r.text)
+    finalize = doc.css_first("form.purge-finalize-form")
+    assert finalize is not None
+    assert finalize.attributes.get("action") == "/cleanup/purge/finalize"
+    restart = doc.css_first("form.purge-restart-form")
+    assert restart is not None
+    assert restart.attributes.get("action") == "/cleanup/purge/restart"
 
 
 def test_purge_start_with_no_archived_redirects(

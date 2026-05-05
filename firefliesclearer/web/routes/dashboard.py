@@ -1,14 +1,20 @@
 """Dashboard route + sidebar status fragment + single-meeting retry.
 
 Owns ``GET /`` (full dashboard page), ``GET /sidebar/status`` (HTMX poll
-fragment for the left-rail health summary), and ``POST /retry/{meeting_id}``
-(start a single-meeting retry op and return the inline progress card).
+fragment for the left-rail health summary), ``POST /retry/{meeting_id}``
+(start a single-meeting retry op), and ``POST /mark-deleted/{meeting_id}``
++ ``POST /mark-deleted/all`` (manifest-only transitions used after the
+user has bulk-deleted meetings via Fireflies' web UI — no API call burned).
 
 The first two are read-only views over the manifest via
 ``AuditService.summary()``. The retry route reuses the same
 ``OperationRegistry`` machinery as the cleanup wizard so progress streams,
 cancellation, and the SSE endpoint all work uniformly across multi-meeting
-wizard runs and single-meeting retries.
+wizard runs and single-meeting retries. The mark-deleted routes are pure
+manifest writes — they exist because Fireflies' Pro plan caps total daily
+GraphQL calls at 50, so deleting in bulk via their web UI and then
+reconciling our manifest is the only sustainable path for accounts with
+hundreds of meetings to clean up.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ from firefliesclearer.application.audit_service import (
     AuditService,
     StateSummary,
 )
-from firefliesclearer.core.manifest import Manifest, MeetingRecord
+from firefliesclearer.core.manifest import IllegalStateTransition, Manifest, MeetingRecord
 from firefliesclearer.core.models import Meeting, MeetingState
 from firefliesclearer.web.deps import get_deps
 from firefliesclearer.web.operations import (
@@ -37,6 +43,18 @@ from firefliesclearer.web.operations import (
     SameKindAlreadyRunning,
     _RunnerContext,
 )
+
+# States from which a meeting can be manually marked as deleted upstream
+# without an API call. ARCHIVED: we have a verified local copy and the
+# user just bulk-deleted in Fireflies' web UI. DELETED_FAILED: same, but
+# a previous API delete attempt hit the rate limit and left the row half
+# in our manifest. Other states (PENDING, FAILED_*, KNOWN, DELETED) are
+# rejected — promoting a non-archived row to DELETED would silently lose
+# our verified-archive guarantee from the safety invariants in CLAUDE.md.
+_MARK_DELETED_ELIGIBLE_STATES: frozenset[MeetingState] = frozenset(
+    {MeetingState.ARCHIVED, MeetingState.DELETED_FAILED}
+)
+_MANUAL_EXTERNAL_DELETE_REASON = "manual_external_delete"
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +110,58 @@ def _needs_attention_rows(manifest: Manifest, summary: StateSummary) -> list[Mee
         if rec is not None:
             rows.append(rec)
     return rows
+
+
+def _awaiting_external_deletion_rows(manifest: Manifest) -> list[MeetingRecord]:
+    """Rows in ARCHIVED or DELETED_FAILED — eligible for manual mark-deleted.
+
+    Sorted by archived_at ASC so the oldest meetings appear first; the user
+    bulk-deleting day-by-day in Fireflies' UI tends to start with the oldest.
+    Rows missing ``archived_at`` (legacy data) sort last via the COALESCE.
+    """
+    rows: list[MeetingRecord] = []
+    for state in (MeetingState.ARCHIVED, MeetingState.DELETED_FAILED):
+        for mid in manifest.meeting_ids_in_states((state,)):
+            rec = manifest.get(mid)
+            if rec is not None:
+                rows.append(rec)
+    rows.sort(key=lambda r: r.archived_at or r.meeting_date)
+    return rows
+
+
+def _dashboard_context(*, request: Request, deps: SimpleNamespace) -> dict[str, object]:
+    """Build the template context shared between ``GET /`` and the
+    mark-deleted POST handlers.
+
+    Centralising it is what makes the bulk-action response refresh
+    state-counts, awaiting-external-deletion, and needs-attention
+    atomically — every consumer of the dashboard partials sees the same
+    snapshot of manifest state.
+    """
+    from firefliesclearer.web.routes.sync import maybe_status_for_template
+
+    audit = AuditService(manifest=deps.manifest)
+    summary = audit.summary()
+    rows = _needs_attention_rows(deps.manifest, summary)
+    retry_eligible = sum(1 for r in rows if r.source_state != "gone")
+    awaiting = _awaiting_external_deletion_rows(deps.manifest)
+    ctx: dict[str, object] = {
+        "summary": summary,
+        "needs_attention": rows,
+        "retry_eligible_count": retry_eligible,
+        "awaiting_external_deletion": awaiting,
+        "awaiting_external_deletion_count": len(awaiting),
+        "failed_state_values": FAILED_STATE_VALUES,
+        "version": request.app.state.version,
+        "MeetingState": MeetingState,
+        "show_sync_opt_in": (
+            deps.config.sync.enabled is False and deps.config.sync.opt_in_dismissed is False
+        ),
+    }
+    sync_status = maybe_status_for_template(request, deps)
+    if sync_status is not None:
+        ctx["sync_status"] = sync_status
+    return ctx
 
 
 class _CacheLookup:
@@ -156,29 +226,7 @@ async def dashboard(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
-    from firefliesclearer.web.routes.sync import maybe_status_for_template
-
-    audit = AuditService(manifest=deps.manifest)
-    summary = audit.summary()
-    rows = _needs_attention_rows(deps.manifest, summary)
-    # Retry-all is only useful when at least one row is actually retry-able
-    # (rows whose source_state == "gone" can't progress further; they're
-    # filtered out by the bulk runner and would otherwise produce a 409).
-    retry_eligible = sum(1 for r in rows if r.source_state != "gone")
-    ctx: dict[str, object] = {
-        "summary": summary,
-        "needs_attention": rows,
-        "retry_eligible_count": retry_eligible,
-        "failed_state_values": FAILED_STATE_VALUES,
-        "version": request.app.state.version,
-        "MeetingState": MeetingState,
-        "show_sync_opt_in": (
-            deps.config.sync.enabled is False and deps.config.sync.opt_in_dismissed is False
-        ),
-    }
-    sync_status = maybe_status_for_template(request, deps)
-    if sync_status is not None:
-        ctx["sync_status"] = sync_status
+    ctx = _dashboard_context(request=request, deps=deps)
     return _templates(request).TemplateResponse(request, "dashboard.html", ctx)
 
 
@@ -297,6 +345,113 @@ async def retry_all_attention(
         request,
         "partials/_retry_all_progress.html",
         {"op": op, "total": len(targets), "skipped": len(skipped)},
+    )
+
+
+@router.post("/mark-deleted/all")
+async def mark_deleted_all(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Bulk variant of :func:`mark_deleted_single`.
+
+    Walks every row currently in ARCHIVED or DELETED_FAILED and transitions
+    each to DELETED with the ``manual_external_delete`` reason. Used by the
+    big "I deleted all of these in Fireflies — mark as deleted" button on
+    the dashboard, and (Phase 2) by the cleanup wizard's Step 4 handoff.
+
+    Status codes:
+      - 409 if there's nothing to mark (no rows in either eligible state).
+      - 200 + the refreshed dashboard main fragment on success.
+    """
+    eligible = _awaiting_external_deletion_rows(deps.manifest)
+    if not eligible:
+        raise HTTPException(
+            status_code=409,
+            detail="Nothing to mark — no archived or delete-failed meetings.",
+        )
+    now = deps.clock.now()
+    for rec in eligible:
+        try:
+            deps.manifest.transition(
+                rec.meeting_id,
+                to=MeetingState.DELETED,
+                at=now,
+                details={"reason": _MANUAL_EXTERNAL_DELETE_REASON},
+            )
+        except IllegalStateTransition:
+            # Race window: state could have changed between our snapshot
+            # query and the transition (a sync tick reconciling the same
+            # row, for example). Skip — the next dashboard refresh will
+            # show the row's actual state.
+            logger.warning(
+                "mark_deleted_all: skipping %s (state changed mid-bulk)",
+                rec.meeting_id,
+            )
+            continue
+
+    ctx = _dashboard_context(request=request, deps=deps)
+    return _templates(request).TemplateResponse(
+        request,
+        "partials/_dashboard_main.html",
+        ctx,
+    )
+
+
+@router.post("/mark-deleted/{meeting_id}")
+async def mark_deleted_single(
+    request: Request,
+    meeting_id: str,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Manually mark a meeting as deleted in Fireflies — manifest-only.
+
+    The user has bulk-deleted the meeting in the Fireflies web UI (which
+    bypasses the API daily quota that caps Pro accounts at ~50 ops/day).
+    We trust their attestation and transition the manifest row from
+    ARCHIVED or DELETED_FAILED to DELETED, recording
+    ``reason: manual_external_delete`` in state_log so the audit trail
+    keeps the manual provenance.
+
+    Status codes:
+      - 404 if no manifest row exists.
+      - 409 if the row's current state is not ARCHIVED / DELETED_FAILED
+        (PENDING/FAILED_*/DELETED/KNOWN are deliberately not promotable
+        — see ``_MARK_DELETED_ELIGIBLE_STATES`` for rationale).
+      - 200 + the refreshed dashboard main fragment on success.
+
+    Route ordering note: FastAPI matches in declaration order, so this
+    handler is defined *after* ``/mark-deleted/all`` — otherwise the
+    string ``"all"`` would bind here as ``meeting_id="all"`` and 404.
+    """
+    rec = deps.manifest.get(meeting_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Meeting not found in manifest")
+    if rec.state not in _MARK_DELETED_ELIGIBLE_STATES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Meeting is in state {rec.state.value!r}; only archived or "
+                "delete-failed meetings can be marked as deleted in Fireflies."
+            ),
+        )
+    try:
+        deps.manifest.transition(
+            meeting_id,
+            to=MeetingState.DELETED,
+            at=deps.clock.now(),
+            details={"reason": _MANUAL_EXTERNAL_DELETE_REASON},
+        )
+    except IllegalStateTransition as exc:
+        # Defensive: _MARK_DELETED_ELIGIBLE_STATES already filters, so this
+        # branch can only fire on a genuine FSM bug. Surface as 409.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    ctx = _dashboard_context(request=request, deps=deps)
+    return _templates(request).TemplateResponse(
+        request,
+        "partials/_dashboard_main.html",
+        ctx,
     )
 
 

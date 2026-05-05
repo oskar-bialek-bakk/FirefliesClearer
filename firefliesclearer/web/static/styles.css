@@ -1001,7 +1001,44 @@ button:disabled,
   font-family: var(--font-mono);
 }
 
-.needs-attention-row__retry { margin: 0; }
+.needs-attention-row__retry { margin: 0; margin-left: auto; }
+
+/* Mark-deleted form: pinned to the left edge of the row, opposite the
+   Retry button on the right. The two are deliberately split apart so a
+   quick mis-click can't promote a meeting to DELETED when the user meant
+   to Retry (or vice versa). The mark-deleted action also goes through an
+   ``hx-confirm`` modal as a second safety net. */
+.needs-attention-row__mark-deleted { margin: 0; }
+
+.mark-deleted-btn {
+  /* Visually subordinate to retry-btn so the user reads "Retry" as the
+     default action — mark-deleted is a manual override after the user
+     has already done the destructive op in Fireflies' web UI. Muted
+     surface + dashed border conveys "secondary, intentional choice". */
+  background-color: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-3);
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  transition: color 160ms, border-color 160ms;
+}
+.mark-deleted-btn:hover {
+  color: var(--text);
+  border-color: var(--text-3);
+  border-style: solid;
+}
+
+/* Bulk variant on the dashboard "Awaiting deletion in Fireflies" panel
+   and on Phase 2's wizard handoff page. Inherits the muted-secondary
+   look of the per-row variant but a touch more prominent because it's
+   the primary CTA of its panel. */
+.mark-deleted-btn--all {
+  font-size: 13px;
+  padding: 8px 14px;
+  border-style: solid;
+  color: var(--text-2, var(--text));
+}
 
 .needs-attention-empty {
   color: var(--text-3);

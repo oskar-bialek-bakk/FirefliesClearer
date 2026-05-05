@@ -34,7 +34,28 @@
   {% if needs_attention %}
     <ul class="needs-attention__list">
       {% for rec in needs_attention %}
+        {# Layout: [mark-deleted (left)] [title (flex:1)] [retry (right)].
+           DELETED_FAILED is the only state that gets a mark-deleted button
+           — for other failed_* states the right path is to retry the
+           archive, not reconcile the manifest. The two buttons are
+           pinned to opposite edges of the row so a quick click can't
+           hit the wrong one — Retry just burns one API call, but
+           mark-deleted promotes the row to DELETED, which is harder
+           to undo if it was a mis-click. #}
         <li class="needs-attention-row" data-meeting-id="{{ rec.meeting_id }}">
+          {% if rec.state == MeetingState.DELETED_FAILED %}
+            <form class="needs-attention-row__mark-deleted" method="post"
+                  hx-post="/mark-deleted/{{ rec.meeting_id }}"
+                  hx-target="#dashboard-main"
+                  hx-swap="outerHTML"
+                  hx-confirm="Mark this meeting as deleted in Fireflies? Only do this if you've already deleted it in the Fireflies web UI."
+                  hx-on::response-error="alert(event.detail.xhr.responseText || 'Mark-deleted failed');">
+              <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+              <button type="submit" class="mark-deleted-btn">
+                I deleted in Fireflies
+              </button>
+            </form>
+          {% endif %}
           <div class="needs-attention-row__title">
             {{ rec.title }} ({{ rec.meeting_date.date().isoformat() }}) &mdash; {{ rec.state.value }}
           </div>
