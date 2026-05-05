@@ -326,6 +326,55 @@ async def test_full_sync_records_reconcile_reason_in_state_log(manifest_db):
     assert last.details == {"reason": "reconciled_external_delete"}
 
 
+async def test_full_sync_promotes_legacy_already_gone_archived_rows(manifest_db):
+    """Upgrade path: pre-Phase-3 deployments only flipped source_state for
+    missing-from-upstream rows; the FSM state stayed at ARCHIVED. The first
+    full sync after upgrade must pick those rows up and promote them to
+    DELETED — otherwise an upgraded user with hundreds of archived+gone
+    rows would have to mark each one manually. Regression for Copilot
+    review item on PR #21."""
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    # Simulate the legacy state: row is ARCHIVED locally, but a previous
+    # sync already learned it's gone from upstream and flipped
+    # source_state. With the original Phase 3 code, ``include_gone=False``
+    # would skip it on every subsequent full sync.
+    manifest_db.upsert_known(_meeting("m_legacy"), at=started)
+    _walk_to_archived(manifest_db, "m_legacy")
+    manifest_db.set_source_state("m_legacy", "gone")
+    # And a fresh row that's still live + missing — exercises the normal
+    # path on the same sync run.
+    manifest_db.upsert_known(_meeting("m_fresh"), at=started)
+    _walk_to_archived(manifest_db, "m_fresh")
+
+    repo = ControllableMeetingRepository(meetings=[], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+    outcome = await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    # Both rows end up DELETED.
+    assert manifest_db.get("m_legacy").state is MeetingState.DELETED
+    assert manifest_db.get("m_fresh").state is MeetingState.DELETED
+    # But only ``m_fresh`` counts toward ``meetings_gone`` — the legacy
+    # row was already gone; counting it would inflate the metric.
+    assert outcome.meetings_gone == 1
+
+
+async def test_full_sync_skips_already_deleted_rows(manifest_db):
+    """Don't waste cycles re-iterating DELETED rows on every full sync —
+    they are terminal. Verified by checking no extra state_log entry
+    accumulates across successive runs."""
+    started = datetime(2026, 4, 1, tzinfo=UTC)
+    manifest_db.upsert_known(_meeting("m_done"), at=started)
+    _walk_to_archived(manifest_db, "m_done")
+    manifest_db.transition("m_done", to=MeetingState.DELETED, at=started)
+    log_len_before = len(manifest_db.state_log("m_done"))
+
+    repo = ControllableMeetingRepository(meetings=[], page_size=10)
+    svc = SyncService(repo=repo, manifest=manifest_db, clock=SystemClock())
+    await svc.run(mode=SyncMode.FULL, trigger=SyncTrigger.SCHEDULED)
+
+    assert len(manifest_db.state_log("m_done")) == log_len_before
+
+
 async def test_incremental_sync_does_not_reconcile_missing_meetings(manifest_db):
     """Incremental sync stops at the first known meeting and is *not* a full
     walk of upstream — so it can't tell whether m1 is missing or just on a

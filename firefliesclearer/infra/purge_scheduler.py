@@ -83,8 +83,10 @@ def candidates_for_trickle(*, manifest: Manifest, limit: int) -> list[MeetingRec
 
     Order: oldest archived_at first (so a multi-day cleanup drains the
     oldest backlog first). Rows missing ``archived_at`` (legacy data
-    that pre-dated that column) sort last via the COALESCE on
-    ``meeting_date``.
+    that pre-dated that column) sort *after* every row that has a real
+    archived_at — the tuple key's first element makes ``None`` sort as
+    1 vs 0 for present timestamps. Within the legacy bucket they're
+    ordered by ``meeting_date``.
 
     States: ARCHIVED and DELETED_FAILED only — the same eligibility set
     used by the manual mark-deleted action. Rows in
@@ -102,7 +104,7 @@ def candidates_for_trickle(*, manifest: Manifest, limit: int) -> list[MeetingRec
             if rec is None or rec.source_state == "gone":
                 continue
             candidates.append(rec)
-    candidates.sort(key=lambda r: r.archived_at or r.meeting_date)
+    candidates.sort(key=lambda r: (r.archived_at is None, r.archived_at or r.meeting_date))
     return candidates[:limit]
 
 

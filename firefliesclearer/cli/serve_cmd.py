@@ -109,10 +109,11 @@ def serve(
                 shutdown_event.set()
 
         # Phase 4: start the API-purge trickle scheduler.
-        # Disabled by default for upgrades (api_purge_per_day defaults to 5
-        # which IS enabled — but if the user has set it to 0 they opted out
-        # entirely). This runs independently of the sync scheduler so users
-        # who keep [sync] disabled still get the trickle benefit.
+        # Enabled by default at 5/day (RunConfig.api_purge_per_day=5 — applies
+        # to both fresh installs and upgrades that don't set the field). Set
+        # ``[run] api_purge_per_day = 0`` in config to disable. Runs
+        # independently of the sync scheduler so users who keep [sync] off
+        # still get the trickle benefit.
         if _cfg.run.api_purge_per_day > 0:
             import asyncio as _asyncio_purge
 

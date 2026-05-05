@@ -351,17 +351,35 @@ class SyncService:
         #      bulk-delete in Fireflies' web UI, let sync clean up" workflow
         #      that Pro-tier users have to follow because the API caps
         #      total daily ops at 50.
+        #
+        # Iteration scope is ``include_gone=True`` so the upgrade path
+        # works: pre-Phase-3 deployments left ARCHIVED+gone rows behind
+        # (sync used to only flip ``source_state``, never the FSM state),
+        # and those need to be picked up on the *next* full sync after
+        # the upgrade. Filtering by ``include_gone=False`` would make
+        # those rows invisible forever (Copilot review on PR #21).
         gone = 0
         reconciled = 0
         seen_set = set(seen_ids)
         now = self._clock.now()
-        for cached in self._manifest.list_known(include_archived=True, include_gone=False):
+        for cached in self._manifest.list_known(include_archived=True, include_gone=True):
             if cached.meeting_id in seen_set:
                 continue
-            self._manifest.set_source_state(cached.meeting_id, "gone")
-            gone += 1
             rec = self._manifest.get(cached.meeting_id)
-            if rec is None or rec.state not in _RECONCILE_TO_DELETED_FROM:
+            if rec is None:
+                continue
+            # Already-terminal rows: skip. Re-iterating every DELETED row
+            # on every full sync would thrash for no gain.
+            if rec.state is MeetingState.DELETED:
+                continue
+            # The ``gone`` metric is "rows that crossed live→gone on THIS
+            # run". Don't inflate it with the upgrade-path backlog — those
+            # rows were marked ``source_state='gone'`` by an earlier sync
+            # already, and the user has seen that count before.
+            if rec.source_state != "gone":
+                self._manifest.set_source_state(cached.meeting_id, "gone")
+                gone += 1
+            if rec.state not in _RECONCILE_TO_DELETED_FROM:
                 continue
             try:
                 self._manifest.transition(

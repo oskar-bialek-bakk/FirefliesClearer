@@ -117,7 +117,10 @@ def _awaiting_external_deletion_rows(manifest: Manifest) -> list[MeetingRecord]:
 
     Sorted by archived_at ASC so the oldest meetings appear first; the user
     bulk-deleting day-by-day in Fireflies' UI tends to start with the oldest.
-    Rows missing ``archived_at`` (legacy data) sort last via the COALESCE.
+    Rows missing ``archived_at`` (legacy data that pre-dated that column)
+    sort *after* every row that has a real archived_at — the tuple key's
+    first element makes ``None`` sort as 1 vs 0 for present timestamps.
+    Within the legacy bucket they're ordered by ``meeting_date``.
     """
     rows: list[MeetingRecord] = []
     for state in (MeetingState.ARCHIVED, MeetingState.DELETED_FAILED):
@@ -125,7 +128,7 @@ def _awaiting_external_deletion_rows(manifest: Manifest) -> list[MeetingRecord]:
             rec = manifest.get(mid)
             if rec is not None:
                 rows.append(rec)
-    rows.sort(key=lambda r: r.archived_at or r.meeting_date)
+    rows.sort(key=lambda r: (r.archived_at is None, r.archived_at or r.meeting_date))
     return rows
 
 
