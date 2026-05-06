@@ -34,7 +34,7 @@ import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Final
+from typing import Final, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -55,6 +55,7 @@ from firefliesclearer.application.scan_service import (
 )
 from firefliesclearer.core.manifest import IllegalStateTransition
 from firefliesclearer.core.models import Meeting, MeetingState
+from firefliesclearer.core.rules import Rule
 from firefliesclearer.infra.config import ScanFiltersModel
 from firefliesclearer.web import wizard_session
 from firefliesclearer.web.deps import get_deps
@@ -525,6 +526,32 @@ async def step2_review(
     sorted_matches = _sort_matches(matches, sort=sort, direction=direction)
     page_matches, total, pages = _page_slice(sorted_matches, page)
 
+    # Trash-classifier: evaluate the preset against the current scan result and
+    # persist the candidate set so toggle handlers can consult it cheaply.
+    trash_preset_name = wizard_session.get_state(_store(request), _sid(request)).get(
+        "trash_classifier_preset"
+    )
+    trash_candidates: list[str] = []
+    if trash_preset_name and result is not None:
+        config_path = request.app.state.config_path
+        preset_svc = PresetService(config_path) if config_path else None
+        if preset_svc is not None:
+            try:
+                trash_preset = preset_svc.get(trash_preset_name)
+            except PresetNotFoundError:
+                trash_preset = None
+            if trash_preset is not None:
+                trash_filters = wizard_session.filters_from_dict(trash_preset.filters.model_dump())
+                trash_candidates = _classify_trash(
+                    [m.meeting for m in result.matches],
+                    trash_filters,
+                    now=deps.clock.now(),
+                )
+
+    # Persist for toggle handlers — updated every time Step 2 renders so
+    # filter changes propagate automatically.
+    _persist_trash_candidates(request, trash_candidates)
+
     selected_ids = wizard_session.get_selected(_store(request), _sid(request))
 
     # Surface the error param forwarded by the empty-selection guards.
@@ -887,6 +914,35 @@ async def _selected_meetings(deps: SimpleNamespace, selected_ids: list[str]) -> 
         return []
     by_id = {m.meeting_id: m for m in deps.manifest.list_known_by_ids(selected_ids)}
     return [by_id[mid] for mid in selected_ids if mid in by_id]
+
+
+def _classify_trash(meetings: list[Meeting], filters: ScanFilters, *, now: datetime) -> list[str]:
+    """Return the subset of meeting ids that satisfy ``filters``.
+
+    Uses ``ScanService._build_rules`` so the trash classifier gets the
+    same predicate semantics as the cleanup-filter scan (conjunctive: a
+    meeting matches iff every active rule matches). Empty filter set →
+    no candidates.
+    """
+    rules = cast("list[Rule]", ScanService._build_rules(filters))
+    if not rules:
+        return []
+    return [m.meeting_id for m in meetings if all(r.matches(m, now=now) for r in rules)]
+
+
+def _persist_trash_candidates(request: Request, ids: list[str]) -> None:
+    """Replace ``trash_candidate_ids`` while preserving the rest of the wizard slice."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    new_state = wizard_session.WizardState(
+        step=state.get("step", "review"),
+        filters=state.get("filters", {}),
+        selected_ids=list(state.get("selected_ids", []) or []),
+        operation_id=state.get("operation_id"),
+        trash_ids=list(state.get("trash_ids", []) or []),
+        trash_classifier_preset=state.get("trash_classifier_preset"),
+        trash_candidate_ids=list(ids),
+    )
+    wizard_session.set_state(_store(request), _sid(request), new_state)
 
 
 def _meetings_for_step4(meetings: list[Meeting], user_email: str | None) -> list[Meeting]:
