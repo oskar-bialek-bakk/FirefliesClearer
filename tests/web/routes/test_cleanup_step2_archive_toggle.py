@@ -260,3 +260,65 @@ def test_review_select_all_auto_classifies_candidates(configured_app) -> None:
     # Both meetings selected; only the standup is in trash_ids (the candidate set).
     assert sorted(state.get("selected_ids", [])) == ["m_design", "m_standup"]
     assert state.get("trash_ids") == ["m_standup"]
+
+
+def test_post_mark_selected_as_trash_adds_all_to_trash_ids(configured_app) -> None:
+    _seed_meetings(configured_app)
+    with TestClient(configured_app) as c:
+        c.get("/?token=T")
+        sid = c.cookies.get("ffc_session", "")
+        set_state(
+            configured_app.state.session_store,
+            sid,
+            WizardState(
+                step="review",
+                filters=filters_to_dict(ScanFilters(older_than_days=30)),
+                selected_ids=["m_standup", "m_design"],
+                operation_id=None,
+                trash_ids=[],
+                trash_classifier_preset=None,
+                trash_candidate_ids=[],
+            ),
+        )
+        c.post(
+            "/cleanup/review/mark-trash",
+            data={
+                "_csrf": c.cookies.get("ffc_csrf", ""),
+                "page": "1",
+                "sort": "date",
+                "dir": "desc",
+            },
+        )
+    state = configured_app.state.session_store.get(sid).get("wizard", {})
+    assert sorted(state.get("trash_ids", [])) == ["m_design", "m_standup"]
+
+
+def test_post_mark_selected_as_archive_clears_trash_ids(configured_app) -> None:
+    _seed_meetings(configured_app)
+    with TestClient(configured_app) as c:
+        c.get("/?token=T")
+        sid = c.cookies.get("ffc_session", "")
+        set_state(
+            configured_app.state.session_store,
+            sid,
+            WizardState(
+                step="review",
+                filters=filters_to_dict(ScanFilters(older_than_days=30)),
+                selected_ids=["m_standup", "m_design"],
+                operation_id=None,
+                trash_ids=["m_standup", "m_design"],
+                trash_classifier_preset=None,
+                trash_candidate_ids=[],
+            ),
+        )
+        c.post(
+            "/cleanup/review/mark-archive",
+            data={
+                "_csrf": c.cookies.get("ffc_csrf", ""),
+                "page": "1",
+                "sort": "date",
+                "dir": "desc",
+            },
+        )
+    state = configured_app.state.session_store.get(sid).get("wizard", {})
+    assert state.get("trash_ids") == []

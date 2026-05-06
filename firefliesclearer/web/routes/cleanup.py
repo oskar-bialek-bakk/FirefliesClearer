@@ -653,6 +653,50 @@ async def review_archive_toggle(
     )
 
 
+@router.post("/cleanup/review/mark-trash")
+async def review_mark_trash(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Bulk: classify all selected rows as trash (copy ``selected_ids`` -> ``trash_ids``)."""
+    filters = _filters_from_session(request)
+    if filters is None:
+        return _redirect("/cleanup")
+
+    form = await request.form()
+    page = _safe_page(form.get("page"))
+    sort = _normalize_sort(form.get("sort"))
+    direction = _normalize_dir(form.get("dir"))
+
+    state = wizard_session.get_state(_store(request), _sid(request))
+    selected = list(state.get("selected_ids", []) or [])
+    wizard_session.set_trash_ids(_store(request), _sid(request), selected)
+    return await _render_table_fragment(
+        request, deps, filters, page=page, sort=sort, direction=direction
+    )
+
+
+@router.post("/cleanup/review/mark-archive")
+async def review_mark_archive(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Bulk: classify all selected rows as archive (clear ``trash_ids``)."""
+    filters = _filters_from_session(request)
+    if filters is None:
+        return _redirect("/cleanup")
+
+    form = await request.form()
+    page = _safe_page(form.get("page"))
+    sort = _normalize_sort(form.get("sort"))
+    direction = _normalize_dir(form.get("dir"))
+
+    wizard_session.set_trash_ids(_store(request), _sid(request), [])
+    return await _render_table_fragment(
+        request, deps, filters, page=page, sort=sort, direction=direction
+    )
+
+
 @router.post("/cleanup/review/select-all")
 async def review_select_all(
     request: Request,
