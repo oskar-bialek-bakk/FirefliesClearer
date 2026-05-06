@@ -21,6 +21,7 @@ from firefliesclearer.web.deps import get_deps
 router = APIRouter()
 
 _PAGE_SIZE = 50
+_VALID_KINDS = frozenset({"all", "archived", "trash"})
 
 
 def _templates(request: Request) -> Jinja2Templates:
@@ -68,6 +69,20 @@ def _resolve_date_range(
     return now - delta, None
 
 
+def _classify_row_kind(audit: AuditService, meeting_id: str) -> str:
+    """Walk the row's state_log; reason ``manual_trash_via_wizard`` => trash,
+    anything else => archived. Used by the history page's kind filter and
+    the per-row ``no archive`` badge."""
+    log = audit.state_log(meeting_id)
+    if not log:
+        return "archived"
+    last = log[-1]
+    details = last.details if last.details is not None else {}
+    if details.get("reason") == "manual_trash_via_wizard":
+        return "trash"
+    return "archived"
+
+
 def _parse_states(raw: list[str] | None) -> tuple[MeetingState, ...] | None:
     """Convert list of state strings to a tuple of MeetingState, silently skipping unknowns."""
     if not raw:
@@ -89,9 +104,15 @@ async def history(
     page: int = 1,
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
+    kind: str = "all",
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
-    """Render the history page with filters and pagination."""
+    """Render the history page with filters and pagination.
+
+    The ``kind`` parameter post-filters rows by trash vs archived classification.
+    When ``kind != 'all'``, the total shown reflects the unfiltered DB count;
+    the page count reflects the post-filter result for the current page only.
+    """
     # Clamp page to >= 1
     page = max(1, page)
 
@@ -131,6 +152,12 @@ async def history(
 
     rows = audit.history(filt)
 
+    # Classify each row by kind, then optionally post-filter.
+    kind_filter = kind if kind in _VALID_KINDS else "all"
+    classified = [(row, _classify_row_kind(audit, row.meeting_id)) for row in rows]
+    if kind_filter != "all":
+        classified = [pair for pair in classified if pair[1] == kind_filter]
+
     all_states = list(MeetingState)
 
     # Drive the per-row Retry button off the canonical FAILED_STATES tuple
@@ -140,13 +167,14 @@ async def history(
     retryable_state_values = tuple(s.value for s in FAILED_STATES)
     ctx = {
         "request": request,
-        "rows": rows,
+        "rows": classified,
         "total": total,
         "page": page,
         "total_pages": total_pages,
         "range": range,
         "state": state or [],
         "q": q,
+        "kind_filter": kind_filter,
         "all_states": all_states,
         "retryable_state_values": retryable_state_values,
         "date_from": from_,

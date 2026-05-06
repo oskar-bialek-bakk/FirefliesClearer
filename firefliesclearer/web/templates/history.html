@@ -51,6 +51,16 @@
   </div>
 </form>
 
+{# Kind filter chips #}
+<div class="history-filter-chips">
+  <a class="history-filter-chip {% if kind_filter == 'all' %}active{% endif %}"
+     href="?range={{ range }}{% if q %}&q={{ q }}{% endif %}{% for s in state %}&state={{ s }}{% endfor %}">All</a>
+  <a class="history-filter-chip {% if kind_filter == 'archived' %}active{% endif %}"
+     href="?range={{ range }}{% if q %}&q={{ q }}{% endif %}{% for s in state %}&state={{ s }}{% endfor %}&kind=archived">Archived</a>
+  <a class="history-filter-chip {% if kind_filter == 'trash' %}active{% endif %}"
+     href="?range={{ range }}{% if q %}&q={{ q }}{% endif %}{% for s in state %}&state={{ s }}{% endfor %}&kind=trash">Trash</a>
+</div>
+
 {# Results #}
 <p class="history-total">{{ total }} meeting{{ 's' if total != 1 else '' }} found</p>
 
@@ -68,9 +78,14 @@
     </tr>
   </thead>
   <tbody>
-    {% for row in rows %}
+    {% for row, kind in rows %}
     <tr data-meeting-id="{{ row.meeting_id }}">
-      <td><a hx-get="/history/{{ row.meeting_id }}/panel" hx-target="#history-panel" hx-push-url="false">{{ row.title }}</a></td>
+      <td>
+        <a hx-get="/history/{{ row.meeting_id }}/panel" hx-target="#history-panel" hx-push-url="false">{{ row.title }}</a>
+        {% if kind == "trash" %}
+          <span class="badge-no-archive" title="Deleted without local archive">no archive</span>
+        {% endif %}
+      </td>
       <td>{{ row.meeting_date.strftime("%Y-%m-%d") }}</td>
       <td>{{ row.state.value }}</td>
       <td>{{ row.archived_at.strftime("%Y-%m-%d %H:%M") if row.archived_at else "-" }}</td>
