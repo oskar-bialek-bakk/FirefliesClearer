@@ -1069,3 +1069,73 @@ def test_step4_preflight_combines_archive_and_host_trash_with_badge(
     assert badge is not None
     # Archive row does NOT have the badge.
     assert items[0].css_first(".badge-no-archive") is None
+
+
+def test_post_mark_deleted_transitions_known_trash_to_deleted(
+    configured_client: TestClient, configured_app
+) -> None:
+    """KNOWN trash rows transition to DELETED via mark-deleted, with the
+    new ``manual_trash_via_wizard`` reason. Archived rows continue to use
+    the existing ``manual_external_delete_via_wizard`` reason."""
+    configured_app.state.deps.config.fireflies.user_email = "oskar@example.com"
+    meetings = [
+        Meeting(
+            meeting_id="m_arch",
+            title="Archived",
+            meeting_date=NOW - timedelta(days=200),
+            duration_minutes=60.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+        Meeting(
+            meeting_id="m_trash",
+            title="Trash",
+            meeting_date=NOW - timedelta(days=10),
+            duration_minutes=15.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+    ]
+    _seed_meetings(configured_app, meetings)
+    manifest = configured_app.state.deps.manifest
+    _walk_to_archived(manifest, "m_arch")
+    # m_trash stays KNOWN.
+
+    sid = _sid(configured_client)
+    from firefliesclearer.web.wizard_session import (
+        WizardState,
+        filters_to_dict,
+        set_state,
+    )
+
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="purge",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m_arch", "m_trash"],
+            operation_id=None,
+            trash_ids=["m_trash"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+
+    r = configured_client.post(
+        "/cleanup/mark-deleted",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 200
+
+    rec_arch = manifest.get("m_arch")
+    assert rec_arch is not None and rec_arch.state is MeetingState.DELETED
+    last_arch = manifest.state_log("m_arch")[-1]
+    assert last_arch.details == {"reason": "manual_external_delete_via_wizard"}
+
+    rec_trash = manifest.get("m_trash")
+    assert rec_trash is not None and rec_trash.state is MeetingState.DELETED
+    last_trash = manifest.state_log("m_trash")[-1]
+    assert last_trash.from_state is MeetingState.KNOWN
+    assert last_trash.to_state is MeetingState.DELETED
+    assert last_trash.details == {"reason": "manual_trash_via_wizard"}

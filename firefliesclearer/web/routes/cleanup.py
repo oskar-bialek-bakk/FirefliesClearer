@@ -1824,26 +1824,24 @@ async def step4_mark_deleted(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
-    """Reconcile the wizard's archived meetings as deleted-in-Fireflies.
+    """Reconcile both the wizard's archived meetings AND host trash rows.
 
-    The Step 4 handoff design assumes the user has bulk-deleted the
-    selected meetings via Fireflies' web UI (the only path that bypasses
-    the per-account API daily-quota cap). This route walks the wizard's
-    ``selected_ids``, transitions each row currently in ARCHIVED or
-    DELETED_FAILED to DELETED with reason ``manual_external_delete_via_wizard``
-    in state_log, and renders a summary page.
+    Walks the wizard's selection, splitting it into:
+      * archive set (``selected_ids - trash_ids``): rows in ARCHIVED or
+        DELETED_FAILED transition to DELETED with reason
+        ``manual_external_delete_via_wizard``.
+      * trash set (``trash_ids``): rows in KNOWN transition to DELETED with
+        reason ``manual_trash_via_wizard`` (Step 4 handoff for trash that
+        the user just bulk-deleted in Fireflies' web UI).
 
-    Skipped rows: any selected_id whose state is no longer ARCHIVED /
-    DELETED_FAILED is counted as skipped rather than failed — the most
-    common cause is a sync tick reconciling the row before this POST,
-    which is benign.
+    Both subsets are first filtered through ``_meetings_for_step4`` for
+    the non-host filter (PR #22 + Step 3a auto-mark). Rows in unexpected
+    states are counted as ``skipped`` rather than failed.
 
     Status codes:
-      - 303 (redirect to /cleanup/archive/done) when the wizard has no
-        selected_ids — the user navigated here directly.
-      - 303 (redirect to /cleanup/review?error=empty-selection) when the
-        selected meetings have all vanished from the cache between
-        archive and now.
+      - 303 to /cleanup/archive/done when ``selected_ids`` is empty.
+      - 303 to /cleanup/review?error=empty-selection when both subsets
+        have all vanished from the cache.
       - 200 + the mark-deleted summary page on success.
     """
     state = wizard_session.get_state(_store(request), _sid(request))
@@ -1851,23 +1849,27 @@ async def step4_mark_deleted(
     if not selected_ids:
         return _redirect("/cleanup/archive/done")
 
-    meetings = await _selected_meetings(deps, selected_ids)
-    if not meetings:
+    trash_ids = set(state.get("trash_ids") or [])
+    archive_ids = [mid for mid in selected_ids if mid not in trash_ids]
+    archive_meetings = await _selected_meetings(deps, archive_ids)
+    trash_meetings = await _selected_meetings(deps, sorted(trash_ids))
+    if not archive_meetings and not trash_meetings:
         return _redirect("/cleanup/review?error=empty-selection")
-    # Mirror the Step 4 preflight: only act on meetings the user actually
-    # saw on the handoff page. Non-host rows are auto-marked DELETED at
-    # archive time, so feeding them through here would inflate the
-    # ``skipped`` count and confuse the summary. Sort matches the page
-    # order for deterministic state_log ordering.
-    meetings = _meetings_for_step4(meetings, deps.config.fireflies.user_email)
 
-    eligible_states = {MeetingState.ARCHIVED, MeetingState.DELETED_FAILED}
+    user_email = deps.config.fireflies.user_email
+    archive_meetings = _meetings_for_step4(archive_meetings, user_email)
+    trash_meetings = _meetings_for_step4(trash_meetings, user_email)
+
+    archive_eligible = {MeetingState.ARCHIVED, MeetingState.DELETED_FAILED}
     now = deps.clock.now()
     marked = 0
     skipped = 0
-    for meeting in meetings:
+    total = len(archive_meetings) + len(trash_meetings)
+
+    # Archive flow: ARCHIVED|DELETED_FAILED -> DELETED.
+    for meeting in archive_meetings:
         rec = deps.manifest.get(meeting.meeting_id)
-        if rec is None or rec.state not in eligible_states:
+        if rec is None or rec.state not in archive_eligible:
             skipped += 1
             continue
         try:
@@ -1878,10 +1880,30 @@ async def step4_mark_deleted(
                 details={"reason": "manual_external_delete_via_wizard"},
             )
         except IllegalStateTransition:
-            # Race window — sync may have reconciled this row between our
-            # ``get`` and the transition. Treat as skipped, not an error.
             logger.warning(
                 "step4_mark_deleted: skipped %s (state changed mid-run)",
+                meeting.meeting_id,
+            )
+            skipped += 1
+            continue
+        marked += 1
+
+    # Trash flow: KNOWN -> DELETED with the new reason.
+    for meeting in trash_meetings:
+        rec = deps.manifest.get(meeting.meeting_id)
+        if rec is None or rec.state is not MeetingState.KNOWN:
+            skipped += 1
+            continue
+        try:
+            deps.manifest.transition(
+                meeting.meeting_id,
+                to=MeetingState.DELETED,
+                at=now,
+                details={"reason": "manual_trash_via_wizard"},
+            )
+        except IllegalStateTransition:
+            logger.warning(
+                "step4_mark_deleted: trash transition skipped for %s (state changed mid-run)",
                 meeting.meeting_id,
             )
             skipped += 1
@@ -1895,7 +1917,7 @@ async def step4_mark_deleted(
             "step": "purge",
             "marked_count": marked,
             "skipped_count": skipped,
-            "total_count": len(meetings),
+            "total_count": total,
         },
     )
 
