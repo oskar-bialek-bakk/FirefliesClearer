@@ -1384,6 +1384,40 @@ async def step3_continue(request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------------
+# Step 3a — Trash confirmation (typed-count gate, demote, non-host auto-mark)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/cleanup/trash-confirm")
+async def step3a_preflight(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Render the trash-confirmation preflight: warning banner, sorted list,
+    per-row demote checkboxes, typed-count gate."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    trash_ids = list(state.get("trash_ids", []) or [])
+    if not trash_ids:
+        return _redirect("/cleanup/archive")
+
+    meetings = await _selected_meetings(deps, trash_ids)
+    if not meetings:
+        return _redirect("/cleanup/review?error=empty-selection")
+    meetings = sorted(meetings, key=lambda m: m.meeting_date)
+
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step3a_trash_confirm.html",
+        {
+            "step": "trash",
+            "count": len(meetings),
+            "meetings": meetings,
+            "error": None,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Step 4 — Purge (Task 5.5)
 # ---------------------------------------------------------------------------
 

@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Cleanup Step 3a — Trash confirmation — FirefliesClearer{% endblock %}
+{% block page %}
+{% include "cleanup/_stepper.html" %}
+
+<section class="cleanup-step cleanup-step-trash cleanup-step-trash-confirm">
+  <h1>Step 3a — Confirm delete without archive</h1>
+
+  <p class="trash-warning-banner" role="alert">
+    <strong>No backup will exist for these meetings.</strong>
+    Once deleted in Fireflies, their transcripts, audio, and summaries are gone
+    for good — there is no local archive to recover from.
+    Uncheck any row to demote it back to the archive flow.
+  </p>
+
+  {% if error %}
+    <p class="error-banner" role="alert">{{ error }}</p>
+  {% endif %}
+
+  <p class="trash-confirm-summary">
+    <strong>{{ count }} meeting{% if count != 1 %}s{% endif %}</strong>
+    will be deleted in Fireflies without a local archive.
+  </p>
+
+  <form method="post" action="/cleanup/trash-confirm" class="trash-confirm-form">
+    <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+
+    <ol class="trash-confirm-list">
+      {% for m in meetings %}
+        <li>
+          <label>
+            <input type="checkbox" name="trash_keep" value="{{ m.meeting_id }}" checked>
+            <span class="trash-meeting-title">{{ m.title }}</span>
+            <span class="meeting-date">{{ m.meeting_date.date().isoformat() }}</span>
+          </label>
+        </li>
+      {% endfor %}
+    </ol>
+
+    <div class="trash-confirm-typed-count">
+      <label for="confirm-count">
+        Type <strong>{{ count }}</strong> to confirm:
+      </label>
+      <input type="text" id="confirm-count" name="confirmed_count"
+             autocomplete="off" inputmode="numeric" pattern="[0-9]*" required>
+    </div>
+
+    <div class="form-actions trash-confirm-actions">
+      <a href="/cleanup/review" class="cancel-link">&larr; Back</a>
+      <button type="submit" class="trash-confirm-btn">
+        Confirm delete without archive
+      </button>
+    </div>
+  </form>
+</section>
+{% endblock %}
