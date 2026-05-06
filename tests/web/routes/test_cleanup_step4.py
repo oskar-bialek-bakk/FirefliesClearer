@@ -58,6 +58,16 @@ def _seed_repo(app, count: int) -> list[Meeting]:
     return meetings
 
 
+def _seed_meetings(app, meetings: list[Meeting]) -> list[Meeting]:
+    """Seed an arbitrary, pre-built meeting list (host emails differ per row)."""
+    repo = InMemoryMeetingRepository(meetings=meetings, api_key="ff_test")
+    repo.set_user_email_for_key("ff_test", "oskar@example.com")
+    app.state.deps.client = repo
+    for m in meetings:
+        app.state.deps.manifest.upsert_known(m, at=NOW)
+    return meetings
+
+
 def _walk_to_archived(manifest, meeting_id: str) -> None:
     """Walk a freshly upserted manifest row through PENDING -> ARCHIVED."""
     manifest.transition(meeting_id, to=MeetingState.PENDING, at=NOW)
@@ -823,3 +833,182 @@ def test_purge_start_with_no_archived_redirects(
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/cleanup/review?error=empty-selection"
+
+
+# ---------------------------------------------------------------------------
+# Step 4 list ordering + non-host filter
+#
+# Non-host meetings are auto-marked DELETED at archive completion (the user
+# can't bulk-delete them in Fireflies' UI — they don't own them), so the
+# Delete tab must only list rows the user can actually act on, sorted oldest
+# first to match the day-grouped Fireflies UI.
+# ---------------------------------------------------------------------------
+
+
+def _mixed_host_meetings() -> list[Meeting]:
+    """Build six meetings with mixed hosts, intentionally NOT date-sorted."""
+    base = NOW
+    return [
+        Meeting(
+            meeting_id="m_new_self",
+            title="Newest mine",
+            meeting_date=base - timedelta(days=10),
+            duration_minutes=30.0,
+            host_email="oskar@example.com",
+            participant_count=3,
+        ),
+        Meeting(
+            meeting_id="m_old_other",
+            title="Old someone else",
+            meeting_date=base - timedelta(days=200),
+            duration_minutes=30.0,
+            host_email="other@example.com",
+            participant_count=3,
+        ),
+        Meeting(
+            meeting_id="m_mid_self",
+            title="Middle mine",
+            meeting_date=base - timedelta(days=100),
+            duration_minutes=30.0,
+            host_email="OSKAR@example.com",  # case-insensitive match
+            participant_count=3,
+        ),
+        Meeting(
+            meeting_id="m_old_self",
+            title="Oldest mine",
+            meeting_date=base - timedelta(days=300),
+            duration_minutes=30.0,
+            host_email="oskar@example.com",
+            participant_count=3,
+        ),
+        Meeting(
+            meeting_id="m_new_other",
+            title="New someone else",
+            meeting_date=base - timedelta(days=5),
+            duration_minutes=30.0,
+            host_email="other@example.com",
+            participant_count=3,
+        ),
+        Meeting(
+            meeting_id="m_no_host",
+            title="No host email",
+            meeting_date=base - timedelta(days=50),
+            duration_minutes=30.0,
+            host_email="",  # treated as host (matches Pipeline._is_non_host)
+            participant_count=3,
+        ),
+    ]
+
+
+def test_get_purge_filters_non_host_and_sorts_oldest_first(
+    configured_client: TestClient, configured_app
+) -> None:
+    """The Step 4 handoff list shows only meetings the user hosts (or rows
+    with no host_email), ordered oldest → newest."""
+    configured_app.state.deps.config.fireflies.user_email = "oskar@example.com"
+    _seed_meetings(configured_app, _mixed_host_meetings())
+    sid = _sid(configured_client)
+    _set_wizard(
+        configured_app,
+        sid,
+        step="purge",
+        selected=[
+            "m_new_self",
+            "m_old_other",
+            "m_mid_self",
+            "m_old_self",
+            "m_new_other",
+            "m_no_host",
+        ],
+    )
+
+    r = configured_client.get("/cleanup/purge")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    items = doc.css(".purge-meeting-list li")
+    titles = [li.text(deep=True).strip() for li in items]
+    # 4 rows survive: oldest mine, no_host (empty host_email is treated as
+    # host), middle mine, newest mine. The two "other@example.com" rows
+    # are dropped.
+    assert "Old someone else" not in " ".join(titles)
+    assert "New someone else" not in " ".join(titles)
+    assert len(items) == 4
+    # Oldest first: 300d, 100d, 50d, 10d ago.
+    assert titles[0].startswith("Oldest mine")
+    assert titles[1].startswith("Middle mine")
+    assert titles[2].startswith("No host email")
+    assert titles[3].startswith("Newest mine")
+    # Headline count reflects the filtered list (4, not 6).
+    assert "4 meetings" in doc.text()
+
+
+def test_get_purge_skips_filter_when_user_email_unresolved(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Pre-Phase-6 configs have ``[fireflies] user_email`` unset; we must
+    not silently hide rows in that case — fall back to listing every
+    selected meeting (still sorted)."""
+    assert configured_app.state.deps.config.fireflies.user_email is None
+    _seed_meetings(configured_app, _mixed_host_meetings())
+    sid = _sid(configured_client)
+    _set_wizard(
+        configured_app,
+        sid,
+        step="purge",
+        selected=["m_new_self", "m_old_other", "m_old_self"],
+    )
+
+    r = configured_client.get("/cleanup/purge")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    items = doc.css(".purge-meeting-list li")
+    assert len(items) == 3
+    titles = [li.text(deep=True).strip() for li in items]
+    # All three retained, sorted oldest first: 300d, 200d, 10d ago.
+    assert titles[0].startswith("Oldest mine")
+    assert titles[1].startswith("Old someone else")
+    assert titles[2].startswith("Newest mine")
+
+
+def test_post_mark_deleted_skips_non_host_rows_from_count(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Non-host rows must not inflate the ``skipped`` count on the summary
+    page — they were never displayed to the user, so reporting them as
+    skipped would be confusing. The summary counts only what was on the
+    handoff list."""
+    configured_app.state.deps.config.fireflies.user_email = "oskar@example.com"
+    _seed_meetings(configured_app, _mixed_host_meetings())
+    manifest = configured_app.state.deps.manifest
+    # Two host rows were archived locally; the non-host row was auto-marked
+    # DELETED at archive time (simulated here by walking the manifest).
+    _walk_to_archived(manifest, "m_old_self")
+    _walk_to_archived(manifest, "m_new_self")
+    _walk_to_archived(manifest, "m_old_other")
+    manifest.transition("m_old_other", to=MeetingState.DELETED, at=NOW)
+
+    sid = _sid(configured_client)
+    _set_wizard(
+        configured_app,
+        sid,
+        step="purge",
+        selected=["m_old_self", "m_new_self", "m_old_other"],
+    )
+
+    r = configured_client.post(
+        "/cleanup/mark-deleted",
+        data={"_csrf": _csrf(configured_client)},
+    )
+    assert r.status_code == 200
+    text = r.text
+    # 2 host rows marked, 0 skipped — the non-host row is invisible to this
+    # endpoint, not counted as skipped. (skipped == 0 collapses the summary
+    # to a single-clause sentence; "skipped" should not appear at all.)
+    assert "2 meetings" in text
+    assert "marked as deleted in your local manifest" in text
+    assert "skipped" not in text.lower()
+    # The non-host row keeps its DELETED state from the auto-mark — we
+    # didn't touch it in this route.
+    assert manifest.get("m_old_self").state is MeetingState.DELETED
+    assert manifest.get("m_new_self").state is MeetingState.DELETED
+    assert manifest.get("m_old_other").state is MeetingState.DELETED
