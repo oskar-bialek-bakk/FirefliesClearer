@@ -86,7 +86,7 @@ These don't block v2 release; flagged for v2.x maintenance work.
 
 ## Safety invariants (non-negotiable)
 
-1. Never delete a Fireflies meeting unless its archive is verified on disk (file existence + non-zero + checksum recorded).
+1. Never delete a Fireflies meeting via the API/agent path unless its archive is verified on disk (file existence + non-zero + checksum recorded). This applies to `Pipeline.run`, the API-purge trickle scheduler, and any agent-initiated mutation. **Exception:** the user-initiated trash flow (cleanup wizard Step 3a typed-count gate) is an explicit override — the user is taking responsibility for skipping the backup; non-host trash rows still auto-mark with reason `non_host_no_api_delete` because no API call is possible.
 2. Per-meeting transactional: one failure never aborts the run, only that meeting.
 3. API key is redacted in all logs.
 4. `run` defaults to dry-run; `--apply` required for mutations.
