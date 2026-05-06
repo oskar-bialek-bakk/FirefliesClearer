@@ -54,15 +54,27 @@
     <details class="purge-meeting-list-collapse">
       <summary>Show {{ count }} meeting titles</summary>
       <ol class="purge-meeting-list">
-        {% for m in meetings %}
-          <li>{{ m.title }} <span class="meeting-date">{{ m.meeting_date.date().isoformat() }}</span></li>
+        {% for m, kind in rows %}
+          <li>
+            {{ m.title }}
+            <span class="meeting-date">{{ m.meeting_date.date().isoformat() }}</span>
+            {% if kind == "trash" %}
+              <span class="badge-no-archive" title="Deleted without local archive">no archive</span>
+            {% endif %}
+          </li>
         {% endfor %}
       </ol>
     </details>
   {% else %}
     <ol class="purge-meeting-list">
-      {% for m in meetings %}
-        <li>{{ m.title }} <span class="meeting-date">{{ m.meeting_date.date().isoformat() }}</span></li>
+      {% for m, kind in rows %}
+        <li>
+          {{ m.title }}
+          <span class="meeting-date">{{ m.meeting_date.date().isoformat() }}</span>
+          {% if kind == "trash" %}
+            <span class="badge-no-archive" title="Deleted without local archive">no archive</span>
+          {% endif %}
+        </li>
       {% endfor %}
     </ol>
   {% endif %}

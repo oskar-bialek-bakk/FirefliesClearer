@@ -1012,3 +1012,60 @@ def test_post_mark_deleted_skips_non_host_rows_from_count(
     assert manifest.get("m_old_self").state is MeetingState.DELETED
     assert manifest.get("m_new_self").state is MeetingState.DELETED
     assert manifest.get("m_old_other").state is MeetingState.DELETED
+
+
+def test_step4_preflight_combines_archive_and_host_trash_with_badge(
+    configured_client: TestClient, configured_app
+) -> None:
+    configured_app.state.deps.config.fireflies.user_email = "oskar@example.com"
+    meetings = [
+        Meeting(
+            meeting_id="m_arch",
+            title="Archived design review",
+            meeting_date=NOW - timedelta(days=200),
+            duration_minutes=60.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+        Meeting(
+            meeting_id="m_trash",
+            title="Trash standup",
+            meeting_date=NOW - timedelta(days=10),
+            duration_minutes=15.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+    ]
+    _seed_meetings(configured_app, meetings)
+    manifest = configured_app.state.deps.manifest
+    _walk_to_archived(manifest, "m_arch")
+    # m_trash stays in KNOWN — it'll transition at Step 4 mark-deleted (Task 12).
+
+    sid = _sid(configured_client)
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="purge",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m_arch", "m_trash"],
+            operation_id=None,
+            trash_ids=["m_trash"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    r = configured_client.get("/cleanup/purge")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    items = doc.css(".purge-meeting-list li")
+    assert len(items) == 2
+    titles = [li.text(deep=True).strip() for li in items]
+    # Sorted oldest first: m_arch (-200d) then m_trash (-10d).
+    assert titles[0].startswith("Archived design review")
+    assert titles[1].startswith("Trash standup")
+    # Trash row has the no-archive badge.
+    badge = items[1].css_first(".badge-no-archive")
+    assert badge is not None
+    # Archive row does NOT have the badge.
+    assert items[0].css_first(".badge-no-archive") is None

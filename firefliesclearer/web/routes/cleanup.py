@@ -1637,27 +1637,50 @@ async def step4_preflight(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
-    """Render the purge preflight: count + numbered list + typed-count gate."""
+    """Render the Step 4 handoff: combined archive successes + host trash rows.
+
+    Splits ``selected_ids`` into:
+      * archive set (``selected_ids - trash_ids``) — meetings that have an
+        archive on disk; transition ARCHIVED|DELETED_FAILED -> DELETED at
+        mark-deleted.
+      * trash set (``trash_ids``) — meetings that bypassed archive;
+        transition KNOWN -> DELETED at mark-deleted.
+
+    Both subsets pass through ``_meetings_for_step4`` for the non-host
+    filter (PR #22 — non-host trash already auto-marked at Step 3a; non-host
+    archive auto-marked at Pipeline._archive). The combined list is sorted
+    oldest-first across both kinds, and trash rows render with a small
+    ``no archive`` badge in the template.
+    """
     state = wizard_session.get_state(_store(request), _sid(request))
     selected_ids = list(state.get("selected_ids") or [])
     if not selected_ids:
         return _redirect("/cleanup/archive/done")
 
-    meetings = await _selected_meetings(deps, selected_ids)
-    if not meetings:
-        # All previously-selected meetings have vanished (e.g. deleted directly
-        # in Fireflies between the archive step and now).  Bounce back to review
-        # so the user can re-filter rather than being shown a "0 meetings" purge
-        # confirmation that would be a no-op.
+    trash_ids = set(state.get("trash_ids") or [])
+    archive_ids = [mid for mid in selected_ids if mid not in trash_ids]
+    archive_meetings = await _selected_meetings(deps, archive_ids)
+    trash_meetings = await _selected_meetings(deps, sorted(trash_ids))
+    if not archive_meetings and not trash_meetings:
         return _redirect("/cleanup/review?error=empty-selection")
-    meetings = _meetings_for_step4(meetings, deps.config.fireflies.user_email)
+
+    user_email = deps.config.fireflies.user_email
+    archive_meetings = _meetings_for_step4(archive_meetings, user_email)
+    trash_meetings = _meetings_for_step4(trash_meetings, user_email)
+
+    # Combined list with kind discriminator. Sort oldest-first across both.
+    rows: list[tuple[Meeting, str]] = [(m, "archive") for m in archive_meetings] + [
+        (m, "trash") for m in trash_meetings
+    ]
+    rows.sort(key=lambda pair: pair[0].meeting_date)
+
     return _templates(request).TemplateResponse(
         request,
         "cleanup/step4_purge_preflight.html",
         {
             "step": "purge",
-            "count": len(meetings),
-            "meetings": meetings,
+            "count": len(rows),
+            "rows": rows,
             "error": None,
         },
     )
@@ -1685,6 +1708,10 @@ async def step4_start(
         # and now.  Bounce back to review rather than launching a no-op purge.
         return _redirect("/cleanup/review?error=empty-selection")
     count = len(meetings)
+    # Build rows for template re-renders (error paths). No trash splitting
+    # needed here — step4_start is the legacy API-purge path which doesn't
+    # differentiate archive vs trash rows. Treat all as "archive" kind.
+    rows: list[tuple[Meeting, str]] = [(m, "archive") for m in meetings]
 
     form = await request.form()
     confirmed_raw = form.get("confirmed_count")
@@ -1696,7 +1723,7 @@ async def step4_start(
             {
                 "step": "purge",
                 "count": count,
-                "meetings": meetings,
+                "rows": rows,
                 "error": "Type the count to confirm.",
             },
             status_code=422,
@@ -1716,7 +1743,7 @@ async def step4_start(
             {
                 "step": "purge",
                 "count": count,
-                "meetings": meetings,
+                "rows": rows,
                 "error": "Another purge operation is already running. Wait for it to complete.",
             },
             status_code=409,
