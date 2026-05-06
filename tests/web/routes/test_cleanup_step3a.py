@@ -125,3 +125,140 @@ def test_get_trash_confirm_renders_count_in_summary(
     assert r.status_code == 200
     text = HTMLParser(r.text).text()
     assert "3 meeting" in text
+
+
+def test_post_trash_confirm_typed_count_mismatch_returns_422(
+    configured_client: TestClient, configured_app
+) -> None:
+    meetings = [
+        Meeting(
+            meeting_id=f"m{i}",
+            title=f"Standup {i}",
+            meeting_date=NOW - timedelta(days=10 + i),
+            duration_minutes=15.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        )
+        for i in range(3)
+    ]
+    _seed(configured_app, meetings)
+    sid = configured_client.cookies.get("ffc_session", "")
+    _wizard(configured_app, sid, selected=["m0", "m1", "m2"], trash=["m0", "m1", "m2"])
+    r = configured_client.post(
+        "/cleanup/trash-confirm",
+        data={
+            "_csrf": configured_client.cookies.get("ffc_csrf", ""),
+            "confirmed_count": "2",  # wrong (should be 3)
+            "trash_keep": ["m0", "m1", "m2"],
+        },
+    )
+    assert r.status_code == 422
+    # State unchanged.
+    state = configured_app.state.session_store.get(sid).get("wizard", {})
+    assert sorted(state.get("trash_ids", [])) == ["m0", "m1", "m2"]
+
+
+def test_post_trash_confirm_demotes_unchecked_rows_to_archive(
+    configured_client: TestClient, configured_app
+) -> None:
+    meetings = [
+        Meeting(
+            meeting_id="m_keep",
+            title="Standup keep",
+            meeting_date=NOW - timedelta(days=10),
+            duration_minutes=15.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+        Meeting(
+            meeting_id="m_demote",
+            title="Standup demote",
+            meeting_date=NOW - timedelta(days=20),
+            duration_minutes=15.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+    ]
+    _seed(configured_app, meetings)
+    sid = configured_client.cookies.get("ffc_session", "")
+    _wizard(configured_app, sid, selected=["m_keep", "m_demote"], trash=["m_keep", "m_demote"])
+    r = configured_client.post(
+        "/cleanup/trash-confirm",
+        data={
+            "_csrf": configured_client.cookies.get("ffc_csrf", ""),
+            "confirmed_count": "1",  # only m_keep stays trash
+            "trash_keep": ["m_keep"],
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/archive"
+    state = configured_app.state.session_store.get(sid).get("wizard", {})
+    assert state.get("trash_ids") == ["m_keep"]
+    # m_demote is still selected (will be archived).
+    assert sorted(state.get("selected_ids", [])) == ["m_demote", "m_keep"]
+
+
+def test_post_trash_confirm_auto_marks_non_host_rows_deleted(
+    configured_client: TestClient, configured_app
+) -> None:
+    from firefliesclearer.core.models import MeetingState
+
+    configured_app.state.deps.config.fireflies.user_email = "oskar@example.com"
+    meetings = [
+        Meeting(
+            meeting_id="m_host",
+            title="My standup",
+            meeting_date=NOW - timedelta(days=10),
+            duration_minutes=15.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+        Meeting(
+            meeting_id="m_other",
+            title="Their standup",
+            meeting_date=NOW - timedelta(days=10),
+            duration_minutes=15.0,
+            host_email="other@example.com",
+            participant_count=4,
+        ),
+    ]
+    _seed(configured_app, meetings)
+    sid = configured_client.cookies.get("ffc_session", "")
+    _wizard(configured_app, sid, selected=["m_host", "m_other"], trash=["m_host", "m_other"])
+    configured_client.post(
+        "/cleanup/trash-confirm",
+        data={
+            "_csrf": configured_client.cookies.get("ffc_csrf", ""),
+            "confirmed_count": "2",
+            "trash_keep": ["m_host", "m_other"],
+        },
+        follow_redirects=False,
+    )
+    manifest = configured_app.state.deps.manifest
+    # Non-host trash auto-transitioned to DELETED with the existing reason.
+    rec_other = manifest.get("m_other")
+    assert rec_other is not None and rec_other.state is MeetingState.DELETED
+    last = manifest.state_log("m_other")[-1]
+    assert last.from_state is MeetingState.KNOWN
+    assert last.to_state is MeetingState.DELETED
+    assert last.details == {"reason": "non_host_no_api_delete"}
+    # Host trash stays in KNOWN, stays in trash_ids.
+    rec_host = manifest.get("m_host")
+    assert rec_host is not None and rec_host.state is MeetingState.KNOWN
+    state = configured_app.state.session_store.get(sid).get("wizard", {})
+    assert state.get("trash_ids") == ["m_host"]
+
+
+def test_post_trash_confirm_redirects_to_archive_when_no_trash_ids(
+    configured_client: TestClient, configured_app
+) -> None:
+    sid = configured_client.cookies.get("ffc_session", "")
+    _wizard(configured_app, sid, selected=["m1"], trash=[])
+    r = configured_client.post(
+        "/cleanup/trash-confirm",
+        data={"_csrf": configured_client.cookies.get("ffc_csrf", "")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/archive"

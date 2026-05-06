@@ -1417,6 +1417,95 @@ async def step3a_preflight(
     )
 
 
+@router.post("/cleanup/trash-confirm")
+async def step3a_confirm(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Trash confirmation submit.
+
+    Expected form:
+      - ``confirmed_count``: must equal len(post-demote trash_ids).
+      - ``trash_keep``: zero or more checked ids; unchecked ids are demoted
+        back to the archive set.
+
+    Behaviour:
+      1. Demote unchecked rows out of ``trash_ids`` (they remain in
+         ``selected_ids`` and will go through Step 3b).
+      2. Validate typed-count: 422 + re-render preflight on mismatch.
+      3. For non-host rows in the kept-trash set, transition KNOWN -> DELETED
+         with reason ``non_host_no_api_delete`` and remove from ``trash_ids``.
+      4. Redirect to /cleanup/archive (Step 3b will further redirect to
+         Step 4 if archive_ids is empty).
+    """
+    state = wizard_session.get_state(_store(request), _sid(request))
+    trash_ids = list(state.get("trash_ids", []) or [])
+    if not trash_ids:
+        return _redirect("/cleanup/archive")
+
+    form = await request.form()
+    keep_ids_raw = form.getlist("trash_keep") if hasattr(form, "getlist") else []
+    keep_ids = [str(x) for x in keep_ids_raw]
+    keep_set = {mid for mid in keep_ids if mid in set(trash_ids)}
+    demote_ids = [mid for mid in trash_ids if mid not in keep_set]
+
+    # 1. Demote unchecked rows.
+    if demote_ids:
+        wizard_session.demote_from_trash(_store(request), _sid(request), demote_ids)
+
+    # 2. Validate typed-count against the kept set.
+    expected_count = len(keep_set)
+    confirmed_raw = form.get("confirmed_count")
+    confirmed = str(confirmed_raw).strip() if confirmed_raw is not None else ""
+    if confirmed != str(expected_count):
+        # Re-render preflight with banner + 422. Note: the demote already
+        # happened; the typed-count failure means the user must retype with
+        # the new count. (Demote is idempotent, so a retry that demotes the
+        # same set again is a no-op.)
+        meetings = await _selected_meetings(deps, sorted(keep_set))
+        meetings = sorted(meetings, key=lambda m: m.meeting_date)
+        return _templates(request).TemplateResponse(
+            request,
+            "cleanup/step3a_trash_confirm.html",
+            {
+                "step": "trash",
+                "count": len(meetings),
+                "meetings": meetings,
+                "error": "Type the count to confirm.",
+            },
+            status_code=422,
+        )
+
+    # 3. Auto-mark non-host trash as DELETED.
+    user_email = deps.config.fireflies.user_email
+    if user_email and keep_set:
+        ue_lc = user_email.lower()
+        kept_meetings = await _selected_meetings(deps, sorted(keep_set))
+        non_host_ids = [
+            m.meeting_id for m in kept_meetings if m.host_email and m.host_email.lower() != ue_lc
+        ]
+        now = deps.clock.now()
+        for mid in non_host_ids:
+            try:
+                deps.manifest.transition(
+                    mid,
+                    to=MeetingState.DELETED,
+                    at=now,
+                    details={"reason": "non_host_no_api_delete"},
+                )
+            except IllegalStateTransition:
+                logger.warning(
+                    "step3a_confirm: non-host auto-mark skipped for %s (state changed mid-run)",
+                    mid,
+                )
+                continue
+        if non_host_ids:
+            wizard_session.remove_from_trash(_store(request), _sid(request), non_host_ids)
+
+    # 4. Redirect to Step 3b. (3b will redirect to Step 4 if archive_ids empty.)
+    return _redirect("/cleanup/archive")
+
+
 # ---------------------------------------------------------------------------
 # Step 4 — Purge (Task 5.5)
 # ---------------------------------------------------------------------------
