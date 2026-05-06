@@ -253,3 +253,103 @@ def test_toggle_in_selection_removes_when_present_and_returns_false():
     added = wizard_session.toggle_in_selection(store, "sid", "a")
     assert added is False
     assert wizard_session.get_state(store, "sid")["selected_ids"] == ["b"]
+
+
+# ---------------------------------------------------------------------------
+# Trash classification helpers (Task 2 — Trash flow)
+# ---------------------------------------------------------------------------
+
+
+def test_trash_ids_roundtrip():
+    store = SessionStore()
+    wizard_session.set_state(
+        store,
+        "sid",
+        wizard_session.WizardState(
+            step="review",
+            filters={},
+            selected_ids=["a", "b", "c"],
+            operation_id=None,
+            trash_ids=["b", "c"],
+        ),
+    )
+    state = wizard_session.get_state(store, "sid")
+    assert state.get("trash_ids") == ["b", "c"]
+
+
+def test_set_trash_ids_enforces_subset_invariant():
+    store = SessionStore()
+    wizard_session.set_state(
+        store,
+        "sid",
+        wizard_session.WizardState(
+            step="review",
+            filters={},
+            selected_ids=["a", "b"],
+            operation_id=None,
+            trash_ids=[],
+        ),
+    )
+    # b is selected, c is not — c must be silently dropped.
+    wizard_session.set_trash_ids(store, "sid", ["b", "c"])
+    assert wizard_session.get_state(store, "sid").get("trash_ids") == ["b"]
+
+
+def test_remove_from_selection_also_clears_trash():
+    store = SessionStore()
+    wizard_session.set_state(
+        store,
+        "sid",
+        wizard_session.WizardState(
+            step="review",
+            filters={},
+            selected_ids=["a", "b", "c"],
+            operation_id=None,
+            trash_ids=["a", "b"],
+        ),
+    )
+    wizard_session.remove_from_selection(store, "sid", ["a"])
+    state = wizard_session.get_state(store, "sid")
+    assert state.get("selected_ids") == ["b", "c"]
+    assert state.get("trash_ids") == ["b"]
+
+
+def test_demote_from_trash_moves_id_out():
+    store = SessionStore()
+    wizard_session.set_state(
+        store,
+        "sid",
+        wizard_session.WizardState(
+            step="review",
+            filters={},
+            selected_ids=["a", "b", "c"],
+            operation_id=None,
+            trash_ids=["a", "b"],
+        ),
+    )
+    wizard_session.demote_from_trash(store, "sid", ["a"])
+    state = wizard_session.get_state(store, "sid")
+    # a is back in archive set (still selected, no longer trash). b stays trash.
+    assert state.get("selected_ids") == ["a", "b", "c"]
+    assert state.get("trash_ids") == ["b"]
+
+
+def test_toggle_in_trash_adds_then_removes():
+    store = SessionStore()
+    wizard_session.set_state(
+        store,
+        "sid",
+        wizard_session.WizardState(
+            step="review",
+            filters={},
+            selected_ids=["a", "b"],
+            operation_id=None,
+            trash_ids=[],
+        ),
+    )
+    added = wizard_session.toggle_in_trash(store, "sid", "a")
+    assert added is True
+    assert wizard_session.get_state(store, "sid").get("trash_ids") == ["a"]
+    removed = wizard_session.toggle_in_trash(store, "sid", "a")
+    assert removed is False
+    assert wizard_session.get_state(store, "sid").get("trash_ids") == []

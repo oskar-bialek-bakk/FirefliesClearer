@@ -36,6 +36,16 @@ class WizardState(TypedDict, total=False):
     filters: dict[str, Any]
     selected_ids: list[str]
     operation_id: str | None
+    # Trash flow (Step 2 -> 3a -> 4):
+    # ``trash_ids`` is the subset of ``selected_ids`` the user has classified
+    # as trash (no archive). Invariant: set(trash_ids) <= set(selected_ids).
+    # ``trash_classifier_preset`` is the optional preset name used to
+    # auto-fill the per-row Archive toggle. ``trash_candidate_ids`` is the
+    # cached set of ids matching that classifier against the current scan
+    # result, computed at Step 1 submit and consulted by toggle handlers.
+    trash_ids: list[str]
+    trash_classifier_preset: str | None
+    trash_candidate_ids: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +80,8 @@ def get_selected(store: SessionStore, sid: str) -> set[str]:
 
 
 def replace_selection(store: SessionStore, sid: str, ids: list[str]) -> None:
-    """Replace the ``selected_ids`` slice while preserving the rest of the wizard state.
+    """Replace ``selected_ids`` and prune ``trash_ids`` to maintain the
+    ``trash_ids <= selected_ids`` invariant.
 
     The read-modify-write happens under the SessionStore's internal lock via
     :meth:`SessionStore.update`, which guarantees consistency for the write
@@ -78,11 +89,16 @@ def replace_selection(store: SessionStore, sid: str, ids: list[str]) -> None:
     requests for the same session — a single driving tab is assumed.
     """
     state = get_state(store, sid)
+    new_selected = set(ids)
+    pruned_trash = [mid for mid in (state.get("trash_ids", []) or []) if mid in new_selected]
     new_state = WizardState(
         step=state.get("step", "review"),
         filters=state.get("filters", {}),
         selected_ids=list(ids),
         operation_id=state.get("operation_id"),
+        trash_ids=pruned_trash,
+        trash_classifier_preset=state.get("trash_classifier_preset"),
+        trash_candidate_ids=list(state.get("trash_candidate_ids", []) or []),
     )
     set_state(store, sid, new_state)
 
@@ -138,6 +154,74 @@ def toggle_in_selection(store: SessionStore, sid: str, mid: str) -> bool:
     current.append(mid)
     replace_selection(store, sid, current)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Trash classification helpers (Step 2 / 3a)
+# ---------------------------------------------------------------------------
+
+
+def get_trash_ids(store: SessionStore, sid: str) -> set[str]:
+    """Return the current ``trash_ids`` slice as a set."""
+    state = get_state(store, sid)
+    return set(state.get("trash_ids", []) or [])
+
+
+def set_trash_ids(store: SessionStore, sid: str, ids: list[str]) -> None:
+    """Replace ``trash_ids`` while enforcing ``trash_ids <= selected_ids``.
+
+    Ids not in the current selection are silently dropped (the only legal
+    transition is "selected and classified" — classifying an unselected row
+    is a no-op).
+    """
+    state = get_state(store, sid)
+    selected = set(state.get("selected_ids", []) or [])
+    new_state = WizardState(
+        step=state.get("step", "review"),
+        filters=state.get("filters", {}),
+        selected_ids=list(state.get("selected_ids", []) or []),
+        operation_id=state.get("operation_id"),
+        trash_ids=[mid for mid in ids if mid in selected],
+        trash_classifier_preset=state.get("trash_classifier_preset"),
+        trash_candidate_ids=list(state.get("trash_candidate_ids", []) or []),
+    )
+    set_state(store, sid, new_state)
+
+
+def add_to_trash(store: SessionStore, sid: str, ids: list[str]) -> None:
+    """Add ids to ``trash_ids`` (must already be in ``selected_ids``)."""
+    current = list(get_state(store, sid).get("trash_ids", []) or [])
+    seen = set(current)
+    for mid in ids:
+        if mid not in seen:
+            current.append(mid)
+            seen.add(mid)
+    set_trash_ids(store, sid, current)
+
+
+def remove_from_trash(store: SessionStore, sid: str, ids: list[str]) -> None:
+    """Drop ids from ``trash_ids`` (does not affect ``selected_ids``)."""
+    excl = set(ids)
+    current = [mid for mid in (get_state(store, sid).get("trash_ids", []) or []) if mid not in excl]
+    set_trash_ids(store, sid, current)
+
+
+def toggle_in_trash(store: SessionStore, sid: str, mid: str) -> bool:
+    """Toggle ``mid`` in ``trash_ids``. Returns True if added, False if removed."""
+    current = get_trash_ids(store, sid)
+    if mid in current:
+        remove_from_trash(store, sid, [mid])
+        return False
+    add_to_trash(store, sid, [mid])
+    return True
+
+
+def demote_from_trash(store: SessionStore, sid: str, ids: list[str]) -> None:
+    """Step 3a demote: move ids out of trash; they remain in ``selected_ids``.
+
+    Equivalent to :func:`remove_from_trash` — wrapped for call-site clarity.
+    """
+    remove_from_trash(store, sid, ids)
 
 
 # ---------------------------------------------------------------------------
