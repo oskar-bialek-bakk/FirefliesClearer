@@ -108,3 +108,155 @@ def test_review_render_with_no_trash_preset_leaves_candidates_empty(configured_a
     state = configured_app.state.session_store.get(sid).get("wizard", {})
     # No trash preset → candidates stay empty.
     assert state.get("trash_candidate_ids", []) == []
+
+
+def test_review_row_renders_archive_toggle_unchecked_for_trash_id(
+    configured_app,
+) -> None:
+    _seed_meetings(configured_app)
+    _seed_trash_preset(configured_app)
+    with TestClient(configured_app) as c:
+        c.get("/?token=T")
+        sid = c.cookies.get("ffc_session", "")
+        _set_wizard_with_trash_preset(configured_app, sid)
+        # Pre-select both rows so the Archive toggle is meaningful.
+        from firefliesclearer.web.wizard_session import (
+            add_to_trash,
+            replace_selection,
+        )
+
+        replace_selection(configured_app.state.session_store, sid, ["m_standup", "m_design"])
+        # m_standup matched the trash preset; we manually mirror what the
+        # auto-classification on per-row select will do (added in this task).
+        add_to_trash(configured_app.state.session_store, sid, ["m_standup"])
+        r = c.get("/cleanup/review")
+    from selectolax.parser import HTMLParser
+
+    doc = HTMLParser(r.text)
+    standup_row = doc.css_first("tr[data-meeting-id='m_standup']")
+    design_row = doc.css_first("tr[data-meeting-id='m_design']")
+    assert standup_row is not None and design_row is not None
+    standup_archive = standup_row.css_first("input[name='archive']")
+    design_archive = design_row.css_first("input[name='archive']")
+    assert standup_archive is not None and design_archive is not None
+    # m_standup is in trash_ids -> Archive UNCHECKED.
+    assert standup_archive.attributes.get("checked") is None
+    # m_design is selected, not in trash_ids -> Archive CHECKED.
+    assert design_archive.attributes.get("checked") is not None
+
+
+def test_post_archive_toggle_flips_trash_membership(configured_app) -> None:
+    _seed_meetings(configured_app)
+    with TestClient(configured_app) as c:
+        c.get("/?token=T")
+        sid = c.cookies.get("ffc_session", "")
+        set_state(
+            configured_app.state.session_store,
+            sid,
+            WizardState(
+                step="review",
+                filters=filters_to_dict(ScanFilters(older_than_days=30)),
+                selected_ids=["m_design"],
+                operation_id=None,
+                trash_ids=[],
+                trash_classifier_preset=None,
+                trash_candidate_ids=[],
+            ),
+        )
+        r = c.post(
+            "/cleanup/review/archive-toggle/m_design",
+            data={
+                "_csrf": c.cookies.get("ffc_csrf", ""),
+                "page": "1",
+                "sort": "date",
+                "dir": "desc",
+            },
+        )
+    assert r.status_code == 200
+    state = configured_app.state.session_store.get(sid).get("wizard", {})
+    assert state.get("trash_ids") == ["m_design"]
+
+
+def test_post_archive_toggle_unselected_row_is_noop(configured_app) -> None:
+    _seed_meetings(configured_app)
+    with TestClient(configured_app) as c:
+        c.get("/?token=T")
+        sid = c.cookies.get("ffc_session", "")
+        set_state(
+            configured_app.state.session_store,
+            sid,
+            WizardState(
+                step="review",
+                filters=filters_to_dict(ScanFilters(older_than_days=30)),
+                selected_ids=[],
+                operation_id=None,
+                trash_ids=[],
+                trash_classifier_preset=None,
+                trash_candidate_ids=[],
+            ),
+        )
+        c.post(
+            "/cleanup/review/archive-toggle/m_design",
+            data={
+                "_csrf": c.cookies.get("ffc_csrf", ""),
+                "page": "1",
+                "sort": "date",
+                "dir": "desc",
+            },
+        )
+    state = configured_app.state.session_store.get(sid).get("wizard", {})
+    # The subset invariant in set_trash_ids drops un-selected ids.
+    assert state.get("trash_ids") == []
+
+
+def test_review_toggle_auto_classifies_new_selection_against_candidates(
+    configured_app,
+) -> None:
+    """When the user clicks the select checkbox on a row in the candidate
+    set, it should also land in trash_ids (so the Archive toggle renders
+    unchecked on the next render)."""
+    _seed_meetings(configured_app)
+    _seed_trash_preset(configured_app)
+    with TestClient(configured_app) as c:
+        c.get("/?token=T")
+        sid = c.cookies.get("ffc_session", "")
+        _set_wizard_with_trash_preset(configured_app, sid)
+        # Render Step 2 once so trash_candidate_ids gets populated.
+        c.get("/cleanup/review")
+        # User selects the standup row.
+        c.post(
+            "/cleanup/review/toggle/m_standup",
+            data={
+                "_csrf": c.cookies.get("ffc_csrf", ""),
+                "page": "1",
+                "sort": "date",
+                "dir": "desc",
+            },
+        )
+    state = configured_app.state.session_store.get(sid).get("wizard", {})
+    assert state.get("selected_ids") == ["m_standup"]
+    assert state.get("trash_ids") == ["m_standup"]
+
+
+def test_review_select_all_auto_classifies_candidates(configured_app) -> None:
+    _seed_meetings(configured_app)
+    _seed_trash_preset(configured_app)
+    with TestClient(configured_app) as c:
+        c.get("/?token=T")
+        sid = c.cookies.get("ffc_session", "")
+        _set_wizard_with_trash_preset(configured_app, sid)
+        c.get("/cleanup/review")  # populate candidates
+        c.post(
+            "/cleanup/review/select-all",
+            data={
+                "_csrf": c.cookies.get("ffc_csrf", ""),
+                "page": "1",
+                "sort": "date",
+                "dir": "desc",
+                "all": "true",
+            },
+        )
+    state = configured_app.state.session_store.get(sid).get("wizard", {})
+    # Both meetings selected; only the standup is in trash_ids (the candidate set).
+    assert sorted(state.get("selected_ids", [])) == ["m_design", "m_standup"]
+    assert state.get("trash_ids") == ["m_standup"]

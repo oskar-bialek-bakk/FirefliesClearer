@@ -475,6 +475,7 @@ def _review_context(
     page: int,
     pages: int,
     selected_ids: set[str],
+    trash_ids: set[str],
     error: str | None = None,
     sort: str = DEFAULT_SORT,
     direction: str = DEFAULT_DIR,
@@ -490,6 +491,7 @@ def _review_context(
         "pages": pages,
         "page_size": PAGE_SIZE,
         "selected_ids": selected_ids,
+        "trash_ids": trash_ids,
         "selected_count": len(selected_ids),
         "selected_on_page": selected_on_page,
         "step": "review",
@@ -572,6 +574,7 @@ async def step2_review(
         page=page,
         pages=pages,
         selected_ids=selected_ids,
+        trash_ids=wizard_session.get_trash_ids(_store(request), _sid(request)),
         error=inline_error,
         sort=sort,
         direction=direction,
@@ -609,7 +612,42 @@ async def review_toggle(
     sort = _normalize_sort(form.get("sort"))
     direction = _normalize_dir(form.get("dir"))
 
-    wizard_session.toggle_in_selection(_store(request), _sid(request), meeting_id)
+    added = wizard_session.toggle_in_selection(_store(request), _sid(request), meeting_id)
+    if added:
+        candidates = set(
+            wizard_session.get_state(_store(request), _sid(request)).get("trash_candidate_ids", [])
+            or []
+        )
+        if meeting_id in candidates:
+            wizard_session.add_to_trash(_store(request), _sid(request), [meeting_id])
+    return await _render_table_fragment(
+        request, deps, filters, page=page, sort=sort, direction=direction
+    )
+
+
+@router.post("/cleanup/review/archive-toggle/{meeting_id}")
+async def review_archive_toggle(
+    request: Request,
+    meeting_id: str,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Toggle a meeting's trash-classification (Archive checkbox).
+
+    Only effective when the meeting is in ``selected_ids`` — otherwise a
+    silent no-op (``set_trash_ids`` enforces ``trash_ids ⊆ selected_ids``).
+    Returns the same table fragment as the per-row select toggle so the
+    HTMX swap renders consistently.
+    """
+    filters = _filters_from_session(request)
+    if filters is None:
+        return _redirect("/cleanup")
+
+    form = await request.form()
+    page = _safe_page(form.get("page"))
+    sort = _normalize_sort(form.get("sort"))
+    direction = _normalize_dir(form.get("dir"))
+
+    wizard_session.toggle_in_trash(_store(request), _sid(request), meeting_id)
     return await _render_table_fragment(
         request, deps, filters, page=page, sort=sort, direction=direction
     )
@@ -638,6 +676,7 @@ async def review_select_all(
     if use_all:
         ids = [m.meeting.meeting_id for m in sorted_matches]
         wizard_session.replace_selection(_store(request), _sid(request), ids)
+        newly_selected_ids = ids
     else:
         page_matches, _total, _pages = _page_slice(sorted_matches, page)
         wizard_session.add_to_selection(
@@ -645,6 +684,15 @@ async def review_select_all(
             _sid(request),
             [m.meeting.meeting_id for m in page_matches],
         )
+        newly_selected_ids = [m.meeting.meeting_id for m in page_matches]
+
+    candidates = set(
+        wizard_session.get_state(_store(request), _sid(request)).get("trash_candidate_ids", [])
+        or []
+    )
+    auto_trash = [mid for mid in newly_selected_ids if mid in candidates]
+    if auto_trash:
+        wizard_session.add_to_trash(_store(request), _sid(request), auto_trash)
 
     return await _render_table_fragment(
         request, deps, filters, page=page, sort=sort, direction=direction
@@ -772,6 +820,7 @@ async def step2_submit(
             page=page,
             pages=pages,
             selected_ids=set(),
+            trash_ids=wizard_session.get_trash_ids(_store(request), _sid(request)),
             error="Please select at least one meeting before continuing.",
             sort=sort,
             direction=direction,
@@ -841,6 +890,7 @@ async def _render_table_fragment(
         page=page,
         pages=pages,
         selected_ids=selected_ids,
+        trash_ids=wizard_session.get_trash_ids(_store(request), _sid(request)),
         sort=sort,
         direction=direction,
     )
