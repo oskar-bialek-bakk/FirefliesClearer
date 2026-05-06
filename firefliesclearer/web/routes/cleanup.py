@@ -1217,13 +1217,23 @@ async def step3_preflight(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
-    """Render the archive preflight: count + size estimate + Start button."""
+    """Render the archive preflight: count + size estimate + Start button.
+
+    When all selected rows are classified as trash (``selected_ids -
+    trash_ids = ∅``), Step 3 is a no-op — short-circuit to Step 4 so the
+    user doesn't see a confusing "0 meetings to archive" page.
+    """
     state = wizard_session.get_state(_store(request), _sid(request))
     selected_ids = list(state.get("selected_ids") or [])
     if not selected_ids:
         return _redirect("/cleanup/review?error=empty-selection")
 
-    meetings = await _selected_meetings(deps, selected_ids)
+    trash_ids = set(state.get("trash_ids") or [])
+    archive_ids = [mid for mid in selected_ids if mid not in trash_ids]
+    if not archive_ids:
+        return _redirect("/cleanup/purge")
+
+    meetings = await _selected_meetings(deps, archive_ids)
     return _templates(request).TemplateResponse(
         request,
         "cleanup/step3_archive_preflight.html",
@@ -1247,7 +1257,12 @@ async def step3_start(
     if not selected_ids:
         return _redirect("/cleanup/review?error=empty-selection")
 
-    meetings = await _selected_meetings(deps, selected_ids)
+    trash_ids = set(state.get("trash_ids") or [])
+    archive_ids = [mid for mid in selected_ids if mid not in trash_ids]
+    if not archive_ids:
+        return _redirect("/cleanup/purge")
+
+    meetings = await _selected_meetings(deps, archive_ids)
     runner = _make_archive_runner(deps=deps, meetings=meetings)
     try:
         op = await _registry(request).start(

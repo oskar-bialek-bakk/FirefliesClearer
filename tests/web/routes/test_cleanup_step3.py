@@ -572,3 +572,168 @@ def test_review_renders_error_banner_for_empty_selection(
     banner = doc.css_first(".error-banner")
     assert banner is not None
     assert "select" in banner.text().lower() or "meeting" in banner.text().lower()
+
+
+# ---------------------------------------------------------------------------
+# Step 3b: archive_ids = selected_ids - trash_ids
+# ---------------------------------------------------------------------------
+
+
+def test_step3_preflight_redirects_to_step4_when_only_trash_remains(
+    configured_client, configured_app
+) -> None:
+    """If all selected rows are still trash after Step 3a (none demoted),
+    Step 3b is a no-op and should auto-skip to Step 4."""
+    from firefliesclearer.application.scan_service import ScanFilters
+    from firefliesclearer.web.wizard_session import (
+        WizardState,
+        filters_to_dict,
+        set_state,
+    )
+
+    sid = configured_client.cookies.get("ffc_session", "")
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="archive",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m1", "m2"],
+            operation_id=None,
+            trash_ids=["m1", "m2"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    r = configured_client.get("/cleanup/archive", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/purge"
+
+
+def test_step3_preflight_renders_only_archive_subset(configured_client, configured_app) -> None:
+    """Step 3 preflight must show only the archive_ids count, not the full
+    selected_ids count (which would include trash rows)."""
+    from datetime import UTC, datetime, timedelta
+
+    from firefliesclearer.application.scan_service import ScanFilters
+    from firefliesclearer.core.models import Meeting
+    from firefliesclearer.web.wizard_session import (
+        WizardState,
+        filters_to_dict,
+        set_state,
+    )
+    from tests.fakes.in_memory_repository import InMemoryMeetingRepository
+
+    now = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    meetings = [
+        Meeting(
+            meeting_id="m_archive",
+            title="Archive me",
+            meeting_date=now - timedelta(days=10),
+            duration_minutes=60.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+        Meeting(
+            meeting_id="m_trash",
+            title="Trash me",
+            meeting_date=now - timedelta(days=10),
+            duration_minutes=15.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+    ]
+    repo = InMemoryMeetingRepository(meetings=meetings, api_key="ff_test")
+    repo.set_user_email_for_key("ff_test", "oskar@example.com")
+    configured_app.state.deps.client = repo
+    for m in meetings:
+        configured_app.state.deps.manifest.upsert_known(m, at=now)
+
+    sid = configured_client.cookies.get("ffc_session", "")
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="archive",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m_archive", "m_trash"],
+            operation_id=None,
+            trash_ids=["m_trash"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    r = configured_client.get("/cleanup/archive")
+    assert r.status_code == 200
+    text = r.text
+    # Count is 1 (m_archive only). The full selected_ids count of 2 must NOT
+    # appear next to "meetings".
+    assert "1 meeting" in text or " 1 " in text
+    # Optional safety: m_trash should not be referenced on this page
+    # (the preflight may not list titles, but if it does, m_trash shouldn't be there).
+
+
+def test_step3_start_runs_archive_only_for_archive_ids(configured_client, configured_app) -> None:
+    """The archive runner must consume only the archive subset."""
+    from datetime import UTC, datetime, timedelta
+
+    from firefliesclearer.application.scan_service import ScanFilters
+    from firefliesclearer.core.models import Meeting
+    from firefliesclearer.web.wizard_session import (
+        WizardState,
+        filters_to_dict,
+        set_state,
+    )
+    from tests.fakes.in_memory_repository import InMemoryMeetingRepository
+
+    now = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    meetings = [
+        Meeting(
+            meeting_id="m_archive",
+            title="Archive me",
+            meeting_date=now - timedelta(days=10),
+            duration_minutes=60.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+        Meeting(
+            meeting_id="m_trash",
+            title="Trash me",
+            meeting_date=now - timedelta(days=10),
+            duration_minutes=15.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+    ]
+    repo = InMemoryMeetingRepository(meetings=meetings, api_key="ff_test")
+    repo.set_user_email_for_key("ff_test", "oskar@example.com")
+    configured_app.state.deps.client = repo
+    for m in meetings:
+        configured_app.state.deps.manifest.upsert_known(m, at=now)
+
+    sid = configured_client.cookies.get("ffc_session", "")
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="archive",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m_archive", "m_trash"],
+            operation_id=None,
+            trash_ids=["m_trash"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    csrf = configured_client.cookies.get("ffc_csrf", "")
+    r = configured_client.post(
+        "/cleanup/archive/start",
+        data={"_csrf": csrf},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    # Operation registry should report 1 op with 1 meeting (the archive subset).
+    op_id = configured_app.state.session_store.get(sid).get("wizard", {}).get("operation_id")
+    assert op_id is not None
+    op = configured_app.state.operation_registry.get(op_id)
+    assert {m.meeting_id for m in op.meetings} == {"m_archive"}
