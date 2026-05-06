@@ -262,3 +262,55 @@ def test_post_trash_confirm_redirects_to_archive_when_no_trash_ids(
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/cleanup/archive"
+
+
+def test_step3a_stepper_includes_trash_entry_when_trash_ids_present(
+    configured_client: TestClient, configured_app
+) -> None:
+    meetings = [
+        Meeting(
+            meeting_id="m1",
+            title="Standup",
+            meeting_date=NOW - timedelta(days=10),
+            duration_minutes=15.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        )
+    ]
+    _seed(configured_app, meetings)
+    sid = configured_client.cookies.get("ffc_session", "")
+    _wizard(configured_app, sid, selected=["m1"], trash=["m1"])
+    r = configured_client.get("/cleanup/trash-confirm")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    trash_step = doc.css_first("nav.wizard-stepper li[data-step='trash']")
+    assert trash_step is not None
+    # Should be marked active when current step is "trash".
+    assert "active" in (trash_step.attributes.get("class") or "")
+
+
+def test_step3a_stepper_omits_trash_entry_on_other_steps_without_trash(
+    configured_client: TestClient, configured_app
+) -> None:
+    """When trash_ids is empty (no classification), the 3a stepper entry
+    should not render — the wizard is a 4-step flow as before."""
+    sid = configured_client.cookies.get("ffc_session", "")
+    # Seed a wizard state for Step 1 (filter form).
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="filter",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=[],
+            operation_id=None,
+            trash_ids=[],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    r = configured_client.get("/cleanup")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    # No trash step.
+    assert doc.css_first("nav.wizard-stepper li[data-step='trash']") is None

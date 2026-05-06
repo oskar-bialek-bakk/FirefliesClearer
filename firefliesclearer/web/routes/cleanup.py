@@ -120,6 +120,18 @@ def _service(deps: SimpleNamespace) -> ScanService:
     return ScanService(repo=deps.scan_repo, clock=deps.clock)
 
 
+def _show_trash_step(request: Request) -> bool:
+    """Whether the Step 3a stepper entry should render for this request.
+
+    True iff the wizard session has a non-empty ``trash_ids`` slice. The
+    Step 3a page is conditional, so the stepper hides the entry when no
+    trash classification exists — keeping the visible flow at 4 steps for
+    users who never use the feature.
+    """
+    state = wizard_session.get_state(_store(request), _sid(request))
+    return bool(state.get("trash_ids"))
+
+
 def _validate_regex(filters: ScanFilters) -> str | None:
     """Eagerly validate ``title_regex`` so bad patterns surface inline.
 
@@ -181,6 +193,7 @@ async def step1_form(
             "loaded_trash_preset": loaded_trash_preset,
             "step": "filter",
             "error": preset_error,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -250,6 +263,7 @@ async def step1_submit(
                 "loaded_trash_preset": trash_classifier_preset,
                 "step": "filter",
                 "error": "Add at least one filter before continuing.",
+                "show_trash_step": _show_trash_step(request),
             },
             status_code=422,
         )
@@ -265,6 +279,7 @@ async def step1_submit(
                 "loaded_trash_preset": trash_classifier_preset,
                 "step": "filter",
                 "error": err,
+                "show_trash_step": _show_trash_step(request),
             },
             status_code=422,
         )
@@ -345,6 +360,7 @@ async def save_as_preset(
             "error": None,
             "save_preset_error": save_preset_error,
             "save_preset_success": save_preset_success,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -593,7 +609,11 @@ async def step2_review(
         toolbar_html = templates.get_template("cleanup/_review_toolbar.html").render(render_ctx)
         continue_html = templates.get_template("cleanup/_review_continue.html").render(render_ctx)
         return Response(table_html + toolbar_html + continue_html, media_type="text/html")
-    return _templates(request).TemplateResponse(request, "cleanup/step2_review.html", ctx)
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step2_review.html",
+        {**ctx, "show_trash_step": _show_trash_step(request)},
+    )
 
 
 @router.post("/cleanup/review/toggle/{meeting_id}")
@@ -872,7 +892,7 @@ async def step2_submit(
         return _templates(request).TemplateResponse(
             request,
             "cleanup/step2_review.html",
-            ctx,
+            {**ctx, "show_trash_step": _show_trash_step(request)},
             status_code=422,
         )
 
@@ -1242,6 +1262,7 @@ async def step3_preflight(
             "count": len(meetings),
             "size_mb": _estimate_size_mb(meetings),
             "error": None,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1280,6 +1301,7 @@ async def step3_start(
                 "count": len(meetings),
                 "size_mb": size_mb,
                 "error": ("Another archive operation is already running. Wait for it to complete."),
+                "show_trash_step": _show_trash_step(request),
             },
             status_code=409,
         )
@@ -1321,6 +1343,7 @@ async def step3_in_progress(
             "total": total,
             "completed": completed,
             "progress_pct": progress_pct,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1352,6 +1375,7 @@ async def step3_done(
             "meetings": rows,
             "archived_count": archived,
             "failed_count": failed,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1428,6 +1452,7 @@ async def step3a_preflight(
             "count": len(meetings),
             "meetings": meetings,
             "error": None,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1487,6 +1512,7 @@ async def step3a_confirm(
                 "count": len(meetings),
                 "meetings": meetings,
                 "error": "Type the count to confirm.",
+                "show_trash_step": _show_trash_step(request),
             },
             status_code=422,
         )
@@ -1682,6 +1708,7 @@ async def step4_preflight(
             "count": len(rows),
             "rows": rows,
             "error": None,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1725,6 +1752,7 @@ async def step4_start(
                 "count": count,
                 "rows": rows,
                 "error": "Type the count to confirm.",
+                "show_trash_step": _show_trash_step(request),
             },
             status_code=422,
         )
@@ -1745,6 +1773,7 @@ async def step4_start(
                 "count": count,
                 "rows": rows,
                 "error": "Another purge operation is already running. Wait for it to complete.",
+                "show_trash_step": _show_trash_step(request),
             },
             status_code=409,
         )
@@ -1784,6 +1813,7 @@ async def step4_in_progress(
             "total": total,
             "completed": completed,
             "progress_pct": progress_pct,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1815,6 +1845,7 @@ async def step4_done(
             "meetings": rows,
             "deleted_count": deleted,
             "failed_count": failed,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1918,6 +1949,7 @@ async def step4_mark_deleted(
             "marked_count": marked,
             "skipped_count": skipped,
             "total_count": total,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
