@@ -152,6 +152,7 @@ async def step1_form(
     """
     state = wizard_session.get_state(_store(request), _sid(request))
     filters = wizard_session.filters_from_dict(state.get("filters", {}))
+    loaded_trash_preset = state.get("trash_classifier_preset")
 
     config_path = request.app.state.config_path
     preset_svc = PresetService(config_path) if config_path else None
@@ -176,6 +177,7 @@ async def step1_form(
             "filters": filters,
             "presets": presets,
             "loaded_preset": loaded_preset,
+            "loaded_trash_preset": loaded_trash_preset,
             "step": "filter",
             "error": preset_error,
         },
@@ -229,6 +231,10 @@ async def step1_submit(
     form = await request.form()
     filters = wizard_session.parse_filter_form(dict(form))
 
+    trash_preset_raw = form.get("trash_preset")
+    trash_preset = str(trash_preset_raw).strip() if trash_preset_raw is not None else ""
+    trash_classifier_preset: str | None = trash_preset or None  # collapse empty string -> None
+
     config_path = request.app.state.config_path
     presets = PresetService(config_path).list() if config_path else []
 
@@ -240,6 +246,7 @@ async def step1_submit(
                 "filters": filters,
                 "presets": presets,
                 "loaded_preset": None,
+                "loaded_trash_preset": trash_classifier_preset,
                 "step": "filter",
                 "error": "Add at least one filter before continuing.",
             },
@@ -254,6 +261,7 @@ async def step1_submit(
                 "filters": filters,
                 "presets": presets,
                 "loaded_preset": None,
+                "loaded_trash_preset": trash_classifier_preset,
                 "step": "filter",
                 "error": err,
             },
@@ -264,6 +272,9 @@ async def step1_submit(
         filters=wizard_session.filters_to_dict(filters),
         selected_ids=[],
         operation_id=None,
+        trash_ids=[],
+        trash_classifier_preset=trash_classifier_preset,
+        trash_candidate_ids=[],
     )
     wizard_session.set_state(_store(request), _sid(request), state)
     return _redirect("/cleanup/review")
@@ -318,6 +329,9 @@ async def save_as_preset(
     elif not preset_name:
         save_preset_error = "Preset name is required."
 
+    loaded_trash_preset_sap = wizard_session.get_state(_store(request), _sid(request)).get(
+        "trash_classifier_preset"
+    )
     return _templates(request).TemplateResponse(
         request,
         "cleanup/step1_filter.html",
@@ -325,6 +339,7 @@ async def save_as_preset(
             "filters": filters,
             "presets": presets,
             "loaded_preset": None,
+            "loaded_trash_preset": loaded_trash_preset_sap,
             "step": "filter",
             "error": None,
             "save_preset_error": save_preset_error,

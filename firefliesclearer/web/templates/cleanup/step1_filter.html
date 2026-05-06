@@ -29,6 +29,25 @@
     </select>
   </div>
 
+  {# Trash classifier preset (optional). Reads from the same preset list;
+     distinguished from cleanup-filter presets only by user naming. #}
+  <div class="preset-row">
+    <label for="trash_preset">Trash classifier <span class="optional-hint">(optional)</span></label>
+    <select name="trash_preset" id="trash_preset">
+      <option value="">— none (no auto-classification) —</option>
+      {% for p in presets %}
+        <option value="{{ p.name }}"
+          {% if loaded_trash_preset == p.name %}selected{% endif %}>
+          {{ p.name }}
+        </option>
+      {% endfor %}
+    </select>
+    <p class="form-hint">
+      Meetings matching this preset will be pre-classified as trash on Step 2
+      (no archive). You can override per-row.
+    </p>
+  </div>
+
   <form id="cleanup-step1-form" method="post" action="/cleanup">
     <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
 
