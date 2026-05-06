@@ -874,6 +874,33 @@ async def _selected_meetings(deps: SimpleNamespace, selected_ids: list[str]) -> 
     return [by_id[mid] for mid in selected_ids if mid in by_id]
 
 
+def _meetings_for_step4(meetings: list[Meeting], user_email: str | None) -> list[Meeting]:
+    """Restrict + order the Step 4 (Delete tab) handoff list.
+
+    Two transformations:
+
+    * Drop non-host meetings. ``Pipeline._archive`` auto-marks any meeting
+      whose ``host_email`` differs from the configured ``user_email`` as
+      DELETED with reason ``non_host_no_api_delete`` immediately after a
+      successful archive, because Fireflies' deleteTranscript mutation
+      rejects non-host calls. Listing those rows on the handoff page is
+      noise — the user can't bulk-delete them in Fireflies' UI either, and
+      they're already in DELETED state in our manifest.
+
+    * Sort ascending by ``meeting_date`` (oldest first) so the user can
+      walk the Fireflies UI's day-grouped list top-to-bottom and check off
+      titles in order.
+
+    When ``user_email`` is unset (lazy-resolve race or pre-Phase-6
+    config), the host filter is a no-op — we keep showing every selected
+    row rather than hiding work the user just archived.
+    """
+    if user_email:
+        ue_lc = user_email.lower()
+        meetings = [m for m in meetings if not m.host_email or m.host_email.lower() == ue_lc]
+    return sorted(meetings, key=lambda m: m.meeting_date)
+
+
 def _make_archive_runner(
     *, deps: SimpleNamespace, meetings: list[Meeting]
 ) -> Callable[[_RunnerContext], Awaitable[None]]:
@@ -1314,6 +1341,7 @@ async def step4_preflight(
         # so the user can re-filter rather than being shown a "0 meetings" purge
         # confirmation that would be a no-op.
         return _redirect("/cleanup/review?error=empty-selection")
+    meetings = _meetings_for_step4(meetings, deps.config.fireflies.user_email)
     return _templates(request).TemplateResponse(
         request,
         "cleanup/step4_purge_preflight.html",
@@ -1490,6 +1518,12 @@ async def step4_mark_deleted(
     meetings = await _selected_meetings(deps, selected_ids)
     if not meetings:
         return _redirect("/cleanup/review?error=empty-selection")
+    # Mirror the Step 4 preflight: only act on meetings the user actually
+    # saw on the handoff page. Non-host rows are auto-marked DELETED at
+    # archive time, so feeding them through here would inflate the
+    # ``skipped`` count and confuse the summary. Sort matches the page
+    # order for deterministic state_log ordering.
+    meetings = _meetings_for_step4(meetings, deps.config.fireflies.user_email)
 
     eligible_states = {MeetingState.ARCHIVED, MeetingState.DELETED_FAILED}
     now = deps.clock.now()
