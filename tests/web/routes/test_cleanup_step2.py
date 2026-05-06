@@ -884,3 +884,105 @@ def test_review_does_not_call_live_api_when_sync_on(
     assert r.status_code == 200, r.text
 
     assert configured_app_sync_on.state.tracking_repo.list_call_count == 0
+
+
+def test_step2_continue_routes_to_trash_confirm_when_trash_ids_nonempty(
+    configured_client, configured_app
+) -> None:
+    from firefliesclearer.application.scan_service import ScanFilters
+    from firefliesclearer.web.wizard_session import (
+        WizardState,
+        filters_to_dict,
+        set_state,
+    )
+
+    sid = configured_client.cookies.get("ffc_session", "")
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="review",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m_standup", "m_design"],
+            operation_id=None,
+            trash_ids=["m_standup"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    r = configured_client.post(
+        "/cleanup/review",
+        data={"_csrf": configured_client.cookies.get("ffc_csrf", "")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/trash-confirm"
+
+
+def test_step2_continue_routes_to_archive_when_no_trash(configured_client, configured_app) -> None:
+    from firefliesclearer.application.scan_service import ScanFilters
+    from firefliesclearer.web.wizard_session import (
+        WizardState,
+        filters_to_dict,
+        set_state,
+    )
+
+    sid = configured_client.cookies.get("ffc_session", "")
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="review",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m_design"],
+            operation_id=None,
+            trash_ids=[],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    r = configured_client.post(
+        "/cleanup/review",
+        data={"_csrf": configured_client.cookies.get("ffc_csrf", "")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/archive"
+
+
+def test_step2_continue_preserves_trash_classifier_and_ids_in_session(
+    configured_client, configured_app
+) -> None:
+    """The state-replacement at Step 2 Continue must NOT drop trash_ids,
+    trash_classifier_preset, or trash_candidate_ids — they're consumed by
+    Steps 3a/4."""
+    from firefliesclearer.application.scan_service import ScanFilters
+    from firefliesclearer.web.wizard_session import (
+        WizardState,
+        filters_to_dict,
+        set_state,
+    )
+
+    sid = configured_client.cookies.get("ffc_session", "")
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="review",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m_standup", "m_design"],
+            operation_id=None,
+            trash_ids=["m_standup"],
+            trash_classifier_preset="Trash: Standups",
+            trash_candidate_ids=["m_standup"],
+        ),
+    )
+    configured_client.post(
+        "/cleanup/review",
+        data={"_csrf": configured_client.cookies.get("ffc_csrf", "")},
+        follow_redirects=False,
+    )
+    state = configured_app.state.session_store.get(sid).get("wizard", {})
+    assert state.get("trash_ids") == ["m_standup"]
+    assert state.get("trash_classifier_preset") == "Trash: Standups"
+    assert state.get("trash_candidate_ids") == ["m_standup"]

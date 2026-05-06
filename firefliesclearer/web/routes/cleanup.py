@@ -877,13 +877,19 @@ async def step2_submit(
         )
 
     state = wizard_session.get_state(_store(request), _sid(request))
+    trash_ids = list(state.get("trash_ids", []) or [])
     new_state = wizard_session.WizardState(
         step="archive",
         filters=state.get("filters", {}),
         selected_ids=list(selected_ids),
         operation_id=state.get("operation_id"),
+        trash_ids=trash_ids,
+        trash_classifier_preset=state.get("trash_classifier_preset"),
+        trash_candidate_ids=list(state.get("trash_candidate_ids", []) or []),
     )
     wizard_session.set_state(_store(request), _sid(request), new_state)
+    if trash_ids:
+        return _redirect("/cleanup/trash-confirm")
     return _redirect("/cleanup/archive")
 
 
