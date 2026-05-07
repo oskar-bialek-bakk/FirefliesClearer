@@ -25,7 +25,13 @@
 
   <p class="purge-preflight-summary">
     <strong>{{ count }} meeting{% if count != 1 %}s{% endif %}</strong>
-    archived locally and ready to delete in Fireflies.
+    ready to delete in Fireflies.
+    {% set trash_count = rows | selectattr(1, 'equalto', 'trash') | list | length %}
+    {% if trash_count > 0 %}
+      Of these, <strong>{{ trash_count }}</strong>
+      {% if trash_count == 1 %}has{% else %}have{% endif %}
+      no local archive (marked with the <em>no archive</em> badge below).
+    {% endif %}
   </p>
 
   <ol class="cleanup-handoff-steps">
@@ -82,7 +88,9 @@
   <p class="cleanup-handoff-safety" role="note">
     <strong>Safe by design:</strong> this button does not call the Fireflies
     API. It only updates the local manifest to record that you've deleted
-    these meetings externally. Your archive files on disk are kept either way.
+    these meetings externally. Archived rows keep their files on disk after
+    deletion in Fireflies; trash rows (marked <em>no archive</em>) do not
+    &mdash; you confirmed deleting those without a backup on the previous step.
   </p>
 
   <form method="post" action="/cleanup/mark-deleted" class="purge-start-form">

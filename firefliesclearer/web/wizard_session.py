@@ -42,7 +42,8 @@ class WizardState(TypedDict, total=False):
     # ``trash_classifier_preset`` is the optional preset name used to
     # auto-fill the per-row Archive toggle. ``trash_candidate_ids`` is the
     # cached set of ids matching that classifier against the current scan
-    # result, computed at Step 1 submit and consulted by toggle handlers.
+    # result, computed on every Step 2 render so filter changes propagate,
+    # and consulted by toggle handlers.
     trash_ids: list[str]
     trash_classifier_preset: str | None
     trash_candidate_ids: list[str]
@@ -207,7 +208,15 @@ def remove_from_trash(store: SessionStore, sid: str, ids: list[str]) -> None:
 
 
 def toggle_in_trash(store: SessionStore, sid: str, mid: str) -> bool:
-    """Toggle ``mid`` in ``trash_ids``. Returns True if added, False if removed."""
+    """Toggle ``mid`` in ``trash_ids``. Returns the post-call membership.
+
+    True iff ``mid`` is in trash_ids after the call. Returns False without
+    side effects when ``mid`` isn't in ``selected_ids`` (the subset
+    invariant in :func:`set_trash_ids` would silently drop it).
+    """
+    selected = set(get_state(store, sid).get("selected_ids", []) or [])
+    if mid not in selected:
+        return False
     current = get_trash_ids(store, sid)
     if mid in current:
         remove_from_trash(store, sid, [mid])

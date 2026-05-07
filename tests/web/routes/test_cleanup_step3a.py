@@ -283,10 +283,26 @@ def test_step3a_stepper_includes_trash_entry_when_trash_ids_present(
     r = configured_client.get("/cleanup/trash-confirm")
     assert r.status_code == 200
     doc = HTMLParser(r.text)
+    stepper = doc.css_first("nav.wizard-stepper")
+    assert stepper is not None
+    items = stepper.css("li[data-step]")
+    steps = [li.attributes.get("data-step") for li in items]
+    # Trash (3a) must appear BEFORE archive (3b) in the stepper order.
+    assert "trash" in steps
+    assert "archive" in steps
+    assert steps.index("trash") < steps.index("archive"), (
+        f"trash step must come before archive step; order was {steps}"
+    )
     trash_step = doc.css_first("nav.wizard-stepper li[data-step='trash']")
     assert trash_step is not None
     # Should be marked active when current step is "trash".
     assert "active" in (trash_step.attributes.get("class") or "")
+    # When show_trash_step is True, archive entry must be labelled "3b. Archive".
+    archive_step = doc.css_first("nav.wizard-stepper li[data-step='archive']")
+    assert archive_step is not None
+    assert "3b" in archive_step.text(), (
+        f"archive step label must include '3b' when trash step is shown; got: {archive_step.text()!r}"
+    )
 
 
 def test_step3a_stepper_omits_trash_entry_on_other_steps_without_trash(
@@ -314,3 +330,13 @@ def test_step3a_stepper_omits_trash_entry_on_other_steps_without_trash(
     doc = HTMLParser(r.text)
     # No trash step.
     assert doc.css_first("nav.wizard-stepper li[data-step='trash']") is None
+    # Archive step label must be "3. Archive" (not "3b.") when no trash step.
+    archive_step = doc.css_first("nav.wizard-stepper li[data-step='archive']")
+    assert archive_step is not None
+    label = archive_step.text().strip()
+    assert label.startswith("3."), (
+        f"archive step label must start with '3.' when trash step is absent; got: {label!r}"
+    )
+    assert "3b" not in label, (
+        f"archive step label must not contain '3b' when trash step is absent; got: {label!r}"
+    )

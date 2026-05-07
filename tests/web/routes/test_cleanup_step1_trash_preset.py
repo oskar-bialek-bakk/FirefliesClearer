@@ -61,6 +61,22 @@ def test_step1_post_persists_trash_classifier(configured_app) -> None:
     assert state.get("trash_classifier_preset") == "Trash: Standups"
 
 
+def test_step1_trash_preset_select_is_inside_post_form(configured_app) -> None:
+    """Regression: the trash classifier picker must be inside the Step 1
+    POST form so the user's selection is actually submitted."""
+    with TestClient(configured_app) as c:
+        c.get("/?token=T")
+        r = c.get("/cleanup")
+    doc = HTMLParser(r.text)
+    form = doc.css_first("form#cleanup-step1-form")
+    assert form is not None
+    trash_select = form.css_first("select[name='trash_preset']")
+    assert trash_select is not None, (
+        "Trash classifier <select> must be inside the cleanup-step1-form "
+        "<form>; otherwise its value is never posted from a real browser."
+    )
+
+
 def test_step1_post_with_no_trash_classifier_persists_none(configured_app) -> None:
     with TestClient(configured_app) as c:
         c.get("/?token=T")

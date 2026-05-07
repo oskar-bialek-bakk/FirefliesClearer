@@ -172,6 +172,45 @@ def test_history_filter_trash_includes_non_host_auto_marked_rows(configured_app)
     assert "Their standup" not in r_archived.text
 
 
+def test_history_chips_preserve_custom_date_range(configured_app) -> None:
+    """Regression (B3): chip links must include from/to when range==custom so
+    switching kind (e.g. All → Archived) doesn't drop the date filter."""
+    _seed_archived(configured_app, "m_arch", "Archived item")
+    with TestClient(configured_app) as c:
+        c.get("/?token=T")
+        r = c.get("/history?range=custom&from=2026-01-01&to=2026-12-31")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    chips = doc.css(".history-filter-chip")
+    for chip in chips:
+        href = chip.attributes.get("href") or ""
+        # Every chip link must carry the custom date boundaries.
+        assert "from=2026-01-01" in href, (
+            f"Chip '{chip.text().strip()}' href missing 'from': {href!r}"
+        )
+        assert "to=2026-12-31" in href, f"Chip '{chip.text().strip()}' href missing 'to': {href!r}"
+
+
+def test_history_pagination_preserves_kind_filter(configured_app) -> None:
+    """Regression (B3): pagination links must carry kind= when a kind filter
+    is active, so clicking Next doesn't reset to All."""
+    # Seed enough archived rows to trigger pagination (PAGE_SIZE=50).
+    for i in range(55):
+        _seed_archived(configured_app, f"m_arch_{i}", f"Archived {i}")
+    with TestClient(configured_app) as c:
+        c.get("/?token=T")
+        r = c.get("/history?range=all-time&kind=archived")
+    assert r.status_code == 200
+    doc = HTMLParser(r.text)
+    # Pagination nav should be present.
+    pagination = doc.css_first("nav.pagination")
+    assert pagination is not None, "Expected pagination to appear with 55 rows"
+    # All pagination links must include kind=archived.
+    for a in pagination.css("a"):
+        href = a.attributes.get("href") or ""
+        assert "kind=archived" in href, f"Pagination link missing kind=archived: {href!r}"
+
+
 def test_history_filter_total_reflects_kind_filtered_count(configured_app) -> None:
     """When kind != all, the displayed total must equal the filtered row
     count, not the unfiltered DB count."""

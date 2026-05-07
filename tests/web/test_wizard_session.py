@@ -353,3 +353,26 @@ def test_toggle_in_trash_adds_then_removes():
     removed = wizard_session.toggle_in_trash(store, "sid", "a")
     assert removed is False
     assert wizard_session.get_state(store, "sid").get("trash_ids") == []
+
+
+def test_toggle_in_trash_returns_false_for_unselected_id():
+    """Regression (C3): toggle_in_trash must return False and leave trash_ids
+    unchanged when mid is not in selected_ids (the subset invariant in
+    set_trash_ids would silently drop it, but the return value was True,
+    misleading callers into thinking it was added)."""
+    store = SessionStore()
+    wizard_session.set_state(
+        store,
+        "sid",
+        wizard_session.WizardState(
+            step="review",
+            filters={},
+            selected_ids=["a"],
+            operation_id=None,
+            trash_ids=[],
+        ),
+    )
+    # "z" is not in selected_ids → must return False, not mutate trash_ids.
+    result = wizard_session.toggle_in_trash(store, "sid", "z")
+    assert result is False
+    assert wizard_session.get_state(store, "sid").get("trash_ids") == []

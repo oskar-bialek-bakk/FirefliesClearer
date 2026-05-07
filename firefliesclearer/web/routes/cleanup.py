@@ -1208,6 +1208,11 @@ def _set_wizard(
 
     ``operation_id`` defaults to ``_UNSET`` (a private sentinel) so callers can
     distinguish "leave the existing id alone" from "clear the id" (``None``).
+
+    Trash flow fields (``trash_ids``, ``trash_classifier_preset``,
+    ``trash_candidate_ids``) are always carried forward from the existing
+    state. Callers that need to mutate them must use the dedicated
+    wizard_session helpers (``set_trash_ids``, ``add_to_trash``, etc.).
     """
     state = wizard_session.get_state(_store(request), _sid(request))
     if operation_id is _UNSET:
@@ -1228,6 +1233,9 @@ def _set_wizard(
             else list(state.get("selected_ids") or [])
         ),
         operation_id=new_op_id,
+        trash_ids=list(state.get("trash_ids") or []),
+        trash_classifier_preset=state.get("trash_classifier_preset"),
+        trash_candidate_ids=list(state.get("trash_candidate_ids") or []),
     )
     wizard_session.set_state(_store(request), _sid(request), new_state)
 
@@ -1410,15 +1418,23 @@ async def step3_continue(request: Request) -> Response:
         return _redirect("/cleanup/archive")
     if op.state == "running":
         return _redirect("/cleanup/archive/in-progress")
-    rows, archived, _failed = _replay_meeting_states(op)
-    if archived == 0:
-        return _redirect("/cleanup/archive/done")
+    rows, _archived, _failed = _replay_meeting_states(op)
     success_ids = [
         str(row["id"]) for row in rows if row.get("sub_state") == "done" and row.get("id")
     ]
-    if not success_ids:
+    trash_ids = list(state.get("trash_ids") or [])
+    # Only short-circuit to the done page when BOTH archive and trash are
+    # empty — if the user only had trash rows (archived=0 but trash_ids is
+    # non-empty), we must still route to Step 4 so mark-deleted can fire.
+    if not success_ids and not trash_ids:
         return _redirect("/cleanup/archive/done")
-    _set_wizard(request, step="purge", selected_ids=success_ids, operation_id=None)
+    # Step 4 selected_ids must contain BOTH archive successes AND host trash
+    # rows so the preflight's split (archive_ids = selected - trash) recovers
+    # both subsets. Order keeps trash rows after archive rows; Step 4 preflight
+    # re-sorts by date anyway.
+    success_set = set(success_ids)
+    new_selected = list(success_ids) + [mid for mid in trash_ids if mid not in success_set]
+    _set_wizard(request, step="purge", selected_ids=new_selected, operation_id=None)
     return _redirect("/cleanup/purge")
 
 

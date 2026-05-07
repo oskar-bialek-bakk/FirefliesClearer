@@ -51,14 +51,25 @@
   </div>
 </form>
 
+{# Build base query string for round-trip filter preservation. Skip params
+   only when overridden by the link itself. Custom date range from/to are
+   included only when range == 'custom' so pre-set ranges don't litter URLs. #}
+{% set _qp = [] %}
+{% set _ = _qp.append("range=" ~ range) %}
+{% if range == "custom" and date_from %}{% set _ = _qp.append("from=" ~ date_from) %}{% endif %}
+{% if range == "custom" and date_to %}{% set _ = _qp.append("to=" ~ date_to) %}{% endif %}
+{% if q %}{% set _ = _qp.append("q=" ~ q) %}{% endif %}
+{% for s in state %}{% set _ = _qp.append("state=" ~ s) %}{% endfor %}
+{% set _base_query = _qp | join("&") %}
+
 {# Kind filter chips #}
 <div class="history-filter-chips">
   <a class="history-filter-chip {% if kind_filter == 'all' %}active{% endif %}"
-     href="?range={{ range }}{% if q %}&q={{ q }}{% endif %}{% for s in state %}&state={{ s }}{% endfor %}">All</a>
+     href="?{{ _base_query }}">All</a>
   <a class="history-filter-chip {% if kind_filter == 'archived' %}active{% endif %}"
-     href="?range={{ range }}{% if q %}&q={{ q }}{% endif %}{% for s in state %}&state={{ s }}{% endfor %}&kind=archived">Archived</a>
+     href="?{{ _base_query }}&kind=archived">Archived</a>
   <a class="history-filter-chip {% if kind_filter == 'trash' %}active{% endif %}"
-     href="?range={{ range }}{% if q %}&q={{ q }}{% endif %}{% for s in state %}&state={{ s }}{% endfor %}&kind=trash">Trash</a>
+     href="?{{ _base_query }}&kind=trash">Trash</a>
 </div>
 
 {# Results #}
@@ -126,14 +137,10 @@
 {# Pagination #}
 {% if total_pages > 1 %}
 <nav class="pagination" aria-label="Pagination">
-  {%- set base_parts = ["/history?range=" ~ range] -%}
-  {%- if date_from -%}{%- set base_parts = base_parts + ["&from=" ~ date_from] -%}{%- endif -%}
-  {%- if date_to -%}{%- set base_parts = base_parts + ["&to=" ~ date_to] -%}{%- endif -%}
-  {%- if q -%}{%- set base_parts = base_parts + ["&q=" ~ q] -%}{%- endif -%}
-  {%- for s in state -%}{%- set base_parts = base_parts + ["&state=" ~ s] -%}{%- endfor -%}
-  {%- set base = base_parts | join("") -%}
+  {%- set _page_base = "/history?" ~ _base_query -%}
+  {%- if kind_filter != "all" -%}{%- set _page_base = _page_base ~ "&kind=" ~ kind_filter -%}{%- endif -%}
   {% if page > 1 %}
-  <a href="{{ base }}&page={{ page - 1 }}">&larr; Prev</a>
+  <a href="{{ _page_base }}&page={{ page - 1 }}">&larr; Prev</a>
   {% else %}
   <span class="pagination-disabled">&larr; Prev</span>
   {% endif %}
@@ -141,7 +148,7 @@
   <span>Page {{ page }} of {{ total_pages }}</span>
 
   {% if page < total_pages %}
-  <a href="{{ base }}&page={{ page + 1 }}">Next &rarr;</a>
+  <a href="{{ _page_base }}&page={{ page + 1 }}">Next &rarr;</a>
   {% else %}
   <span class="pagination-disabled">Next &rarr;</span>
   {% endif %}

@@ -71,6 +71,10 @@ def _resolve_date_range(
 
 
 def _classify_row_kind(audit: AuditService, record: HistoryEntry) -> str:
+    # TODO(perf): N+1 — one ``state_log`` query per row when kind filter is
+    # active. Acceptable at personal scale (a few thousand rows max). If the
+    # manifest grows, push classification into the SQL query (join the latest
+    # state_log entry per meeting) or add a bulk state_log fetch helper.
     """Walk the row's state_log and inspect archive_path. Trash if either:
       * latest reason is ``manual_trash_via_wizard`` (host trash via Step 4
         mark-deleted), or
@@ -120,8 +124,10 @@ async def history(
     """Render the history page with filters and pagination.
 
     The ``kind`` parameter post-filters rows by trash vs archived classification.
-    When ``kind != 'all'``, the total shown reflects the unfiltered DB count;
-    the page count reflects the post-filter result for the current page only.
+    When ``kind != 'all'``, the route does a full fetch of matching rows (no
+    SQL pagination), classifies each, post-filters in Python, and paginates the
+    result. ``total`` and ``total_pages`` reflect the FILTERED set, so the
+    displayed count and pagination behave consistently.
     """
     # Clamp page to >= 1
     page = max(1, page)

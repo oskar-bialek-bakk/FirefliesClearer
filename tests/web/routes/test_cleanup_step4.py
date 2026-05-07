@@ -1139,3 +1139,73 @@ def test_post_mark_deleted_transitions_known_trash_to_deleted(
     assert last_trash.from_state is MeetingState.KNOWN
     assert last_trash.to_state is MeetingState.DELETED
     assert last_trash.details == {"reason": "manual_trash_via_wizard"}
+
+
+# ---------------------------------------------------------------------------
+# B2: Step 4 preflight copy accuracy for mixed archive+trash rows
+# ---------------------------------------------------------------------------
+
+
+def test_step4_preflight_copy_accurate_for_mixed_rows(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Regression (B2): the Step 4 preflight summary must NOT claim every row
+    has a local archive when trash rows (no backup) are present. It must:
+    - say 'ready to delete' (generic, not 'archived locally')
+    - mention 'no local archive' for trash rows
+    - NOT say 'your archive files on disk are kept either way'
+    """
+    now = datetime(2026, 4, 29, 12, 0, tzinfo=UTC)
+    m_arch = Meeting(
+        meeting_id="m_arch",
+        title="Archive row",
+        meeting_date=now - timedelta(days=10),
+        duration_minutes=60.0,
+        host_email="oskar@example.com",
+        participant_count=4,
+    )
+    m_trash = Meeting(
+        meeting_id="m_trash",
+        title="Trash row",
+        meeting_date=now - timedelta(days=20),
+        duration_minutes=15.0,
+        host_email="oskar@example.com",
+        participant_count=4,
+    )
+    manifest = configured_app.state.deps.manifest
+    for m in [m_arch, m_trash]:
+        manifest.upsert_known(m, at=now)
+    # Walk m_arch to ARCHIVED so it has an archive_path.
+    manifest.transition("m_arch", to=MeetingState.PENDING, at=now)
+    manifest.transition(
+        "m_arch",
+        to=MeetingState.ARCHIVED,
+        at=now,
+        archive_path="/tmp/archive",
+        verified_at=now,
+        sha256s={"audio": "a", "summary": "b", "transcript": "c"},
+    )
+
+    sid = _sid(configured_client)
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="purge",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m_arch", "m_trash"],
+            operation_id=None,
+            trash_ids=["m_trash"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    r = configured_client.get("/cleanup/purge")
+    assert r.status_code == 200
+    text = r.text
+    # Generic "ready to delete" framing must be present.
+    assert "ready to delete" in text.lower()
+    # Trash disclaimer must be present.
+    assert "no local archive" in text.lower()
+    # The old misleading safety line must be gone.
+    assert "your archive files on disk are kept either way" not in text.lower()
