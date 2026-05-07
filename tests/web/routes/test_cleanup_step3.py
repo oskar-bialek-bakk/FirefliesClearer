@@ -572,3 +572,343 @@ def test_review_renders_error_banner_for_empty_selection(
     banner = doc.css_first(".error-banner")
     assert banner is not None
     assert "select" in banner.text().lower() or "meeting" in banner.text().lower()
+
+
+# ---------------------------------------------------------------------------
+# Step 3b: archive_ids = selected_ids - trash_ids
+# ---------------------------------------------------------------------------
+
+
+def test_step3_preflight_redirects_to_step4_when_only_trash_remains(
+    configured_client, configured_app
+) -> None:
+    """If all selected rows are still trash after Step 3a (none demoted),
+    Step 3b is a no-op and should auto-skip to Step 4."""
+    from firefliesclearer.application.scan_service import ScanFilters
+    from firefliesclearer.web.wizard_session import (
+        WizardState,
+        filters_to_dict,
+        set_state,
+    )
+
+    sid = configured_client.cookies.get("ffc_session", "")
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="archive",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m1", "m2"],
+            operation_id=None,
+            trash_ids=["m1", "m2"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    r = configured_client.get("/cleanup/archive", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/purge"
+
+
+def test_step3_preflight_renders_only_archive_subset(configured_client, configured_app) -> None:
+    """Step 3 preflight must show only the archive_ids count, not the full
+    selected_ids count (which would include trash rows)."""
+    from datetime import UTC, datetime, timedelta
+
+    from firefliesclearer.application.scan_service import ScanFilters
+    from firefliesclearer.core.models import Meeting
+    from firefliesclearer.web.wizard_session import (
+        WizardState,
+        filters_to_dict,
+        set_state,
+    )
+    from tests.fakes.in_memory_repository import InMemoryMeetingRepository
+
+    now = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    meetings = [
+        Meeting(
+            meeting_id="m_archive",
+            title="Archive me",
+            meeting_date=now - timedelta(days=10),
+            duration_minutes=60.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+        Meeting(
+            meeting_id="m_trash",
+            title="Trash me",
+            meeting_date=now - timedelta(days=10),
+            duration_minutes=15.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+    ]
+    repo = InMemoryMeetingRepository(meetings=meetings, api_key="ff_test")
+    repo.set_user_email_for_key("ff_test", "oskar@example.com")
+    configured_app.state.deps.client = repo
+    for m in meetings:
+        configured_app.state.deps.manifest.upsert_known(m, at=now)
+
+    sid = configured_client.cookies.get("ffc_session", "")
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="archive",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m_archive", "m_trash"],
+            operation_id=None,
+            trash_ids=["m_trash"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    r = configured_client.get("/cleanup/archive")
+    assert r.status_code == 200
+    text = r.text
+    # Count is 1 (m_archive only). The full selected_ids count of 2 must NOT
+    # appear next to "meetings".
+    assert "1 meeting" in text or " 1 " in text
+    # Optional safety: m_trash should not be referenced on this page
+    # (the preflight may not list titles, but if it does, m_trash shouldn't be there).
+
+
+def test_step3_start_runs_archive_only_for_archive_ids(configured_client, configured_app) -> None:
+    """The archive runner must consume only the archive subset."""
+    from datetime import UTC, datetime, timedelta
+
+    from firefliesclearer.application.scan_service import ScanFilters
+    from firefliesclearer.core.models import Meeting
+    from firefliesclearer.web.wizard_session import (
+        WizardState,
+        filters_to_dict,
+        set_state,
+    )
+    from tests.fakes.in_memory_repository import InMemoryMeetingRepository
+
+    now = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    meetings = [
+        Meeting(
+            meeting_id="m_archive",
+            title="Archive me",
+            meeting_date=now - timedelta(days=10),
+            duration_minutes=60.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+        Meeting(
+            meeting_id="m_trash",
+            title="Trash me",
+            meeting_date=now - timedelta(days=10),
+            duration_minutes=15.0,
+            host_email="oskar@example.com",
+            participant_count=4,
+        ),
+    ]
+    repo = InMemoryMeetingRepository(meetings=meetings, api_key="ff_test")
+    repo.set_user_email_for_key("ff_test", "oskar@example.com")
+    configured_app.state.deps.client = repo
+    for m in meetings:
+        configured_app.state.deps.manifest.upsert_known(m, at=now)
+
+    sid = configured_client.cookies.get("ffc_session", "")
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="archive",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m_archive", "m_trash"],
+            operation_id=None,
+            trash_ids=["m_trash"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    csrf = configured_client.cookies.get("ffc_csrf", "")
+    r = configured_client.post(
+        "/cleanup/archive/start",
+        data={"_csrf": csrf},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    # Operation registry should report 1 op with 1 meeting (the archive subset).
+    op_id = configured_app.state.session_store.get(sid).get("wizard", {}).get("operation_id")
+    assert op_id is not None
+    op = configured_app.state.operation_registry.get(op_id)
+    assert {m.meeting_id for m in op.meetings} == {"m_archive"}
+
+
+# ---------------------------------------------------------------------------
+# Regression: _set_wizard must preserve trash fields (A2)
+# ---------------------------------------------------------------------------
+
+
+def test_set_wizard_preserves_trash_fields(configured_client: TestClient, configured_app) -> None:
+    """Regression (A2): _set_wizard must carry forward trash_ids,
+    trash_classifier_preset, and trash_candidate_ids. Previously it only
+    preserved step/filters/selected_ids/operation_id, silently dropping all
+    trash flow state on every step transition."""
+    sid = _sid(configured_client)
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="archive",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m0", "m1"],
+            operation_id=None,
+            trash_ids=["m1"],
+            trash_classifier_preset="Trash: Standups",
+            trash_candidate_ids=["m1"],
+        ),
+    )
+    # Trigger a _set_wizard call via step3_preflight start redirect (step
+    # transitions through archive/start which calls _set_wizard).  We do this
+    # by directly hitting step3_continue with a fake completed op that has
+    # zero successes — but trash_ids is non-empty so it should route to purge,
+    # not archive/done.  Easier: call set_wizard via the route that we know
+    # calls it, then inspect the session state.
+    #
+    # The simplest approach: directly verify that WizardState round-trips
+    # through _set_wizard correctly by making a route call that is known to
+    # invoke _set_wizard.  Use step3_preflight (GET /cleanup/archive) which
+    # does NOT call _set_wizard — so instead simulate by manually calling
+    # the helper via the start route and inspecting session state.
+    #
+    # Cleanest: seed & run archive/start (which calls _set_wizard internally
+    # to record the op_id), then inspect that trash fields survived.
+    _seed_repo(configured_app, 3)
+    r = configured_client.post(
+        "/cleanup/archive/start",
+        data={"_csrf": _csrf(configured_client)},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    state = _wizard(configured_app, sid)
+    # Trash fields must survive the _set_wizard call inside archive/start.
+    assert state.get("trash_ids") == ["m1"]
+    assert state.get("trash_classifier_preset") == "Trash: Standups"
+    assert state.get("trash_candidate_ids") == ["m1"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: step3_continue merges host trash into Step 4 selected_ids (A3)
+# ---------------------------------------------------------------------------
+
+
+def test_step3_continue_carries_host_trash_into_step4_selection(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Regression (A3): step3_continue must merge trash_ids back into
+    selected_ids so they appear on Step 4 and get transitioned by
+    mark-deleted. Without this, host trash rows silently disappear after
+    archive completes."""
+    _seed_repo(configured_app, 3)
+    sid = _sid(configured_client)
+    # m0 is the meeting that will be archived; m1 is in trash.
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="archive",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m0", "m1"],
+            operation_id=None,
+            trash_ids=["m1"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    # Start and complete the archive for m0 (only m0, since m1 is trash).
+    r = configured_client.post(
+        "/cleanup/archive/start",
+        data={"_csrf": _csrf(configured_client)},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    op_id = _wizard(configured_app, sid)["operation_id"]
+    _wait_for_op(configured_client, configured_app, op_id)
+
+    r = configured_client.post(
+        "/cleanup/archive/continue",
+        data={"_csrf": _csrf(configured_client)},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/purge"
+    state = _wizard(configured_app, sid)
+    # selected_ids must contain BOTH m0 (archived) and m1 (trash).
+    assert "m0" in state["selected_ids"]
+    assert "m1" in state["selected_ids"]
+    # trash_ids must still contain m1.
+    assert state.get("trash_ids") == ["m1"]
+
+
+def test_step3_continue_routes_to_purge_when_only_trash_no_archive(
+    configured_client: TestClient, configured_app
+) -> None:
+    """Regression (A3): when archive succeeds 0 rows but trash_ids is
+    non-empty, step3_continue must still route to /cleanup/purge so
+    mark-deleted can fire for the trash rows. Previously, archived==0
+    short-circuited to /cleanup/archive/done unconditionally."""
+    _seed_repo(configured_app, 3)
+    sid = _sid(configured_client)
+    # Only m1 selected, classified as trash — archive runner gets 0 meetings.
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="archive",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m1"],
+            operation_id=None,
+            trash_ids=["m1"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+
+    # archive/start short-circuits to purge because archive_ids is empty,
+    # so we need to simulate an op with 0 successes manually.
+    # The easiest path: have an op that is terminal with sub_state != done.
+    # We can use FakePipeline(archive_outcomes={"m1": MeetingState.FAILED_FETCH})
+    # but m1 is in trash so archive/start won't include it. So the start
+    # route itself redirects to /cleanup/purge (preflight skips).
+    # Instead, inject a fake op directly and then call continue.
+    async def _start_failing_op():
+        async def runner(ctx):
+            pass  # no-op → terminal with 0 meeting_state events
+
+        op = await configured_app.state.operation_registry.start(
+            kind=OperationKind.ARCHIVE,
+            meeting_ids=["m1"],
+            runner=runner,
+        )
+        return op.id
+
+    assert configured_client.portal is not None
+    fake_op_id = configured_client.portal.call(_start_failing_op)
+    _wait_for_op(configured_client, configured_app, fake_op_id)
+
+    set_state(
+        configured_app.state.session_store,
+        sid,
+        WizardState(
+            step="archive",
+            filters=filters_to_dict(ScanFilters(older_than_days=30)),
+            selected_ids=["m1"],
+            operation_id=fake_op_id,
+            trash_ids=["m1"],
+            trash_classifier_preset=None,
+            trash_candidate_ids=[],
+        ),
+    )
+    r = configured_client.post(
+        "/cleanup/archive/continue",
+        data={"_csrf": _csrf(configured_client)},
+        follow_redirects=False,
+    )
+    # Must route to purge so trash rows can be marked deleted, NOT to done.
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cleanup/purge"

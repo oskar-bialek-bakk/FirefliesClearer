@@ -34,7 +34,7 @@ import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Final
+from typing import Final, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -55,6 +55,7 @@ from firefliesclearer.application.scan_service import (
 )
 from firefliesclearer.core.manifest import IllegalStateTransition
 from firefliesclearer.core.models import Meeting, MeetingState
+from firefliesclearer.core.rules import Rule
 from firefliesclearer.infra.config import ScanFiltersModel
 from firefliesclearer.web import wizard_session
 from firefliesclearer.web.deps import get_deps
@@ -119,6 +120,18 @@ def _service(deps: SimpleNamespace) -> ScanService:
     return ScanService(repo=deps.scan_repo, clock=deps.clock)
 
 
+def _show_trash_step(request: Request) -> bool:
+    """Whether the Step 3a stepper entry should render for this request.
+
+    True iff the wizard session has a non-empty ``trash_ids`` slice. The
+    Step 3a page is conditional, so the stepper hides the entry when no
+    trash classification exists — keeping the visible flow at 4 steps for
+    users who never use the feature.
+    """
+    state = wizard_session.get_state(_store(request), _sid(request))
+    return bool(state.get("trash_ids"))
+
+
 def _validate_regex(filters: ScanFilters) -> str | None:
     """Eagerly validate ``title_regex`` so bad patterns surface inline.
 
@@ -152,6 +165,7 @@ async def step1_form(
     """
     state = wizard_session.get_state(_store(request), _sid(request))
     filters = wizard_session.filters_from_dict(state.get("filters", {}))
+    loaded_trash_preset = state.get("trash_classifier_preset")
 
     config_path = request.app.state.config_path
     preset_svc = PresetService(config_path) if config_path else None
@@ -176,8 +190,10 @@ async def step1_form(
             "filters": filters,
             "presets": presets,
             "loaded_preset": loaded_preset,
+            "loaded_trash_preset": loaded_trash_preset,
             "step": "filter",
             "error": preset_error,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -229,6 +245,10 @@ async def step1_submit(
     form = await request.form()
     filters = wizard_session.parse_filter_form(dict(form))
 
+    trash_preset_raw = form.get("trash_preset")
+    trash_preset = str(trash_preset_raw).strip() if trash_preset_raw is not None else ""
+    trash_classifier_preset: str | None = trash_preset or None  # collapse empty string -> None
+
     config_path = request.app.state.config_path
     presets = PresetService(config_path).list() if config_path else []
 
@@ -240,8 +260,10 @@ async def step1_submit(
                 "filters": filters,
                 "presets": presets,
                 "loaded_preset": None,
+                "loaded_trash_preset": trash_classifier_preset,
                 "step": "filter",
                 "error": "Add at least one filter before continuing.",
+                "show_trash_step": _show_trash_step(request),
             },
             status_code=422,
         )
@@ -254,8 +276,10 @@ async def step1_submit(
                 "filters": filters,
                 "presets": presets,
                 "loaded_preset": None,
+                "loaded_trash_preset": trash_classifier_preset,
                 "step": "filter",
                 "error": err,
+                "show_trash_step": _show_trash_step(request),
             },
             status_code=422,
         )
@@ -264,6 +288,9 @@ async def step1_submit(
         filters=wizard_session.filters_to_dict(filters),
         selected_ids=[],
         operation_id=None,
+        trash_ids=[],
+        trash_classifier_preset=trash_classifier_preset,
+        trash_candidate_ids=[],
     )
     wizard_session.set_state(_store(request), _sid(request), state)
     return _redirect("/cleanup/review")
@@ -318,6 +345,9 @@ async def save_as_preset(
     elif not preset_name:
         save_preset_error = "Preset name is required."
 
+    loaded_trash_preset_sap = wizard_session.get_state(_store(request), _sid(request)).get(
+        "trash_classifier_preset"
+    )
     return _templates(request).TemplateResponse(
         request,
         "cleanup/step1_filter.html",
@@ -325,10 +355,12 @@ async def save_as_preset(
             "filters": filters,
             "presets": presets,
             "loaded_preset": None,
+            "loaded_trash_preset": loaded_trash_preset_sap,
             "step": "filter",
             "error": None,
             "save_preset_error": save_preset_error,
             "save_preset_success": save_preset_success,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -459,6 +491,7 @@ def _review_context(
     page: int,
     pages: int,
     selected_ids: set[str],
+    trash_ids: set[str],
     error: str | None = None,
     sort: str = DEFAULT_SORT,
     direction: str = DEFAULT_DIR,
@@ -474,6 +507,7 @@ def _review_context(
         "pages": pages,
         "page_size": PAGE_SIZE,
         "selected_ids": selected_ids,
+        "trash_ids": trash_ids,
         "selected_count": len(selected_ids),
         "selected_on_page": selected_on_page,
         "step": "review",
@@ -510,6 +544,32 @@ async def step2_review(
     sorted_matches = _sort_matches(matches, sort=sort, direction=direction)
     page_matches, total, pages = _page_slice(sorted_matches, page)
 
+    # Trash-classifier: evaluate the preset against the current scan result and
+    # persist the candidate set so toggle handlers can consult it cheaply.
+    trash_preset_name = wizard_session.get_state(_store(request), _sid(request)).get(
+        "trash_classifier_preset"
+    )
+    trash_candidates: list[str] = []
+    if trash_preset_name and result is not None:
+        config_path = request.app.state.config_path
+        preset_svc = PresetService(config_path) if config_path else None
+        if preset_svc is not None:
+            try:
+                trash_preset = preset_svc.get(trash_preset_name)
+            except PresetNotFoundError:
+                trash_preset = None
+            if trash_preset is not None:
+                trash_filters = wizard_session.filters_from_dict(trash_preset.filters.model_dump())
+                trash_candidates = _classify_trash(
+                    [m.meeting for m in result.matches],
+                    trash_filters,
+                    now=deps.clock.now(),
+                )
+
+    # Persist for toggle handlers — updated every time Step 2 renders so
+    # filter changes propagate automatically.
+    _persist_trash_candidates(request, trash_candidates)
+
     selected_ids = wizard_session.get_selected(_store(request), _sid(request))
 
     # Surface the error param forwarded by the empty-selection guards.
@@ -530,6 +590,7 @@ async def step2_review(
         page=page,
         pages=pages,
         selected_ids=selected_ids,
+        trash_ids=wizard_session.get_trash_ids(_store(request), _sid(request)),
         error=inline_error,
         sort=sort,
         direction=direction,
@@ -548,7 +609,11 @@ async def step2_review(
         toolbar_html = templates.get_template("cleanup/_review_toolbar.html").render(render_ctx)
         continue_html = templates.get_template("cleanup/_review_continue.html").render(render_ctx)
         return Response(table_html + toolbar_html + continue_html, media_type="text/html")
-    return _templates(request).TemplateResponse(request, "cleanup/step2_review.html", ctx)
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step2_review.html",
+        {**ctx, "show_trash_step": _show_trash_step(request)},
+    )
 
 
 @router.post("/cleanup/review/toggle/{meeting_id}")
@@ -567,7 +632,86 @@ async def review_toggle(
     sort = _normalize_sort(form.get("sort"))
     direction = _normalize_dir(form.get("dir"))
 
-    wizard_session.toggle_in_selection(_store(request), _sid(request), meeting_id)
+    added = wizard_session.toggle_in_selection(_store(request), _sid(request), meeting_id)
+    if added:
+        candidates = set(
+            wizard_session.get_state(_store(request), _sid(request)).get("trash_candidate_ids", [])
+            or []
+        )
+        if meeting_id in candidates:
+            wizard_session.add_to_trash(_store(request), _sid(request), [meeting_id])
+    return await _render_table_fragment(
+        request, deps, filters, page=page, sort=sort, direction=direction
+    )
+
+
+@router.post("/cleanup/review/archive-toggle/{meeting_id}")
+async def review_archive_toggle(
+    request: Request,
+    meeting_id: str,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Toggle a meeting's trash-classification (Archive checkbox).
+
+    Only effective when the meeting is in ``selected_ids`` — otherwise a
+    silent no-op (``set_trash_ids`` enforces ``trash_ids ⊆ selected_ids``).
+    Returns the same table fragment as the per-row select toggle so the
+    HTMX swap renders consistently.
+    """
+    filters = _filters_from_session(request)
+    if filters is None:
+        return _redirect("/cleanup")
+
+    form = await request.form()
+    page = _safe_page(form.get("page"))
+    sort = _normalize_sort(form.get("sort"))
+    direction = _normalize_dir(form.get("dir"))
+
+    wizard_session.toggle_in_trash(_store(request), _sid(request), meeting_id)
+    return await _render_table_fragment(
+        request, deps, filters, page=page, sort=sort, direction=direction
+    )
+
+
+@router.post("/cleanup/review/mark-trash")
+async def review_mark_trash(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Bulk: classify all selected rows as trash (copy ``selected_ids`` -> ``trash_ids``)."""
+    filters = _filters_from_session(request)
+    if filters is None:
+        return _redirect("/cleanup")
+
+    form = await request.form()
+    page = _safe_page(form.get("page"))
+    sort = _normalize_sort(form.get("sort"))
+    direction = _normalize_dir(form.get("dir"))
+
+    state = wizard_session.get_state(_store(request), _sid(request))
+    selected = list(state.get("selected_ids", []) or [])
+    wizard_session.set_trash_ids(_store(request), _sid(request), selected)
+    return await _render_table_fragment(
+        request, deps, filters, page=page, sort=sort, direction=direction
+    )
+
+
+@router.post("/cleanup/review/mark-archive")
+async def review_mark_archive(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Bulk: classify all selected rows as archive (clear ``trash_ids``)."""
+    filters = _filters_from_session(request)
+    if filters is None:
+        return _redirect("/cleanup")
+
+    form = await request.form()
+    page = _safe_page(form.get("page"))
+    sort = _normalize_sort(form.get("sort"))
+    direction = _normalize_dir(form.get("dir"))
+
+    wizard_session.set_trash_ids(_store(request), _sid(request), [])
     return await _render_table_fragment(
         request, deps, filters, page=page, sort=sort, direction=direction
     )
@@ -596,6 +740,7 @@ async def review_select_all(
     if use_all:
         ids = [m.meeting.meeting_id for m in sorted_matches]
         wizard_session.replace_selection(_store(request), _sid(request), ids)
+        newly_selected_ids = ids
     else:
         page_matches, _total, _pages = _page_slice(sorted_matches, page)
         wizard_session.add_to_selection(
@@ -603,6 +748,15 @@ async def review_select_all(
             _sid(request),
             [m.meeting.meeting_id for m in page_matches],
         )
+        newly_selected_ids = [m.meeting.meeting_id for m in page_matches]
+
+    candidates = set(
+        wizard_session.get_state(_store(request), _sid(request)).get("trash_candidate_ids", [])
+        or []
+    )
+    auto_trash = [mid for mid in newly_selected_ids if mid in candidates]
+    if auto_trash:
+        wizard_session.add_to_trash(_store(request), _sid(request), auto_trash)
 
     return await _render_table_fragment(
         request, deps, filters, page=page, sort=sort, direction=direction
@@ -730,6 +884,7 @@ async def step2_submit(
             page=page,
             pages=pages,
             selected_ids=set(),
+            trash_ids=wizard_session.get_trash_ids(_store(request), _sid(request)),
             error="Please select at least one meeting before continuing.",
             sort=sort,
             direction=direction,
@@ -737,18 +892,24 @@ async def step2_submit(
         return _templates(request).TemplateResponse(
             request,
             "cleanup/step2_review.html",
-            ctx,
+            {**ctx, "show_trash_step": _show_trash_step(request)},
             status_code=422,
         )
 
     state = wizard_session.get_state(_store(request), _sid(request))
+    trash_ids = list(state.get("trash_ids", []) or [])
     new_state = wizard_session.WizardState(
         step="archive",
         filters=state.get("filters", {}),
         selected_ids=list(selected_ids),
         operation_id=state.get("operation_id"),
+        trash_ids=trash_ids,
+        trash_classifier_preset=state.get("trash_classifier_preset"),
+        trash_candidate_ids=list(state.get("trash_candidate_ids", []) or []),
     )
     wizard_session.set_state(_store(request), _sid(request), new_state)
+    if trash_ids:
+        return _redirect("/cleanup/trash-confirm")
     return _redirect("/cleanup/archive")
 
 
@@ -799,6 +960,7 @@ async def _render_table_fragment(
         page=page,
         pages=pages,
         selected_ids=selected_ids,
+        trash_ids=wizard_session.get_trash_ids(_store(request), _sid(request)),
         sort=sort,
         direction=direction,
     )
@@ -872,6 +1034,35 @@ async def _selected_meetings(deps: SimpleNamespace, selected_ids: list[str]) -> 
         return []
     by_id = {m.meeting_id: m for m in deps.manifest.list_known_by_ids(selected_ids)}
     return [by_id[mid] for mid in selected_ids if mid in by_id]
+
+
+def _classify_trash(meetings: list[Meeting], filters: ScanFilters, *, now: datetime) -> list[str]:
+    """Return the subset of meeting ids that satisfy ``filters``.
+
+    Uses ``ScanService._build_rules`` so the trash classifier gets the
+    same predicate semantics as the cleanup-filter scan (conjunctive: a
+    meeting matches iff every active rule matches). Empty filter set →
+    no candidates.
+    """
+    rules = cast("list[Rule]", ScanService._build_rules(filters))
+    if not rules:
+        return []
+    return [m.meeting_id for m in meetings if all(r.matches(m, now=now) for r in rules)]
+
+
+def _persist_trash_candidates(request: Request, ids: list[str]) -> None:
+    """Replace ``trash_candidate_ids`` while preserving the rest of the wizard slice."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    new_state = wizard_session.WizardState(
+        step=state.get("step", "review"),
+        filters=state.get("filters", {}),
+        selected_ids=list(state.get("selected_ids", []) or []),
+        operation_id=state.get("operation_id"),
+        trash_ids=list(state.get("trash_ids", []) or []),
+        trash_classifier_preset=state.get("trash_classifier_preset"),
+        trash_candidate_ids=list(ids),
+    )
+    wizard_session.set_state(_store(request), _sid(request), new_state)
 
 
 def _meetings_for_step4(meetings: list[Meeting], user_email: str | None) -> list[Meeting]:
@@ -1017,6 +1208,11 @@ def _set_wizard(
 
     ``operation_id`` defaults to ``_UNSET`` (a private sentinel) so callers can
     distinguish "leave the existing id alone" from "clear the id" (``None``).
+
+    Trash flow fields (``trash_ids``, ``trash_classifier_preset``,
+    ``trash_candidate_ids``) are always carried forward from the existing
+    state. Callers that need to mutate them must use the dedicated
+    wizard_session helpers (``set_trash_ids``, ``add_to_trash``, etc.).
     """
     state = wizard_session.get_state(_store(request), _sid(request))
     if operation_id is _UNSET:
@@ -1037,6 +1233,9 @@ def _set_wizard(
             else list(state.get("selected_ids") or [])
         ),
         operation_id=new_op_id,
+        trash_ids=list(state.get("trash_ids") or []),
+        trash_classifier_preset=state.get("trash_classifier_preset"),
+        trash_candidate_ids=list(state.get("trash_candidate_ids") or []),
     )
     wizard_session.set_state(_store(request), _sid(request), new_state)
 
@@ -1046,13 +1245,23 @@ async def step3_preflight(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
-    """Render the archive preflight: count + size estimate + Start button."""
+    """Render the archive preflight: count + size estimate + Start button.
+
+    When all selected rows are classified as trash (``selected_ids -
+    trash_ids = ∅``), Step 3 is a no-op — short-circuit to Step 4 so the
+    user doesn't see a confusing "0 meetings to archive" page.
+    """
     state = wizard_session.get_state(_store(request), _sid(request))
     selected_ids = list(state.get("selected_ids") or [])
     if not selected_ids:
         return _redirect("/cleanup/review?error=empty-selection")
 
-    meetings = await _selected_meetings(deps, selected_ids)
+    trash_ids = set(state.get("trash_ids") or [])
+    archive_ids = [mid for mid in selected_ids if mid not in trash_ids]
+    if not archive_ids:
+        return _redirect("/cleanup/purge")
+
+    meetings = await _selected_meetings(deps, archive_ids)
     return _templates(request).TemplateResponse(
         request,
         "cleanup/step3_archive_preflight.html",
@@ -1061,6 +1270,7 @@ async def step3_preflight(
             "count": len(meetings),
             "size_mb": _estimate_size_mb(meetings),
             "error": None,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1076,7 +1286,12 @@ async def step3_start(
     if not selected_ids:
         return _redirect("/cleanup/review?error=empty-selection")
 
-    meetings = await _selected_meetings(deps, selected_ids)
+    trash_ids = set(state.get("trash_ids") or [])
+    archive_ids = [mid for mid in selected_ids if mid not in trash_ids]
+    if not archive_ids:
+        return _redirect("/cleanup/purge")
+
+    meetings = await _selected_meetings(deps, archive_ids)
     runner = _make_archive_runner(deps=deps, meetings=meetings)
     try:
         op = await _registry(request).start(
@@ -1094,6 +1309,7 @@ async def step3_start(
                 "count": len(meetings),
                 "size_mb": size_mb,
                 "error": ("Another archive operation is already running. Wait for it to complete."),
+                "show_trash_step": _show_trash_step(request),
             },
             status_code=409,
         )
@@ -1135,6 +1351,7 @@ async def step3_in_progress(
             "total": total,
             "completed": completed,
             "progress_pct": progress_pct,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1166,6 +1383,7 @@ async def step3_done(
             "meetings": rows,
             "archived_count": archived,
             "failed_count": failed,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1200,16 +1418,149 @@ async def step3_continue(request: Request) -> Response:
         return _redirect("/cleanup/archive")
     if op.state == "running":
         return _redirect("/cleanup/archive/in-progress")
-    rows, archived, _failed = _replay_meeting_states(op)
-    if archived == 0:
-        return _redirect("/cleanup/archive/done")
+    rows, _archived, _failed = _replay_meeting_states(op)
     success_ids = [
         str(row["id"]) for row in rows if row.get("sub_state") == "done" and row.get("id")
     ]
-    if not success_ids:
+    trash_ids = list(state.get("trash_ids") or [])
+    # Only short-circuit to the done page when BOTH archive and trash are
+    # empty — if the user only had trash rows (archived=0 but trash_ids is
+    # non-empty), we must still route to Step 4 so mark-deleted can fire.
+    if not success_ids and not trash_ids:
         return _redirect("/cleanup/archive/done")
-    _set_wizard(request, step="purge", selected_ids=success_ids, operation_id=None)
+    # Step 4 selected_ids must contain BOTH archive successes AND host trash
+    # rows so the preflight's split (archive_ids = selected - trash) recovers
+    # both subsets. Order keeps trash rows after archive rows; Step 4 preflight
+    # re-sorts by date anyway.
+    success_set = set(success_ids)
+    new_selected = list(success_ids) + [mid for mid in trash_ids if mid not in success_set]
+    _set_wizard(request, step="purge", selected_ids=new_selected, operation_id=None)
     return _redirect("/cleanup/purge")
+
+
+# ---------------------------------------------------------------------------
+# Step 3a — Trash confirmation (typed-count gate, demote, non-host auto-mark)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/cleanup/trash-confirm")
+async def step3a_preflight(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Render the trash-confirmation preflight: warning banner, sorted list,
+    per-row demote checkboxes, typed-count gate."""
+    state = wizard_session.get_state(_store(request), _sid(request))
+    trash_ids = list(state.get("trash_ids", []) or [])
+    if not trash_ids:
+        return _redirect("/cleanup/archive")
+
+    meetings = await _selected_meetings(deps, trash_ids)
+    if not meetings:
+        return _redirect("/cleanup/review?error=empty-selection")
+    meetings = sorted(meetings, key=lambda m: m.meeting_date)
+
+    return _templates(request).TemplateResponse(
+        request,
+        "cleanup/step3a_trash_confirm.html",
+        {
+            "step": "trash",
+            "count": len(meetings),
+            "meetings": meetings,
+            "error": None,
+            "show_trash_step": _show_trash_step(request),
+        },
+    )
+
+
+@router.post("/cleanup/trash-confirm")
+async def step3a_confirm(
+    request: Request,
+    deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
+) -> Response:
+    """Trash confirmation submit.
+
+    Expected form:
+      - ``confirmed_count``: must equal len(post-demote trash_ids).
+      - ``trash_keep``: zero or more checked ids; unchecked ids are demoted
+        back to the archive set.
+
+    Behaviour:
+      1. Demote unchecked rows out of ``trash_ids`` (they remain in
+         ``selected_ids`` and will go through Step 3b).
+      2. Validate typed-count: 422 + re-render preflight on mismatch.
+      3. For non-host rows in the kept-trash set, transition KNOWN -> DELETED
+         with reason ``non_host_no_api_delete`` and remove from ``trash_ids``.
+      4. Redirect to /cleanup/archive (Step 3b will further redirect to
+         Step 4 if archive_ids is empty).
+    """
+    state = wizard_session.get_state(_store(request), _sid(request))
+    trash_ids = list(state.get("trash_ids", []) or [])
+    if not trash_ids:
+        return _redirect("/cleanup/archive")
+
+    form = await request.form()
+    keep_ids_raw = form.getlist("trash_keep") if hasattr(form, "getlist") else []
+    keep_ids = [str(x) for x in keep_ids_raw]
+    keep_set = {mid for mid in keep_ids if mid in set(trash_ids)}
+    demote_ids = [mid for mid in trash_ids if mid not in keep_set]
+
+    # 1. Demote unchecked rows.
+    if demote_ids:
+        wizard_session.demote_from_trash(_store(request), _sid(request), demote_ids)
+
+    # 2. Validate typed-count against the kept set.
+    expected_count = len(keep_set)
+    confirmed_raw = form.get("confirmed_count")
+    confirmed = str(confirmed_raw).strip() if confirmed_raw is not None else ""
+    if confirmed != str(expected_count):
+        # Re-render preflight with banner + 422. Note: the demote already
+        # happened; the typed-count failure means the user must retype with
+        # the new count. (Demote is idempotent, so a retry that demotes the
+        # same set again is a no-op.)
+        meetings = await _selected_meetings(deps, sorted(keep_set))
+        meetings = sorted(meetings, key=lambda m: m.meeting_date)
+        return _templates(request).TemplateResponse(
+            request,
+            "cleanup/step3a_trash_confirm.html",
+            {
+                "step": "trash",
+                "count": len(meetings),
+                "meetings": meetings,
+                "error": "Type the count to confirm.",
+                "show_trash_step": _show_trash_step(request),
+            },
+            status_code=422,
+        )
+
+    # 3. Auto-mark non-host trash as DELETED.
+    user_email = deps.config.fireflies.user_email
+    if user_email and keep_set:
+        ue_lc = user_email.lower()
+        kept_meetings = await _selected_meetings(deps, sorted(keep_set))
+        non_host_ids = [
+            m.meeting_id for m in kept_meetings if m.host_email and m.host_email.lower() != ue_lc
+        ]
+        now = deps.clock.now()
+        for mid in non_host_ids:
+            try:
+                deps.manifest.transition(
+                    mid,
+                    to=MeetingState.DELETED,
+                    at=now,
+                    details={"reason": "non_host_no_api_delete"},
+                )
+            except IllegalStateTransition:
+                logger.warning(
+                    "step3a_confirm: non-host auto-mark skipped for %s (state changed mid-run)",
+                    mid,
+                )
+                continue
+        if non_host_ids:
+            wizard_session.remove_from_trash(_store(request), _sid(request), non_host_ids)
+
+    # 4. Redirect to Step 3b. (3b will redirect to Step 4 if archive_ids empty.)
+    return _redirect("/cleanup/archive")
 
 
 # ---------------------------------------------------------------------------
@@ -1328,28 +1679,52 @@ async def step4_preflight(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
-    """Render the purge preflight: count + numbered list + typed-count gate."""
+    """Render the Step 4 handoff: combined archive successes + host trash rows.
+
+    Splits ``selected_ids`` into:
+      * archive set (``selected_ids - trash_ids``) — meetings that have an
+        archive on disk; transition ARCHIVED|DELETED_FAILED -> DELETED at
+        mark-deleted.
+      * trash set (``trash_ids``) — meetings that bypassed archive;
+        transition KNOWN -> DELETED at mark-deleted.
+
+    Both subsets pass through ``_meetings_for_step4`` for the non-host
+    filter (PR #22 — non-host trash already auto-marked at Step 3a; non-host
+    archive auto-marked at Pipeline._archive). The combined list is sorted
+    oldest-first across both kinds, and trash rows render with a small
+    ``no archive`` badge in the template.
+    """
     state = wizard_session.get_state(_store(request), _sid(request))
     selected_ids = list(state.get("selected_ids") or [])
     if not selected_ids:
         return _redirect("/cleanup/archive/done")
 
-    meetings = await _selected_meetings(deps, selected_ids)
-    if not meetings:
-        # All previously-selected meetings have vanished (e.g. deleted directly
-        # in Fireflies between the archive step and now).  Bounce back to review
-        # so the user can re-filter rather than being shown a "0 meetings" purge
-        # confirmation that would be a no-op.
+    trash_ids = set(state.get("trash_ids") or [])
+    archive_ids = [mid for mid in selected_ids if mid not in trash_ids]
+    archive_meetings = await _selected_meetings(deps, archive_ids)
+    trash_meetings = await _selected_meetings(deps, sorted(trash_ids))
+    if not archive_meetings and not trash_meetings:
         return _redirect("/cleanup/review?error=empty-selection")
-    meetings = _meetings_for_step4(meetings, deps.config.fireflies.user_email)
+
+    user_email = deps.config.fireflies.user_email
+    archive_meetings = _meetings_for_step4(archive_meetings, user_email)
+    trash_meetings = _meetings_for_step4(trash_meetings, user_email)
+
+    # Combined list with kind discriminator. Sort oldest-first across both.
+    rows: list[tuple[Meeting, str]] = [(m, "archive") for m in archive_meetings] + [
+        (m, "trash") for m in trash_meetings
+    ]
+    rows.sort(key=lambda pair: pair[0].meeting_date)
+
     return _templates(request).TemplateResponse(
         request,
         "cleanup/step4_purge_preflight.html",
         {
             "step": "purge",
-            "count": len(meetings),
-            "meetings": meetings,
+            "count": len(rows),
+            "rows": rows,
             "error": None,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1376,6 +1751,10 @@ async def step4_start(
         # and now.  Bounce back to review rather than launching a no-op purge.
         return _redirect("/cleanup/review?error=empty-selection")
     count = len(meetings)
+    # Build rows for template re-renders (error paths). No trash splitting
+    # needed here — step4_start is the legacy API-purge path which doesn't
+    # differentiate archive vs trash rows. Treat all as "archive" kind.
+    rows: list[tuple[Meeting, str]] = [(m, "archive") for m in meetings]
 
     form = await request.form()
     confirmed_raw = form.get("confirmed_count")
@@ -1387,8 +1766,9 @@ async def step4_start(
             {
                 "step": "purge",
                 "count": count,
-                "meetings": meetings,
+                "rows": rows,
                 "error": "Type the count to confirm.",
+                "show_trash_step": _show_trash_step(request),
             },
             status_code=422,
         )
@@ -1407,8 +1787,9 @@ async def step4_start(
             {
                 "step": "purge",
                 "count": count,
-                "meetings": meetings,
+                "rows": rows,
                 "error": "Another purge operation is already running. Wait for it to complete.",
+                "show_trash_step": _show_trash_step(request),
             },
             status_code=409,
         )
@@ -1448,6 +1829,7 @@ async def step4_in_progress(
             "total": total,
             "completed": completed,
             "progress_pct": progress_pct,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1479,6 +1861,7 @@ async def step4_done(
             "meetings": rows,
             "deleted_count": deleted,
             "failed_count": failed,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 
@@ -1488,26 +1871,24 @@ async def step4_mark_deleted(
     request: Request,
     deps: SimpleNamespace = Depends(get_deps),  # noqa: B008
 ) -> Response:
-    """Reconcile the wizard's archived meetings as deleted-in-Fireflies.
+    """Reconcile both the wizard's archived meetings AND host trash rows.
 
-    The Step 4 handoff design assumes the user has bulk-deleted the
-    selected meetings via Fireflies' web UI (the only path that bypasses
-    the per-account API daily-quota cap). This route walks the wizard's
-    ``selected_ids``, transitions each row currently in ARCHIVED or
-    DELETED_FAILED to DELETED with reason ``manual_external_delete_via_wizard``
-    in state_log, and renders a summary page.
+    Walks the wizard's selection, splitting it into:
+      * archive set (``selected_ids - trash_ids``): rows in ARCHIVED or
+        DELETED_FAILED transition to DELETED with reason
+        ``manual_external_delete_via_wizard``.
+      * trash set (``trash_ids``): rows in KNOWN transition to DELETED with
+        reason ``manual_trash_via_wizard`` (Step 4 handoff for trash that
+        the user just bulk-deleted in Fireflies' web UI).
 
-    Skipped rows: any selected_id whose state is no longer ARCHIVED /
-    DELETED_FAILED is counted as skipped rather than failed — the most
-    common cause is a sync tick reconciling the row before this POST,
-    which is benign.
+    Both subsets are first filtered through ``_meetings_for_step4`` for
+    the non-host filter (PR #22 + Step 3a auto-mark). Rows in unexpected
+    states are counted as ``skipped`` rather than failed.
 
     Status codes:
-      - 303 (redirect to /cleanup/archive/done) when the wizard has no
-        selected_ids — the user navigated here directly.
-      - 303 (redirect to /cleanup/review?error=empty-selection) when the
-        selected meetings have all vanished from the cache between
-        archive and now.
+      - 303 to /cleanup/archive/done when ``selected_ids`` is empty.
+      - 303 to /cleanup/review?error=empty-selection when both subsets
+        have all vanished from the cache.
       - 200 + the mark-deleted summary page on success.
     """
     state = wizard_session.get_state(_store(request), _sid(request))
@@ -1515,23 +1896,27 @@ async def step4_mark_deleted(
     if not selected_ids:
         return _redirect("/cleanup/archive/done")
 
-    meetings = await _selected_meetings(deps, selected_ids)
-    if not meetings:
+    trash_ids = set(state.get("trash_ids") or [])
+    archive_ids = [mid for mid in selected_ids if mid not in trash_ids]
+    archive_meetings = await _selected_meetings(deps, archive_ids)
+    trash_meetings = await _selected_meetings(deps, sorted(trash_ids))
+    if not archive_meetings and not trash_meetings:
         return _redirect("/cleanup/review?error=empty-selection")
-    # Mirror the Step 4 preflight: only act on meetings the user actually
-    # saw on the handoff page. Non-host rows are auto-marked DELETED at
-    # archive time, so feeding them through here would inflate the
-    # ``skipped`` count and confuse the summary. Sort matches the page
-    # order for deterministic state_log ordering.
-    meetings = _meetings_for_step4(meetings, deps.config.fireflies.user_email)
 
-    eligible_states = {MeetingState.ARCHIVED, MeetingState.DELETED_FAILED}
+    user_email = deps.config.fireflies.user_email
+    archive_meetings = _meetings_for_step4(archive_meetings, user_email)
+    trash_meetings = _meetings_for_step4(trash_meetings, user_email)
+
+    archive_eligible = {MeetingState.ARCHIVED, MeetingState.DELETED_FAILED}
     now = deps.clock.now()
     marked = 0
     skipped = 0
-    for meeting in meetings:
+    total = len(archive_meetings) + len(trash_meetings)
+
+    # Archive flow: ARCHIVED|DELETED_FAILED -> DELETED.
+    for meeting in archive_meetings:
         rec = deps.manifest.get(meeting.meeting_id)
-        if rec is None or rec.state not in eligible_states:
+        if rec is None or rec.state not in archive_eligible:
             skipped += 1
             continue
         try:
@@ -1542,10 +1927,30 @@ async def step4_mark_deleted(
                 details={"reason": "manual_external_delete_via_wizard"},
             )
         except IllegalStateTransition:
-            # Race window — sync may have reconciled this row between our
-            # ``get`` and the transition. Treat as skipped, not an error.
             logger.warning(
                 "step4_mark_deleted: skipped %s (state changed mid-run)",
+                meeting.meeting_id,
+            )
+            skipped += 1
+            continue
+        marked += 1
+
+    # Trash flow: KNOWN -> DELETED with the new reason.
+    for meeting in trash_meetings:
+        rec = deps.manifest.get(meeting.meeting_id)
+        if rec is None or rec.state is not MeetingState.KNOWN:
+            skipped += 1
+            continue
+        try:
+            deps.manifest.transition(
+                meeting.meeting_id,
+                to=MeetingState.DELETED,
+                at=now,
+                details={"reason": "manual_trash_via_wizard"},
+            )
+        except IllegalStateTransition:
+            logger.warning(
+                "step4_mark_deleted: trash transition skipped for %s (state changed mid-run)",
                 meeting.meeting_id,
             )
             skipped += 1
@@ -1559,7 +1964,8 @@ async def step4_mark_deleted(
             "step": "purge",
             "marked_count": marked,
             "skipped_count": skipped,
-            "total_count": len(meetings),
+            "total_count": total,
+            "show_trash_step": _show_trash_step(request),
         },
     )
 

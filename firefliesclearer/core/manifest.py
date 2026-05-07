@@ -19,7 +19,7 @@ LEGAL_TRANSITIONS: Mapping[MeetingState | None, frozenset[MeetingState]] = {
     # None → PENDING is preserved for Manifest.register() backward compat;
     # both will collapse to None → KNOWN only in Phase 6.
     None: frozenset({MeetingState.KNOWN, MeetingState.PENDING}),
-    MeetingState.KNOWN: frozenset({MeetingState.PENDING}),
+    MeetingState.KNOWN: frozenset({MeetingState.PENDING, MeetingState.DELETED}),
     MeetingState.PENDING: frozenset(
         {
             MeetingState.ARCHIVED,

@@ -36,6 +36,14 @@
       hx-post="/cleanup/review/invert"
       hx-include="closest form"
       hx-indicator=".review-toolbar-spinner">Invert page</button>
+    <button type="submit" class="btn-mark-trash"
+      hx-post="/cleanup/review/mark-trash"
+      hx-include="closest form"
+      hx-indicator=".review-toolbar-spinner">Mark selected as Trash</button>
+    <button type="submit" class="btn-mark-archive"
+      hx-post="/cleanup/review/mark-archive"
+      hx-include="closest form"
+      hx-indicator=".review-toolbar-spinner">Mark selected as Archive</button>
   </form>
 
   <span class="review-toolbar-spinner htmx-indicator" aria-hidden="true">

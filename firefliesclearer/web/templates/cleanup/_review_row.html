@@ -19,6 +19,24 @@
         {% if match.meeting.meeting_id in selected_ids %}checked{% endif %}>
     </form>
   </td>
+  <td class="col-archive">
+    {% if match.meeting.meeting_id in selected_ids %}
+      <form hx-post="/cleanup/review/archive-toggle/{{ match.meeting.meeting_id }}"
+            hx-trigger="change"
+            hx-target=".review-table"
+            hx-swap="outerHTML"
+            hx-include="this"
+            style="display:inline">
+        <input type="hidden" name="_csrf" value="{{ request.cookies.get('ffc_csrf', '') }}">
+        <input type="hidden" name="page" value="{{ page }}">
+        <input type="hidden" name="sort" value="{{ sort }}">
+        <input type="hidden" name="dir" value="{{ dir }}">
+        <input type="checkbox" name="archive"
+          aria-label="Archive meeting {{ match.meeting.title }} (uncheck to trash without backup)"
+          {% if match.meeting.meeting_id not in trash_ids %}checked="checked"{% endif %}>
+      </form>
+    {% endif %}
+  </td>
   <td class="col-title">
     <a href="#"
        hx-get="/cleanup/meeting/{{ match.meeting.meeting_id }}/panel"
