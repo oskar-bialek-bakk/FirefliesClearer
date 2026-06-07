@@ -76,17 +76,32 @@ def log(msg: str) -> None:
 
 async def find_oldest_target_meeting(
     client: FirefliesClient,
+    user_email: str,
 ) -> Meeting | None:
-    """Walk the live API, return the oldest meeting matching TARGET_TITLE.
+    """Walk the live API, return the oldest host-owned meeting matching TARGET_TITLE.
 
     The Fireflies list is paginated newest-first; we exhaust pages and pick
     the minimum by ``meeting_date``. For a daily-recurring meeting this is
     bounded (~365 hits/year).
+
+    Filters out rows whose ``host_email`` differs from the authenticated user:
+    Fireflies' ``deleteTranscript`` mutation rejects non-host calls (and
+    surfaces the rejection as ``Transcript not found``, which would otherwise
+    look like a real bug). ``Pipeline._archive`` skips these in production for
+    the same reason; the smoke mirrors that policy. Rows with an empty
+    ``host_email`` (resolver dropout) are kept — better to attempt and let
+    the API decide than to silently drop everything when host metadata is
+    unavailable.
     """
+    user_lc = user_email.lower()
     candidates: list[Meeting] = []
     async for m in client.list_meetings(MeetingFilter()):
-        if m.title.strip() == TARGET_TITLE:
-            candidates.append(m)
+        if m.title.strip() != TARGET_TITLE:
+            continue
+        host_lc = m.host_email.lower()
+        if host_lc and host_lc != user_lc:
+            continue
+        candidates.append(m)
     if not candidates:
         return None
     return min(candidates, key=lambda m: m.meeting_date)
@@ -301,10 +316,14 @@ async def amain() -> int:
     try:
         client = FirefliesClient(api_key=api_key)
 
+        log("resolving authenticated user…")
+        user_email = await client.ping_user()
+        log(f"authenticated as {user_email}")
+
         log("listing meetings to find oldest target…")
-        meeting = await find_oldest_target_meeting(client)
+        meeting = await find_oldest_target_meeting(client, user_email)
         if meeting is None:
-            log(f"no meeting titled {TARGET_TITLE!r} found — nothing to test against.")
+            log(f"no host-owned meeting titled {TARGET_TITLE!r} found — nothing to test against.")
             return 0
         log(
             f"target: id={meeting.meeting_id!r} "

@@ -239,8 +239,18 @@ class FirefliesClient:
                     op="delete_meeting",
                 )
             except FirefliesError as e:
-                if "404" in str(e):
-                    return  # idempotent
+                # Idempotent: "already gone" is the desired post-state.
+                # Fireflies expresses it two ways:
+                #   - HTTP 404 (rare; mostly on legacy edges)
+                #   - HTTP 200 + GraphQL ``Transcript not found`` message
+                #     (formatted by ``_format_graphql_errors`` as
+                #     ``deleteTranscript: Transcript not found``)
+                # Match the message substring rather than parsing the raw
+                # ``errors`` array — keeps the recognition close to what
+                # callers actually see in last_error.
+                msg = str(e).lower()
+                if "404" in msg or "transcript not found" in msg:
+                    return
                 raise
 
     async def ping_user(self) -> str:

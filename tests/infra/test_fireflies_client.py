@@ -463,6 +463,34 @@ async def test_delete_meeting_idempotent_on_404(
 
 
 @respx.mock
+async def test_delete_meeting_idempotent_on_graphql_transcript_not_found(
+    client: FirefliesClient,
+) -> None:
+    """Fireflies returns HTTP 200 + GraphQL ``Transcript not found`` (formatted
+    as ``deleteTranscript: Transcript not found``) for an already-deleted or
+    inaccessible row. Treat as success — the post-state is what we wanted.
+
+    Regression: scheduled smoke failed five weeks in a row (2026-05-10 .. 06-07)
+    because this path raised instead of being idempotent.
+    """
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "errors": [
+                    {
+                        "message": "Transcript not found",
+                        "path": ["deleteTranscript"],
+                    }
+                ],
+                "data": None,
+            },
+        )
+    )
+    await client.delete_meeting("missing")
+
+
+@respx.mock
 async def test_fetch_artifacts_normalizes_action_items_string(
     client: FirefliesClient,
 ) -> None:
