@@ -75,15 +75,6 @@ These boundaries are enforced by an `import-linter` contract in CI (Phase 9.8).
 - `asyncio.create_task(...)` results MUST be parked on `app.state.<name>` (e.g. `app.state.sync_scheduler_task`, `app.state.current_sync_task`) — otherwise GC kills the task and ruff RUF006 fires.
 - For tests that need to seed `app.state.sync_lock` from outside the loop, use `client.portal.call(lock.acquire)` — `asyncio.get_event_loop().run_until_complete` deadlocks against TestClient's portal-based loop.
 
-## Phase 5 deferrals (not yet done as of v2 release)
-
-- `web/routes/cleanup.py` is ~1230 lines — natural break is per-step submodules.
-- 4x `_make_*_runner` helpers spread across files; could extract a kind-driven factory.
-- `_sid` / `_store` / `_templates` / `_redirect` helpers duplicated across `setup.py`, `cleanup.py`, `dashboard.py`, `presets.py`, `settings.py` — could extract to `web/_helpers.py`.
-- `step1_filter.html` filter fieldsets duplicate `presets/_filter_fieldsets.html` — could DRY into a single shared partial.
-
-These don't block v2 release; flagged for v2.x maintenance work.
-
 ## Safety invariants (non-negotiable)
 
 1. Never delete a Fireflies meeting via the API/agent path unless its archive is verified on disk (file existence + non-zero + checksum recorded). This applies to `Pipeline.run`, the API-purge trickle scheduler, and any agent-initiated mutation. **Exception:** the user-initiated trash flow (cleanup wizard Step 3a typed-count gate) is an explicit override — the user is taking responsibility for skipping the backup; non-host trash rows still auto-mark with reason `non_host_no_api_delete` because no API call is possible.
